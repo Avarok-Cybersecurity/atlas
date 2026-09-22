@@ -1,0 +1,1431 @@
+diff --git a/crates/avarok-core/src/config/gguf/kimi_k3.rs b/crates/avarok-core/src/config/gguf/kimi_k3.rs
+index da91824..dd4d671 100644
+--- a/crates/avarok-core/src/config/gguf/kimi_k3.rs
++++ b/crates/avarok-core/src/config/gguf/kimi_k3.rs
+@@ -15,9 +15,7 @@ use crate::config::parsers::parse_kimi_k3;
+ /// Build a validated `kimi_k3` [`ModelConfig`] from Unsloth/llama.cpp K3 GGUF
+ /// metadata (`kimi-k3.*` keys).
+ pub(super) fn config_from_kimi_k3_gguf(meta: &dyn GgufMeta) -> Result<ModelConfig> {
+-    let arch = meta
+-        .get_str("general.architecture")
+-        .unwrap_or("kimi-k3");
++    let arch = meta.get_str("general.architecture").unwrap_or("kimi-k3");
+     let k = |suffix: &str| format!("{arch}.{suffix}");
+     let req_u64 = |suffix: &str| -> Result<u64> {
+         meta.get_u64(&k(suffix))
+@@ -56,9 +54,7 @@ pub(super) fn config_from_kimi_k3_gguf(meta: &dyn GgufMeta) -> Result<ModelConfi
+     let v_mla = meta
+         .get_u64(&k("attention.value_length_mla"))
+         .unwrap_or(128) as usize;
+-    let k_mla = meta
+-        .get_u64(&k("attention.key_length_mla"))
+-        .unwrap_or(192) as usize;
++    let k_mla = meta.get_u64(&k("attention.key_length_mla")).unwrap_or(192) as usize;
+ 
+     let kv_flags = meta
+         .get_u64_arr(&k("attention.head_count_kv"))
+diff --git a/crates/avarok-core/src/kimi_k3/cpu_forward.rs b/crates/avarok-core/src/kimi_k3/cpu_forward.rs
+index 6041478..f0b6b48 100644
+--- a/crates/avarok-core/src/kimi_k3/cpu_forward.rs
++++ b/crates/avarok-core/src/kimi_k3/cpu_forward.rs
+@@ -16,6 +16,7 @@ use super::ops::{embed_token, matvec, matvec_column_tp};
+ use super::situ::sigmoid;
+ 
+ mod dense;
++mod mixer;
+ mod moe;
+ mod stream;
+ pub use stream::AttnResStream;
+@@ -27,6 +28,9 @@ pub type HiddenReduce<'a> = &'a dyn Fn(&mut [f32]) -> Result<()>;
+ pub type DenseMlpCore<'a> =
+     &'a dyn Fn(&DenseMlp, &[f32], usize, usize, f32, f32) -> Result<Vec<f32>>;
+ 
++/// Resident BF16 GEMV. `op` is a suffix key (q_proj, routed_down, ...).
++pub type GpuGemv<'a> = &'a dyn Fn(&str, &[f32], usize, usize) -> Result<Vec<f32>>;
++
+ /// Per-layer geometry the GPU wrapper and `forward_token` share.
+ ///
+ /// `K3BoundLayer::decode` copies hidden D2H, runs this math, copies H2D.
+@@ -45,6 +49,9 @@ pub struct K3LayerCtx<'a> {
+     /// After row-parallel `o_proj` (and dense MLP `down`). None at TP=1.
+     pub reduce_hidden: Option<HiddenReduce<'a>>,
+     pub dense_mlp: Option<DenseMlpCore<'a>>,
++    pub gpu_gemv: Option<GpuGemv<'a>>,
++    /// Shared-expert intermediate (full, before /tp). 6144 production.
++    pub shared_intermediate: usize,
+     /// Rank in TP. Slice hidden for routed down/up (7168/8, not n_experts).
+     pub tp_rank: usize,
+     pub tp_world: usize,
+@@ -64,6 +71,8 @@ impl<'a> K3LayerCtx<'a> {
+             rope_theta: model.rope_theta,
+             reduce_hidden: None,
+             dense_mlp: None,
++            gpu_gemv: None,
++            shared_intermediate: 0,
+             tp_rank: 0,
+             tp_world: 1,
+         }
+@@ -271,9 +280,10 @@ where
+     let x = rms_norm(&h, &layer.input_norm, eps);
+     let mut mix_out = match (&layer.mixer, mixer_state) {
+         (MixerW::Kda(w), LayerCache::Kda(state)) => {
+-            kda_mixer(w, &x, ctx.kda, state, eps, ablation, &mut kda_decode)?
++            mixer::kda_mixer(ctx, w, &x, ctx.kda, state, eps, ablation, &mut kda_decode)?
+         }
+-        (MixerW::Mla(w), LayerCache::Mla(kv)) => mla_mixer(
++        (MixerW::Mla(w), LayerCache::Mla(kv)) => mixer::mla_mixer(
++            ctx,
+             w,
+             &x,
+             ctx.mla,
+@@ -308,170 +318,3 @@ where
+     stream.add(&mlp_out);
+     Ok(())
+ }
+-
+-fn apply_o_proj(w: &[f32], x: &[f32], out: usize, inn: usize, ablation: Ablation) -> Vec<f32> {
+-    matvec_column_tp(
+-        w,
+-        x,
+-        out,
+-        inn,
+-        ablation.o_proj_tp,
+-        ablation.drop_o_proj_rank,
+-    )
+-}
+-
+-fn kda_mixer<F>(
+-    w: &KdaWeights,
+-    x: &[f32],
+-    cfg: &KdaConfig,
+-    state: &mut KdaState,
+-    eps: f32,
+-    ablation: Ablation,
+-    kda_decode: &mut F,
+-) -> Result<Vec<f32>>
+-where
+-    F: FnMut(&[f32], &[f32], &[f32], &[f32], &KdaConfig, &mut KdaState) -> Result<Vec<f32>>,
+-{
+-    let qdim = cfg.qkv_dim();
+-    let q = matvec(&w.q_proj, x, qdim, x.len());
+-    let k = matvec(&w.k_proj, x, qdim, x.len());
+-    let v = matvec(&w.v_proj, x, qdim, x.len());
+-    let mut qkv = q;
+-    qkv.extend_from_slice(&k);
+-    qkv.extend_from_slice(&v);
+-    // HF: g = f_b_proj(f_a_proj(x)) — two linears, no SiLU on the bottleneck.
+-    let fa = matvec(&w.f_a, x, cfg.head_dim, x.len());
+-    let z = matvec(&w.f_b, &fa, qdim, cfg.head_dim);
+-    let gate = bounded_gate(
+-        &z,
+-        &w.dt_bias,
+-        &w.a_log,
+-        cfg.heads,
+-        cfg.head_dim,
+-        cfg.gate_lower_bound,
+-    );
+-    let beta = matvec(&w.b_proj, x, cfg.heads, x.len());
+-    let g = matvec(&w.g_proj, x, qdim, x.len());
+-    let core = kda_decode(&qkv, &w.conv, &gate, &beta, cfg, state)?;
+-    let gated = gated_o_norm(&core, &g, &w.o_norm, cfg.head_dim, eps);
+-    Ok(apply_o_proj(&w.o_proj, &gated, x.len(), qdim, ablation))
+-}
+-
+-fn gated_o_norm(core: &[f32], g: &[f32], o_norm: &[f32], head_dim: usize, eps: f32) -> Vec<f32> {
+-    let mut out = vec![0.0f32; core.len()];
+-    for ((c, gg), o) in core
+-        .chunks_exact(head_dim)
+-        .zip(g.chunks_exact(head_dim))
+-        .zip(out.chunks_exact_mut(head_dim))
+-    {
+-        let n = rms_norm(c, o_norm, eps);
+-        for i in 0..head_dim {
+-            o[i] = sigmoid(gg[i]) * n[i];
+-        }
+-    }
+-    out
+-}
+-
+-#[allow(clippy::too_many_arguments)]
+-fn mla_mixer<F>(
+-    w: &MlaWeights,
+-    x: &[f32],
+-    cfg: &MlaConfig,
+-    kv: &mut MlaKv,
+-    pos: usize,
+-    theta: f32,
+-    eps: f32,
+-    ablation: Ablation,
+-    mla_decode: &mut F,
+-) -> Result<Vec<f32>>
+-where
+-    F: FnMut(
+-        &mut [f32],
+-        &mut [f32],
+-        &[f32],
+-        &[f32],
+-        &mut MlaKv,
+-        &MlaConfig,
+-        usize,
+-        f32,
+-    ) -> Result<Vec<f32>>,
+-{
+-    let qk = cfg.qk_head_dim();
+-    let qa = matvec(&w.q_a, x, cfg.q_lora_rank, x.len());
+-    let qa = rms_norm(&qa, &w.q_a_ln, eps);
+-    let mut q = matvec(&w.q_b, &qa, cfg.heads * qk, cfg.q_lora_rank);
+-    let kv_in = cfg.kv_lora_rank + cfg.qk_rope_head_dim;
+-    let kv_lat = matvec(&w.kv_a, x, kv_in, x.len());
+-    let (c, pe) = kv_lat.split_at(cfg.kv_lora_rank);
+-    let c = rms_norm(c, &w.kv_a_ln, eps);
+-    let (k, v) = mla_kv_from_split(&w.k_b, &w.v_b, &c, pe, cfg);
+-    let mut k = k;
+-    let g = matvec(&w.g_proj, x, cfg.heads * cfg.v_head_dim, x.len());
+-    let attn = mla_decode(&mut q, &mut k, &v, &g, kv, cfg, pos, theta)?;
+-    Ok(apply_o_proj(
+-        &w.o_proj,
+-        &attn,
+-        x.len(),
+-        cfg.heads * cfg.v_head_dim,
+-        ablation,
+-    ))
+-}
+-
+-fn mla_kv_from_split(
+-    k_b: &[f32],
+-    v_b: &[f32],
+-    c: &[f32],
+-    k_pe: &[f32],
+-    cfg: &MlaConfig,
+-) -> (Vec<f32>, Vec<f32>) {
+-    let heads = cfg.heads;
+-    let nope = cfg.qk_nope_head_dim;
+-    let rope = cfg.qk_rope_head_dim;
+-    let dv = cfg.v_head_dim;
+-    let lora = cfg.kv_lora_rank;
+-    let qk = nope + rope;
+-    let mut k = vec![0f32; heads * qk];
+-    let mut v = vec![0f32; heads * dv];
+-    for h in 0..heads {
+-        for d in 0..nope {
+-            let mut acc = 0.0f32;
+-            for l in 0..lora {
+-                acc += k_b[h * lora * nope + l * nope + d] * c[l];
+-            }
+-            k[h * qk + d] = acc;
+-        }
+-        if rope > 0 {
+-            let dst = h * qk + nope;
+-            k[dst..dst + rope].copy_from_slice(k_pe);
+-        }
+-        for d in 0..dv {
+-            let mut acc = 0.0f32;
+-            for l in 0..lora {
+-                acc += v_b[h * dv * lora + d * lora + l] * c[l];
+-            }
+-            v[h * dv + d] = acc;
+-        }
+-    }
+-    (k, v)
+-}
+-
+-#[allow(dead_code)]
+-fn pack_mla_kv(kvb: &[f32], k_pe: &[f32], cfg: &MlaConfig) -> (Vec<f32>, Vec<f32>) {
+-    let nope = cfg.qk_nope_head_dim;
+-    let rope = cfg.qk_rope_head_dim;
+-    let dv = cfg.v_head_dim;
+-    let qk = nope + rope;
+-    let mut k = vec![0.0f32; cfg.heads * qk];
+-    let mut v = vec![0.0f32; cfg.heads * dv];
+-    let stride = nope + dv;
+-    for h in 0..cfg.heads {
+-        let src = &kvb[h * stride..(h + 1) * stride];
+-        let kd = &mut k[h * qk..(h + 1) * qk];
+-        kd[..nope].copy_from_slice(&src[..nope]);
+-        if rope > 0 {
+-            kd[nope..].copy_from_slice(k_pe);
+-        }
+-        v[h * dv..(h + 1) * dv].copy_from_slice(&src[nope..]);
+-    }
+-    (k, v)
+-}
+diff --git a/crates/avarok-core/src/kimi_k3/cpu_forward/dense.rs b/crates/avarok-core/src/kimi_k3/cpu_forward/dense.rs
+index c06c85e..6ad56cc 100644
+--- a/crates/avarok-core/src/kimi_k3/cpu_forward/dense.rs
++++ b/crates/avarok-core/src/kimi_k3/cpu_forward/dense.rs
+@@ -11,15 +11,24 @@ pub(super) fn run(
+     configured_inter: usize,
+ ) -> Result<Vec<f32>> {
+     let hidden = ctx.hidden;
+-    ensure!(
+-        hidden > 0 && x.len() == hidden && w.gate.len().is_multiple_of(hidden),
+-        "K3 dense geometry"
+-    );
+-    let inter = w.gate.len() / hidden;
+-    ensure!(
+-        inter > 0 && w.up.len() == w.gate.len() && w.down.len() == w.gate.len(),
+-        "K3 dense weight geometry"
+-    );
++    ensure!(hidden > 0 && x.len() == hidden, "K3 dense geometry");
++    let inter = if !w.gate.is_empty() && w.gate.len().is_multiple_of(hidden) {
++        w.gate.len() / hidden
++    } else {
++        let full = configured_inter.max(1);
++        if ctx.tp_world > 1 && full.is_multiple_of(ctx.tp_world) {
++            full / ctx.tp_world
++        } else {
++            full
++        }
++    };
++    ensure!(inter > 0, "K3 dense local inter");
++    if !w.gate.is_empty() {
++        ensure!(
++            w.up.len() == w.gate.len() && w.down.len() == w.gate.len(),
++            "K3 dense weight geometry"
++        );
++    }
+     if let Some(core) = ctx.dense_mlp {
+         let out = core(w, x, hidden, inter, ctx.situ_beta, ctx.situ_linear_beta)?;
+         ensure!(
+diff --git a/crates/avarok-core/src/kimi_k3/cpu_forward/moe.rs b/crates/avarok-core/src/kimi_k3/cpu_forward/moe.rs
+index f71a567..66145ef 100644
+--- a/crates/avarok-core/src/kimi_k3/cpu_forward/moe.rs
++++ b/crates/avarok-core/src/kimi_k3/cpu_forward/moe.rs
+@@ -6,7 +6,6 @@
+ use super::{DenseMlp, K3LayerCtx};
+ use crate::kimi_k3::cpu_weights::MoeWeights;
+ use crate::kimi_k3::latent_moe::{LatentMoeConfig, sigmoid_topk};
+-use crate::kimi_k3::ops::matvec;
+ use crate::kimi_k3::{attnres::rms_norm, cpu_forward::dense};
+ use anyhow::{Result, ensure};
+ 
+@@ -23,7 +22,7 @@ where
+     let hidden = ctx.moe.hidden;
+     let latent = ctx.moe.latent;
+     ensure!(x.len() == hidden, "K3 MoE hidden {} vs {hidden}", x.len());
+-    let mut logits = matvec(&w.router, x, ctx.moe.n_routed, hidden);
++    let mut logits = super::mixer::gemv(ctx, "router", &w.router, x, ctx.moe.n_routed, hidden)?;
+     if let Some(e) = force {
+         logits.fill(0.0);
+         logits[e] = 8.0;
+@@ -33,9 +32,13 @@ where
+         .as_ref()
+         .map(|s| shared_mlp(ctx, s, x))
+         .transpose()?;
+-    let down_k = w.down.len() / latent;
++    let down_k = if !w.down.is_empty() {
++        w.down.len() / latent
++    } else {
++        hidden / ctx.tp_world.max(1) // 896 at tp=8 is hidden/tp, not n_experts
++    };
+     let x_down = hidden_shard(x, down_k, ctx.tp_rank, ctx.tp_world)?;
+-    let mut lat = matvec(&w.down, x_down, latent, down_k);
++    let mut lat = super::mixer::gemv(ctx, "routed_down", &w.down, x_down, latent, down_k)?;
+     // Row-parallel down: each rank saw hidden/tp. 896 here is 7168/8, not experts.
+     if down_k != hidden {
+         reduce(ctx, &mut lat)?;
+@@ -47,8 +50,12 @@ where
+     } else {
+         mixed
+     };
+-    let up_n = w.up.len() / latent;
+-    let routed = matvec(&w.up, &mixed, up_n, latent);
++    let up_n = if !w.up.is_empty() {
++        w.up.len() / latent
++    } else {
++        hidden / ctx.tp_world.max(1) // 896 at tp=8 is hidden/tp, not n_experts
++    };
++    let routed = super::mixer::gemv(ctx, "routed_up", &w.up, &mixed, up_n, latent)?;
+     let mut out = scatter_hidden(routed, hidden, ctx.tp_rank, ctx.tp_world)?;
+     if let Some(s) = shared {
+         ensure!(s.len() == hidden, "K3 shared expert width");
+@@ -63,8 +70,14 @@ where
+ }
+ 
+ fn shared_mlp(ctx: &K3LayerCtx<'_>, s: &DenseMlp, x: &[f32]) -> Result<Vec<f32>> {
+-    let local_inter = s.gate.len() / x.len();
+-    dense::run(ctx, s, x, local_inter)
++    let full = if ctx.shared_intermediate > 0 {
++        ctx.shared_intermediate
++    } else if !s.gate.is_empty() {
++        s.gate.len() / x.len() * ctx.tp_world.max(1)
++    } else {
++        6144
++    };
++    dense::run(ctx, s, x, full)
+ }
+ 
+ fn reduce(ctx: &K3LayerCtx<'_>, v: &mut [f32]) -> Result<()> {
+diff --git a/crates/avarok-core/src/kimi_k3/cpu_weights.rs b/crates/avarok-core/src/kimi_k3/cpu_weights.rs
+index 3f95c09..3932483 100644
+--- a/crates/avarok-core/src/kimi_k3/cpu_weights.rs
++++ b/crates/avarok-core/src/kimi_k3/cpu_weights.rs
+@@ -423,8 +423,16 @@ fn synth_mla(mla: &MlaConfig, hidden: usize, seed: u32) -> MlaWeights {
+         q_b: fill(qk * mla.q_lora_rank, seed, 0.05),
+         kv_a: fill(kv_in * hidden, seed + 1, 0.05),
+         kv_a_ln: ones(mla.kv_lora_rank),
+-        k_b: fill(mla.heads * mla.kv_lora_rank * mla.qk_nope_head_dim, seed + 2, 0.05),
+-        v_b: fill(mla.heads * mla.v_head_dim * mla.kv_lora_rank, seed + 3, 0.05),
++        k_b: fill(
++            mla.heads * mla.kv_lora_rank * mla.qk_nope_head_dim,
++            seed + 2,
++            0.05,
++        ),
++        v_b: fill(
++            mla.heads * mla.v_head_dim * mla.kv_lora_rank,
++            seed + 3,
++            0.05,
++        ),
+         g_proj: fill(dv * hidden, seed + 3, 0.05),
+         o_proj: ident(hidden, dv),
+     }
+diff --git a/crates/spark-model/src/kimi_k3/host_decode.rs b/crates/spark-model/src/kimi_k3/host_decode.rs
+index 75fdfda..cfade7a 100644
+--- a/crates/spark-model/src/kimi_k3/host_decode.rs
++++ b/crates/spark-model/src/kimi_k3/host_decode.rs
+@@ -59,10 +59,20 @@ impl K3BoundLayer {
+         let comm = ctx.comm;
+         let do_reduce = |v: &mut [f32]| tp_allreduce(gpu, comm, hidden, h, tp, v, stream);
+         let reduce_ref: HiddenReduce<'_> = &do_reduce;
+-        let use_dense = match std::env::var("K3_CUDA_DENSE").as_deref() {
+-            Ok("1") => true,
+-            Ok("0") | Err(std::env::VarError::NotPresent) => false,
+-            _ => anyhow::bail!("K3_CUDA_DENSE requires explicit 0 or 1"),
++        let default_gpu = !cfg!(test);
++        let parse_flag = |name: &str, default: bool| -> anyhow::Result<bool> {
++            match std::env::var(name).as_deref() {
++                Ok("0") => Ok(false),
++                Ok("1") => Ok(true),
++                Err(std::env::VarError::NotPresent) => Ok(default),
++                _ => anyhow::bail!("{name} requires explicit 0 or 1"),
++            }
++        };
++        let use_dense = parse_flag("K3_CUDA_DENSE", default_gpu)?;
++        let use_gpu_gemv = parse_flag("K3_CUDA_GEMV", default_gpu)?;
++        let use_iq2_gpu = parse_flag("K3_CUDA_IQ2", default_gpu)?;
++        let gpu_gemv_core = |op: &str, x: &[f32], n: usize, k: usize| {
++            super::gpu_gemv::launch(self, gpu, op, x, n, k, stream)
+         };
+         let dense_core = |_weights: &avarok_core::kimi_k3::cpu_weights::DenseMlp,
+                           x: &[f32],
+@@ -93,6 +103,12 @@ impl K3BoundLayer {
+             rope_theta: ctx.config.rope_theta as f32,
+             reduce_hidden: Some(reduce_ref),
+             dense_mlp: if use_dense { Some(&dense_core) } else { None },
++            gpu_gemv: if use_gpu_gemv {
++                Some(&gpu_gemv_core)
++            } else {
++                None
++            },
++            shared_intermediate: ctx.config.shared_expert_intermediate_size,
+             tp_rank: ctx.config.tp_rank,
+             tp_world: ctx.config.tp_world_size.max(1),
+         };
+@@ -216,6 +232,21 @@ impl K3BoundLayer {
+                                 cfg,
+                                 stream,
+                             )?
++                        } else if super::iq2_cuda::layer_has_iq2(self) && use_iq2_gpu {
++                            super::iq2_cuda::mix_iq2_experts(
++                                self,
++                                gpu,
++                                latent,
++                                ids,
++                                mix_w,
++                                cfg.expert_hidden,
++                                cfg.latent,
++                                ctx.config.tp_rank,
++                                ctx.config.tp_world_size.max(1),
++                                cfg.situ_beta,
++                                cfg.situ_linear_beta,
++                                stream,
++                            )?
+                         } else if super::iq2_moe::layer_has_iq2(self) {
+                             super::iq2_moe::mix_iq2_experts(
+                                 self,
+@@ -369,6 +400,18 @@ fn bind_layer(layer: &K3BoundLayer, gpu: &dyn GpuBackend) -> Result<K3CpuLayer>
+         ) {
+             continue;
+         }
++        let gpu_linears = match std::env::var("K3_CUDA_GEMV").as_deref() {
++            Ok("0") => false,
++            Ok("1") => true,
++            _ => !cfg!(test),
++        };
++        if gpu_linears
++            && meta.dtype == WeightDtype::BF16
++            && !super::gpu_gemv::host_keep_bf16(&meta.name)
++        {
++            got.insert(meta.name.clone(), Vec::new());
++            continue;
++        }
+         got.insert(
+             meta.name.clone(),
+             copy_weight_f32(gpu, w.weight, meta.dtype, meta.numel)?,
+diff --git a/crates/spark-model/src/kimi_k3/iq2_moe.rs b/crates/spark-model/src/kimi_k3/iq2_moe.rs
+index e2040dc..7f631b5 100644
+--- a/crates/spark-model/src/kimi_k3/iq2_moe.rs
++++ b/crates/spark-model/src/kimi_k3/iq2_moe.rs
+@@ -89,10 +89,10 @@ fn dequant_expert_iq2(
+ 
+ /// True when this layer bound IQ2 experts (GGUF keep-packed path).
+ pub fn layer_has_iq2(layer: &K3BoundLayer) -> bool {
+-    layer
+-        .weight_meta
+-        .iter()
+-        .any(|m| m.name.contains("block_sparse_moe.experts.") && matches!(m.dtype, WeightDtype::Iq2Xs | WeightDtype::Iq3Xxs))
++    layer.weight_meta.iter().any(|m| {
++        m.name.contains("block_sparse_moe.experts.")
++            && matches!(m.dtype, WeightDtype::Iq2Xs | WeightDtype::Iq3Xxs)
++    })
+ }
+ 
+ pub fn mix_iq2_experts(
+diff --git a/crates/spark-model/src/kimi_k3/mod.rs b/crates/spark-model/src/kimi_k3/mod.rs
+index f773600..2e8a588 100644
+--- a/crates/spark-model/src/kimi_k3/mod.rs
++++ b/crates/spark-model/src/kimi_k3/mod.rs
+@@ -36,7 +36,9 @@ pub use tp::{supports_tp, tensor_plan};
+ 
+ pub mod bound;
+ mod forward_panic;
++mod gpu_gemv;
+ mod host_decode;
++mod iq2_cuda;
+ mod iq2_moe;
+ pub mod state;
+ pub use avarok_core::kimi_k3::{Ablation, K3CpuModel, K3LayerSpec, greedy_decode};
+diff --git a/crates/spark-model/src/weight_loader/kimi_k3/tp.rs b/crates/spark-model/src/weight_loader/kimi_k3/tp.rs
+index 4ca4246..05bde3e 100644
+--- a/crates/spark-model/src/weight_loader/kimi_k3/tp.rs
++++ b/crates/spark-model/src/weight_loader/kimi_k3/tp.rs
+@@ -207,7 +207,6 @@ fn as_bf16(
+     }
+ }
+ 
+-
+ fn accept_split_kv_b(
+     name: &str,
+     t: &spark_runtime::weights::WeightTensor,
+@@ -238,7 +237,6 @@ fn accept_split_kv_b(
+     })
+ }
+ 
+-
+ #[cfg(test)]
+ mod tests {
+     use super::super::KimiK3WeightLoader;
+diff --git a/crates/spark-model/tests/k3_tp4_composed_cuda.rs b/crates/spark-model/tests/k3_tp4_composed_cuda.rs
+index 43289b1..a75f10a 100644
+--- a/crates/spark-model/tests/k3_tp4_composed_cuda.rs
++++ b/crates/spark-model/tests/k3_tp4_composed_cuda.rs
+@@ -289,6 +289,8 @@ fn k3_tp4_rank_local_composed_graph_reset_and_history() -> Result<()> {
+         rope_theta: c.rope_theta as f32,
+         reduce_hidden: None,
+         dense_mlp: Some(&dense_core),
++        gpu_gemv: None,
++        shared_intermediate: 0,
+         tp_rank: 0,
+         tp_world: 1,
+     };
+diff --git a/crates/spark-runtime/src/weights/gguf.rs b/crates/spark-runtime/src/weights/gguf.rs
+index 892cc34..ff0b770 100644
+--- a/crates/spark-runtime/src/weights/gguf.rs
++++ b/crates/spark-runtime/src/weights/gguf.rs
+@@ -30,6 +30,7 @@ mod dequant_gpu;
+ mod expert_lru;
+ pub mod expert_stream;
+ mod kimi_gguf_load;
++mod kimi_gguf_preflight;
+ mod kimi_tp_contract;
+ mod kimi_tp_slice;
+ mod names;
+@@ -353,7 +354,7 @@ impl super::WeightLoader for GgufLoader {
+         let est = if matches!(arch.as_str(), "kimi-k3" | "kimi_k3" | "kimik3") {
+             let n = kimi_gguf_load::estimate_resident_bytes(self.tp_world_size);
+             tracing::info!(
+-                "K3 GGUF keep-packed preflight: ~{:.2} GiB/rank packed experts+attn (tp={})",
++                "K3 GGUF post-BF16+packed IQ2+F32+KV preflight: ~{:.2} GiB/rank (tp={}; not disk/tp)",
+                 n as f64 / (1024.0 * 1024.0 * 1024.0),
+                 self.tp_world_size.max(1)
+             );
+diff --git a/crates/spark-runtime/src/weights/gguf/dequant_cpu/iq2_xs.rs b/crates/spark-runtime/src/weights/gguf/dequant_cpu/iq2_xs.rs
+index e8bd229..3541232 100644
+--- a/crates/spark-runtime/src/weights/gguf/dequant_cpu/iq2_xs.rs
++++ b/crates/spark-runtime/src/weights/gguf/dequant_cpu/iq2_xs.rs
+@@ -6,144 +6,527 @@
+ #![allow(clippy::needless_range_loop)]
+ 
+ pub static IQ2XS_GRID: [u64; 512] = [
+-    0x0808080808080808, 0x080808080808082b, 0x0808080808081919, 0x0808080808082b08,
+-    0x0808080808082b2b, 0x0808080808190819, 0x0808080808191908, 0x080808080819192b,
+-    0x0808080808192b19, 0x08080808082b0808, 0x08080808082b082b, 0x08080808082b1919,
+-    0x08080808082b2b08, 0x0808080819080819, 0x0808080819081908, 0x080808081908192b,
+-    0x0808080819082b19, 0x0808080819190808, 0x080808081919082b, 0x0808080819191919,
+-    0x0808080819192b08, 0x08080808192b0819, 0x08080808192b1908, 0x080808082b080808,
+-    0x080808082b08082b, 0x080808082b081919, 0x080808082b082b08, 0x080808082b190819,
+-    0x080808082b191908, 0x080808082b192b19, 0x080808082b2b0808, 0x0808081908080819,
+-    0x0808081908081908, 0x080808190808192b, 0x0808081908082b19, 0x0808081908190808,
+-    0x080808190819082b, 0x0808081908191919, 0x0808081908192b08, 0x0808081908192b2b,
+-    0x08080819082b0819, 0x08080819082b1908, 0x0808081919080808, 0x080808191908082b,
+-    0x0808081919081919, 0x0808081919082b08, 0x0808081919190819, 0x0808081919191908,
+-    0x08080819192b0808, 0x08080819192b2b08, 0x080808192b080819, 0x080808192b081908,
+-    0x080808192b190808, 0x0808082b08080808, 0x0808082b0808082b, 0x0808082b08081919,
+-    0x0808082b08082b08, 0x0808082b08190819, 0x0808082b08191908, 0x0808082b082b0808,
+-    0x0808082b19080819, 0x0808082b19081908, 0x0808082b19190808, 0x0808082b19191919,
+-    0x0808082b2b080808, 0x0808082b2b082b2b, 0x0808190808080819, 0x0808190808081908,
+-    0x080819080808192b, 0x0808190808082b19, 0x0808190808190808, 0x080819080819082b,
+-    0x0808190808191919, 0x0808190808192b08, 0x08081908082b0819, 0x08081908082b1908,
+-    0x0808190819080808, 0x080819081908082b, 0x0808190819081919, 0x0808190819082b08,
+-    0x0808190819190819, 0x0808190819191908, 0x080819081919192b, 0x08081908192b0808,
+-    0x080819082b080819, 0x080819082b081908, 0x080819082b190808, 0x0808191908080808,
+-    0x080819190808082b, 0x0808191908081919, 0x0808191908082b08, 0x0808191908190819,
+-    0x0808191908191908, 0x08081919082b0808, 0x0808191919080819, 0x0808191919081908,
+-    0x0808191919190808, 0x08081919192b0819, 0x080819192b080808, 0x0808192b08080819,
+-    0x0808192b08081908, 0x0808192b08190808, 0x0808192b082b192b, 0x0808192b19080808,
+-    0x0808192b1908082b, 0x0808192b2b081908, 0x08082b0808080808, 0x08082b080808082b,
+-    0x08082b0808081919, 0x08082b0808082b08, 0x08082b0808082b2b, 0x08082b0808190819,
+-    0x08082b0808191908, 0x08082b08082b0808, 0x08082b08082b1919, 0x08082b0819080819,
+-    0x08082b0819081908, 0x08082b0819190808, 0x08082b0819192b08, 0x08082b082b080808,
+-    0x08082b082b2b0808, 0x08082b082b2b2b2b, 0x08082b1908080819, 0x08082b1908081908,
+-    0x08082b1908190808, 0x08082b1919080808, 0x08082b192b080819, 0x08082b192b082b19,
+-    0x08082b2b08080808, 0x08082b2b082b0808, 0x08082b2b082b2b08, 0x08082b2b2b19192b,
+-    0x08082b2b2b2b0808, 0x0819080808080819, 0x0819080808081908, 0x081908080808192b,
+-    0x0819080808082b19, 0x0819080808190808, 0x081908080819082b, 0x0819080808191919,
+-    0x0819080808192b08, 0x08190808082b0819, 0x08190808082b1908, 0x0819080819080808,
+-    0x081908081908082b, 0x0819080819081919, 0x0819080819082b08, 0x0819080819190819,
+-    0x0819080819191908, 0x08190808192b0808, 0x08190808192b2b2b, 0x081908082b080819,
+-    0x081908082b081908, 0x081908082b190808, 0x0819081908080808, 0x081908190808082b,
+-    0x0819081908081919, 0x0819081908082b08, 0x0819081908190819, 0x0819081908191908,
+-    0x08190819082b0808, 0x0819081919080819, 0x0819081919081908, 0x0819081919190808,
+-    0x081908192b080808, 0x081908192b191908, 0x081908192b19192b, 0x0819082b08080819,
+-    0x0819082b08081908, 0x0819082b0808192b, 0x0819082b08190808, 0x0819082b19080808,
+-    0x0819082b192b0808, 0x0819190808080808, 0x081919080808082b, 0x0819190808081919,
+-    0x0819190808082b08, 0x0819190808190819, 0x0819190808191908, 0x08191908082b0808,
+-    0x0819190819080819, 0x0819190819081908, 0x0819190819082b19, 0x0819190819190808,
+-    0x08191908192b1908, 0x081919082b080808, 0x0819191908080819, 0x0819191908081908,
+-    0x0819191908190808, 0x0819191919080808, 0x0819192b08080808, 0x0819192b08191908,
+-    0x0819192b19082b19, 0x08192b0808080819, 0x08192b0808081908, 0x08192b0808190808,
+-    0x08192b080819082b, 0x08192b0819080808, 0x08192b0819191908, 0x08192b082b08192b,
+-    0x08192b1908080808, 0x08192b1908081919, 0x08192b19192b192b, 0x08192b2b19190819,
+-    0x08192b2b2b2b2b19, 0x082b080808080808, 0x082b08080808082b, 0x082b080808081919,
+-    0x082b080808082b08, 0x082b080808082b2b, 0x082b080808190819, 0x082b080808191908,
+-    0x082b0808082b0808, 0x082b080819080819, 0x082b080819081908, 0x082b080819190808,
+-    0x082b08082b080808, 0x082b08082b2b0808, 0x082b081908080819, 0x082b081908081908,
+-    0x082b081908190808, 0x082b081919080808, 0x082b081919082b08, 0x082b0819192b1919,
+-    0x082b082b08080808, 0x082b082b082b082b, 0x082b082b2b080808, 0x082b082b2b2b2b08,
+-    0x082b190808080819, 0x082b190808081908, 0x082b190808190808, 0x082b1908082b2b19,
+-    0x082b190819080808, 0x082b191908080808, 0x082b191919080819, 0x082b19191919082b,
+-    0x082b19192b192b19, 0x082b192b08080819, 0x082b192b08192b2b, 0x082b192b2b2b192b,
+-    0x082b2b0808080808, 0x082b2b0808082b08, 0x082b2b0808082b2b, 0x082b2b08082b0808,
+-    0x082b2b0819191919, 0x082b2b082b082b08, 0x082b2b082b2b082b, 0x082b2b19192b2b08,
+-    0x082b2b192b190808, 0x082b2b2b08082b08, 0x082b2b2b082b0808, 0x082b2b2b2b08082b,
+-    0x082b2b2b2b082b08, 0x082b2b2b2b082b2b, 0x1908080808080819, 0x1908080808081908,
+-    0x190808080808192b, 0x1908080808082b19, 0x1908080808190808, 0x190808080819082b,
+-    0x1908080808191919, 0x1908080808192b08, 0x19080808082b0819, 0x19080808082b1908,
+-    0x1908080819080808, 0x190808081908082b, 0x1908080819081919, 0x1908080819082b08,
+-    0x1908080819082b2b, 0x1908080819190819, 0x1908080819191908, 0x19080808192b0808,
+-    0x19080808192b1919, 0x190808082b080819, 0x190808082b081908, 0x190808082b190808,
+-    0x1908081908080808, 0x190808190808082b, 0x1908081908081919, 0x1908081908082b08,
+-    0x1908081908190819, 0x1908081908191908, 0x19080819082b0808, 0x1908081919080819,
+-    0x1908081919081908, 0x1908081919190808, 0x190808192b080808, 0x190808192b081919,
+-    0x190808192b2b082b, 0x1908082b08080819, 0x1908082b08081908, 0x1908082b08190808,
+-    0x1908082b0819082b, 0x1908082b082b2b19, 0x1908082b19080808, 0x1908190808080808,
+-    0x190819080808082b, 0x1908190808081919, 0x1908190808082b08, 0x1908190808190819,
+-    0x1908190808191908, 0x1908190808192b19, 0x19081908082b0808, 0x1908190819080819,
+-    0x1908190819081908, 0x1908190819190808, 0x190819082b080808, 0x190819082b191908,
+-    0x1908191908080819, 0x1908191908081908, 0x1908191908190808, 0x19081919082b1908,
+-    0x1908191919080808, 0x190819192b192b2b, 0x1908192b08080808, 0x1908192b08082b2b,
+-    0x1908192b19081908, 0x1908192b19190808, 0x19082b0808080819, 0x19082b0808081908,
+-    0x19082b0808190808, 0x19082b0819080808, 0x19082b0819081919, 0x19082b0819191908,
+-    0x19082b08192b082b, 0x19082b1908080808, 0x19082b1908190819, 0x19082b1919081908,
+-    0x19082b1919190808, 0x19082b19192b2b19, 0x19082b2b08081908, 0x1919080808080808,
+-    0x191908080808082b, 0x1919080808081919, 0x1919080808082b08, 0x1919080808190819,
+-    0x1919080808191908, 0x19190808082b0808, 0x19190808082b2b08, 0x1919080819080819,
+-    0x1919080819081908, 0x1919080819190808, 0x191908082b080808, 0x1919081908080819,
+-    0x1919081908081908, 0x1919081908190808, 0x1919081908191919, 0x1919081919080808,
+-    0x191908191908082b, 0x1919082b08080808, 0x1919082b19081908, 0x1919082b2b2b2b2b,
+-    0x1919190808080819, 0x1919190808081908, 0x1919190808190808, 0x19191908082b0819,
+-    0x1919190819080808, 0x19191908192b0808, 0x191919082b080819, 0x191919082b2b0819,
+-    0x1919191908080808, 0x1919191908082b08, 0x191919192b080808, 0x191919192b082b08,
+-    0x1919192b082b0819, 0x1919192b192b2b08, 0x1919192b2b2b0819, 0x19192b0808080808,
+-    0x19192b0808191908, 0x19192b0819080819, 0x19192b0819190808, 0x19192b082b192b19,
+-    0x19192b1908192b2b, 0x19192b1919080808, 0x19192b191908082b, 0x19192b2b2b081919,
+-    0x192b080808080819, 0x192b080808081908, 0x192b080808190808, 0x192b080819080808,
+-    0x192b080819191908, 0x192b0808192b082b, 0x192b08082b08192b, 0x192b08082b2b2b19,
+-    0x192b081908080808, 0x192b082b082b1908, 0x192b082b19082b2b, 0x192b082b2b19082b,
+-    0x192b190808080808, 0x192b19080819192b, 0x192b191908190808, 0x192b191919080808,
+-    0x192b191919081919, 0x192b19192b2b1908, 0x192b2b0808080819, 0x192b2b08192b2b2b,
+-    0x192b2b19082b1919, 0x192b2b2b0808192b, 0x192b2b2b19191908, 0x192b2b2b192b082b,
+-    0x2b08080808080808, 0x2b0808080808082b, 0x2b08080808081919, 0x2b08080808082b08,
+-    0x2b08080808190819, 0x2b08080808191908, 0x2b080808082b0808, 0x2b080808082b2b2b,
+-    0x2b08080819080819, 0x2b08080819081908, 0x2b08080819190808, 0x2b0808082b080808,
+-    0x2b0808082b08082b, 0x2b0808082b2b2b08, 0x2b0808082b2b2b2b, 0x2b08081908080819,
+-    0x2b08081908081908, 0x2b0808190808192b, 0x2b08081908190808, 0x2b08081919080808,
+-    0x2b08081919190819, 0x2b08081919192b19, 0x2b08082b08080808, 0x2b08082b082b0808,
+-    0x2b08082b2b080808, 0x2b08082b2b08082b, 0x2b08082b2b2b0808, 0x2b08082b2b2b2b08,
+-    0x2b08190808080819, 0x2b08190808081908, 0x2b08190808190808, 0x2b0819080819082b,
+-    0x2b08190808191919, 0x2b08190819080808, 0x2b081908192b0808, 0x2b0819082b082b19,
+-    0x2b08191908080808, 0x2b08191919081908, 0x2b0819192b2b1919, 0x2b08192b08192b08,
+-    0x2b08192b192b2b2b, 0x2b082b0808080808, 0x2b082b0808082b08, 0x2b082b08082b1919,
+-    0x2b082b0819192b2b, 0x2b082b082b080808, 0x2b082b082b08082b, 0x2b082b082b2b2b08,
+-    0x2b082b190808192b, 0x2b082b2b082b082b, 0x2b082b2b2b080808, 0x2b082b2b2b082b08,
+-    0x2b082b2b2b19192b, 0x2b082b2b2b2b2b08, 0x2b19080808080819, 0x2b19080808081908,
+-    0x2b19080808190808, 0x2b19080819080808, 0x2b1908081919192b, 0x2b1908082b081908,
+-    0x2b19081908080808, 0x2b190819082b082b, 0x2b190819192b1908, 0x2b19082b1919192b,
+-    0x2b19082b2b082b19, 0x2b19190808080808, 0x2b19190808081919, 0x2b19190819081908,
+-    0x2b19190819190808, 0x2b19190819192b08, 0x2b191919082b2b19, 0x2b1919192b190808,
+-    0x2b1919192b19082b, 0x2b19192b19080819, 0x2b192b0819190819, 0x2b192b082b2b192b,
+-    0x2b192b1919082b19, 0x2b192b2b08191919, 0x2b192b2b192b0808, 0x2b2b080808080808,
+-    0x2b2b08080808082b, 0x2b2b080808082b08, 0x2b2b080808082b2b, 0x2b2b0808082b0808,
+-    0x2b2b0808082b2b2b, 0x2b2b08082b2b0808, 0x2b2b081919190819, 0x2b2b081919192b19,
+-    0x2b2b08192b2b192b, 0x2b2b082b08080808, 0x2b2b082b0808082b, 0x2b2b082b08082b08,
+-    0x2b2b082b082b2b2b, 0x2b2b082b2b080808, 0x2b2b082b2b2b0808, 0x2b2b190819080808,
+-    0x2b2b19082b191919, 0x2b2b192b192b1919, 0x2b2b192b2b192b08, 0x2b2b2b0808082b2b,
+-    0x2b2b2b08082b0808, 0x2b2b2b08082b082b, 0x2b2b2b08082b2b08, 0x2b2b2b082b2b0808,
+-    0x2b2b2b082b2b2b08, 0x2b2b2b1908081908, 0x2b2b2b192b081908, 0x2b2b2b192b08192b,
+-    0x2b2b2b2b082b2b08, 0x2b2b2b2b082b2b2b, 0x2b2b2b2b2b190819, 0x2b2b2b2b2b2b2b2b,
++    0x0808080808080808,
++    0x080808080808082b,
++    0x0808080808081919,
++    0x0808080808082b08,
++    0x0808080808082b2b,
++    0x0808080808190819,
++    0x0808080808191908,
++    0x080808080819192b,
++    0x0808080808192b19,
++    0x08080808082b0808,
++    0x08080808082b082b,
++    0x08080808082b1919,
++    0x08080808082b2b08,
++    0x0808080819080819,
++    0x0808080819081908,
++    0x080808081908192b,
++    0x0808080819082b19,
++    0x0808080819190808,
++    0x080808081919082b,
++    0x0808080819191919,
++    0x0808080819192b08,
++    0x08080808192b0819,
++    0x08080808192b1908,
++    0x080808082b080808,
++    0x080808082b08082b,
++    0x080808082b081919,
++    0x080808082b082b08,
++    0x080808082b190819,
++    0x080808082b191908,
++    0x080808082b192b19,
++    0x080808082b2b0808,
++    0x0808081908080819,
++    0x0808081908081908,
++    0x080808190808192b,
++    0x0808081908082b19,
++    0x0808081908190808,
++    0x080808190819082b,
++    0x0808081908191919,
++    0x0808081908192b08,
++    0x0808081908192b2b,
++    0x08080819082b0819,
++    0x08080819082b1908,
++    0x0808081919080808,
++    0x080808191908082b,
++    0x0808081919081919,
++    0x0808081919082b08,
++    0x0808081919190819,
++    0x0808081919191908,
++    0x08080819192b0808,
++    0x08080819192b2b08,
++    0x080808192b080819,
++    0x080808192b081908,
++    0x080808192b190808,
++    0x0808082b08080808,
++    0x0808082b0808082b,
++    0x0808082b08081919,
++    0x0808082b08082b08,
++    0x0808082b08190819,
++    0x0808082b08191908,
++    0x0808082b082b0808,
++    0x0808082b19080819,
++    0x0808082b19081908,
++    0x0808082b19190808,
++    0x0808082b19191919,
++    0x0808082b2b080808,
++    0x0808082b2b082b2b,
++    0x0808190808080819,
++    0x0808190808081908,
++    0x080819080808192b,
++    0x0808190808082b19,
++    0x0808190808190808,
++    0x080819080819082b,
++    0x0808190808191919,
++    0x0808190808192b08,
++    0x08081908082b0819,
++    0x08081908082b1908,
++    0x0808190819080808,
++    0x080819081908082b,
++    0x0808190819081919,
++    0x0808190819082b08,
++    0x0808190819190819,
++    0x0808190819191908,
++    0x080819081919192b,
++    0x08081908192b0808,
++    0x080819082b080819,
++    0x080819082b081908,
++    0x080819082b190808,
++    0x0808191908080808,
++    0x080819190808082b,
++    0x0808191908081919,
++    0x0808191908082b08,
++    0x0808191908190819,
++    0x0808191908191908,
++    0x08081919082b0808,
++    0x0808191919080819,
++    0x0808191919081908,
++    0x0808191919190808,
++    0x08081919192b0819,
++    0x080819192b080808,
++    0x0808192b08080819,
++    0x0808192b08081908,
++    0x0808192b08190808,
++    0x0808192b082b192b,
++    0x0808192b19080808,
++    0x0808192b1908082b,
++    0x0808192b2b081908,
++    0x08082b0808080808,
++    0x08082b080808082b,
++    0x08082b0808081919,
++    0x08082b0808082b08,
++    0x08082b0808082b2b,
++    0x08082b0808190819,
++    0x08082b0808191908,
++    0x08082b08082b0808,
++    0x08082b08082b1919,
++    0x08082b0819080819,
++    0x08082b0819081908,
++    0x08082b0819190808,
++    0x08082b0819192b08,
++    0x08082b082b080808,
++    0x08082b082b2b0808,
++    0x08082b082b2b2b2b,
++    0x08082b1908080819,
++    0x08082b1908081908,
++    0x08082b1908190808,
++    0x08082b1919080808,
++    0x08082b192b080819,
++    0x08082b192b082b19,
++    0x08082b2b08080808,
++    0x08082b2b082b0808,
++    0x08082b2b082b2b08,
++    0x08082b2b2b19192b,
++    0x08082b2b2b2b0808,
++    0x0819080808080819,
++    0x0819080808081908,
++    0x081908080808192b,
++    0x0819080808082b19,
++    0x0819080808190808,
++    0x081908080819082b,
++    0x0819080808191919,
++    0x0819080808192b08,
++    0x08190808082b0819,
++    0x08190808082b1908,
++    0x0819080819080808,
++    0x081908081908082b,
++    0x0819080819081919,
++    0x0819080819082b08,
++    0x0819080819190819,
++    0x0819080819191908,
++    0x08190808192b0808,
++    0x08190808192b2b2b,
++    0x081908082b080819,
++    0x081908082b081908,
++    0x081908082b190808,
++    0x0819081908080808,
++    0x081908190808082b,
++    0x0819081908081919,
++    0x0819081908082b08,
++    0x0819081908190819,
++    0x0819081908191908,
++    0x08190819082b0808,
++    0x0819081919080819,
++    0x0819081919081908,
++    0x0819081919190808,
++    0x081908192b080808,
++    0x081908192b191908,
++    0x081908192b19192b,
++    0x0819082b08080819,
++    0x0819082b08081908,
++    0x0819082b0808192b,
++    0x0819082b08190808,
++    0x0819082b19080808,
++    0x0819082b192b0808,
++    0x0819190808080808,
++    0x081919080808082b,
++    0x0819190808081919,
++    0x0819190808082b08,
++    0x0819190808190819,
++    0x0819190808191908,
++    0x08191908082b0808,
++    0x0819190819080819,
++    0x0819190819081908,
++    0x0819190819082b19,
++    0x0819190819190808,
++    0x08191908192b1908,
++    0x081919082b080808,
++    0x0819191908080819,
++    0x0819191908081908,
++    0x0819191908190808,
++    0x0819191919080808,
++    0x0819192b08080808,
++    0x0819192b08191908,
++    0x0819192b19082b19,
++    0x08192b0808080819,
++    0x08192b0808081908,
++    0x08192b0808190808,
++    0x08192b080819082b,
++    0x08192b0819080808,
++    0x08192b0819191908,
++    0x08192b082b08192b,
++    0x08192b1908080808,
++    0x08192b1908081919,
++    0x08192b19192b192b,
++    0x08192b2b19190819,
++    0x08192b2b2b2b2b19,
++    0x082b080808080808,
++    0x082b08080808082b,
++    0x082b080808081919,
++    0x082b080808082b08,
++    0x082b080808082b2b,
++    0x082b080808190819,
++    0x082b080808191908,
++    0x082b0808082b0808,
++    0x082b080819080819,
++    0x082b080819081908,
++    0x082b080819190808,
++    0x082b08082b080808,
++    0x082b08082b2b0808,
++    0x082b081908080819,
++    0x082b081908081908,
++    0x082b081908190808,
++    0x082b081919080808,
++    0x082b081919082b08,
++    0x082b0819192b1919,
++    0x082b082b08080808,
++    0x082b082b082b082b,
++    0x082b082b2b080808,
++    0x082b082b2b2b2b08,
++    0x082b190808080819,
++    0x082b190808081908,
++    0x082b190808190808,
++    0x082b1908082b2b19,
++    0x082b190819080808,
++    0x082b191908080808,
++    0x082b191919080819,
++    0x082b19191919082b,
++    0x082b19192b192b19,
++    0x082b192b08080819,
++    0x082b192b08192b2b,
++    0x082b192b2b2b192b,
++    0x082b2b0808080808,
++    0x082b2b0808082b08,
++    0x082b2b0808082b2b,
++    0x082b2b08082b0808,
++    0x082b2b0819191919,
++    0x082b2b082b082b08,
++    0x082b2b082b2b082b,
++    0x082b2b19192b2b08,
++    0x082b2b192b190808,
++    0x082b2b2b08082b08,
++    0x082b2b2b082b0808,
++    0x082b2b2b2b08082b,
++    0x082b2b2b2b082b08,
++    0x082b2b2b2b082b2b,
++    0x1908080808080819,
++    0x1908080808081908,
++    0x190808080808192b,
++    0x1908080808082b19,
++    0x1908080808190808,
++    0x190808080819082b,
++    0x1908080808191919,
++    0x1908080808192b08,
++    0x19080808082b0819,
++    0x19080808082b1908,
++    0x1908080819080808,
++    0x190808081908082b,
++    0x1908080819081919,
++    0x1908080819082b08,
++    0x1908080819082b2b,
++    0x1908080819190819,
++    0x1908080819191908,
++    0x19080808192b0808,
++    0x19080808192b1919,
++    0x190808082b080819,
++    0x190808082b081908,
++    0x190808082b190808,
++    0x1908081908080808,
++    0x190808190808082b,
++    0x1908081908081919,
++    0x1908081908082b08,
++    0x1908081908190819,
++    0x1908081908191908,
++    0x19080819082b0808,
++    0x1908081919080819,
++    0x1908081919081908,
++    0x1908081919190808,
++    0x190808192b080808,
++    0x190808192b081919,
++    0x190808192b2b082b,
++    0x1908082b08080819,
++    0x1908082b08081908,
++    0x1908082b08190808,
++    0x1908082b0819082b,
++    0x1908082b082b2b19,
++    0x1908082b19080808,
++    0x1908190808080808,
++    0x190819080808082b,
++    0x1908190808081919,
++    0x1908190808082b08,
++    0x1908190808190819,
++    0x1908190808191908,
++    0x1908190808192b19,
++    0x19081908082b0808,
++    0x1908190819080819,
++    0x1908190819081908,
++    0x1908190819190808,
++    0x190819082b080808,
++    0x190819082b191908,
++    0x1908191908080819,
++    0x1908191908081908,
++    0x1908191908190808,
++    0x19081919082b1908,
++    0x1908191919080808,
++    0x190819192b192b2b,
++    0x1908192b08080808,
++    0x1908192b08082b2b,
++    0x1908192b19081908,
++    0x1908192b19190808,
++    0x19082b0808080819,
++    0x19082b0808081908,
++    0x19082b0808190808,
++    0x19082b0819080808,
++    0x19082b0819081919,
++    0x19082b0819191908,
++    0x19082b08192b082b,
++    0x19082b1908080808,
++    0x19082b1908190819,
++    0x19082b1919081908,
++    0x19082b1919190808,
++    0x19082b19192b2b19,
++    0x19082b2b08081908,
++    0x1919080808080808,
++    0x191908080808082b,
++    0x1919080808081919,
++    0x1919080808082b08,
++    0x1919080808190819,
++    0x1919080808191908,
++    0x19190808082b0808,
++    0x19190808082b2b08,
++    0x1919080819080819,
++    0x1919080819081908,
++    0x1919080819190808,
++    0x191908082b080808,
++    0x1919081908080819,
++    0x1919081908081908,
++    0x1919081908190808,
++    0x1919081908191919,
++    0x1919081919080808,
++    0x191908191908082b,
++    0x1919082b08080808,
++    0x1919082b19081908,
++    0x1919082b2b2b2b2b,
++    0x1919190808080819,
++    0x1919190808081908,
++    0x1919190808190808,
++    0x19191908082b0819,
++    0x1919190819080808,
++    0x19191908192b0808,
++    0x191919082b080819,
++    0x191919082b2b0819,
++    0x1919191908080808,
++    0x1919191908082b08,
++    0x191919192b080808,
++    0x191919192b082b08,
++    0x1919192b082b0819,
++    0x1919192b192b2b08,
++    0x1919192b2b2b0819,
++    0x19192b0808080808,
++    0x19192b0808191908,
++    0x19192b0819080819,
++    0x19192b0819190808,
++    0x19192b082b192b19,
++    0x19192b1908192b2b,
++    0x19192b1919080808,
++    0x19192b191908082b,
++    0x19192b2b2b081919,
++    0x192b080808080819,
++    0x192b080808081908,
++    0x192b080808190808,
++    0x192b080819080808,
++    0x192b080819191908,
++    0x192b0808192b082b,
++    0x192b08082b08192b,
++    0x192b08082b2b2b19,
++    0x192b081908080808,
++    0x192b082b082b1908,
++    0x192b082b19082b2b,
++    0x192b082b2b19082b,
++    0x192b190808080808,
++    0x192b19080819192b,
++    0x192b191908190808,
++    0x192b191919080808,
++    0x192b191919081919,
++    0x192b19192b2b1908,
++    0x192b2b0808080819,
++    0x192b2b08192b2b2b,
++    0x192b2b19082b1919,
++    0x192b2b2b0808192b,
++    0x192b2b2b19191908,
++    0x192b2b2b192b082b,
++    0x2b08080808080808,
++    0x2b0808080808082b,
++    0x2b08080808081919,
++    0x2b08080808082b08,
++    0x2b08080808190819,
++    0x2b08080808191908,
++    0x2b080808082b0808,
++    0x2b080808082b2b2b,
++    0x2b08080819080819,
++    0x2b08080819081908,
++    0x2b08080819190808,
++    0x2b0808082b080808,
++    0x2b0808082b08082b,
++    0x2b0808082b2b2b08,
++    0x2b0808082b2b2b2b,
++    0x2b08081908080819,
++    0x2b08081908081908,
++    0x2b0808190808192b,
++    0x2b08081908190808,
++    0x2b08081919080808,
++    0x2b08081919190819,
++    0x2b08081919192b19,
++    0x2b08082b08080808,
++    0x2b08082b082b0808,
++    0x2b08082b2b080808,
++    0x2b08082b2b08082b,
++    0x2b08082b2b2b0808,
++    0x2b08082b2b2b2b08,
++    0x2b08190808080819,
++    0x2b08190808081908,
++    0x2b08190808190808,
++    0x2b0819080819082b,
++    0x2b08190808191919,
++    0x2b08190819080808,
++    0x2b081908192b0808,
++    0x2b0819082b082b19,
++    0x2b08191908080808,
++    0x2b08191919081908,
++    0x2b0819192b2b1919,
++    0x2b08192b08192b08,
++    0x2b08192b192b2b2b,
++    0x2b082b0808080808,
++    0x2b082b0808082b08,
++    0x2b082b08082b1919,
++    0x2b082b0819192b2b,
++    0x2b082b082b080808,
++    0x2b082b082b08082b,
++    0x2b082b082b2b2b08,
++    0x2b082b190808192b,
++    0x2b082b2b082b082b,
++    0x2b082b2b2b080808,
++    0x2b082b2b2b082b08,
++    0x2b082b2b2b19192b,
++    0x2b082b2b2b2b2b08,
++    0x2b19080808080819,
++    0x2b19080808081908,
++    0x2b19080808190808,
++    0x2b19080819080808,
++    0x2b1908081919192b,
++    0x2b1908082b081908,
++    0x2b19081908080808,
++    0x2b190819082b082b,
++    0x2b190819192b1908,
++    0x2b19082b1919192b,
++    0x2b19082b2b082b19,
++    0x2b19190808080808,
++    0x2b19190808081919,
++    0x2b19190819081908,
++    0x2b19190819190808,
++    0x2b19190819192b08,
++    0x2b191919082b2b19,
++    0x2b1919192b190808,
++    0x2b1919192b19082b,
++    0x2b19192b19080819,
++    0x2b192b0819190819,
++    0x2b192b082b2b192b,
++    0x2b192b1919082b19,
++    0x2b192b2b08191919,
++    0x2b192b2b192b0808,
++    0x2b2b080808080808,
++    0x2b2b08080808082b,
++    0x2b2b080808082b08,
++    0x2b2b080808082b2b,
++    0x2b2b0808082b0808,
++    0x2b2b0808082b2b2b,
++    0x2b2b08082b2b0808,
++    0x2b2b081919190819,
++    0x2b2b081919192b19,
++    0x2b2b08192b2b192b,
++    0x2b2b082b08080808,
++    0x2b2b082b0808082b,
++    0x2b2b082b08082b08,
++    0x2b2b082b082b2b2b,
++    0x2b2b082b2b080808,
++    0x2b2b082b2b2b0808,
++    0x2b2b190819080808,
++    0x2b2b19082b191919,
++    0x2b2b192b192b1919,
++    0x2b2b192b2b192b08,
++    0x2b2b2b0808082b2b,
++    0x2b2b2b08082b0808,
++    0x2b2b2b08082b082b,
++    0x2b2b2b08082b2b08,
++    0x2b2b2b082b2b0808,
++    0x2b2b2b082b2b2b08,
++    0x2b2b2b1908081908,
++    0x2b2b2b192b081908,
++    0x2b2b2b192b08192b,
++    0x2b2b2b2b082b2b08,
++    0x2b2b2b2b082b2b2b,
++    0x2b2b2b2b2b190819,
++    0x2b2b2b2b2b2b2b2b,
+ ];
+ pub static KSIGNS_IQ2XS: [u8; 128] = [
+-    0, 129, 130, 3, 132, 5, 6, 135, 136, 9, 10, 139, 12, 141, 142, 15,
+-    144, 17, 18, 147, 20, 149, 150, 23, 24, 153, 154, 27, 156, 29, 30, 159,
+-    160, 33, 34, 163, 36, 165, 166, 39, 40, 169, 170, 43, 172, 45, 46, 175,
+-    48, 177, 178, 51, 180, 53, 54, 183, 184, 57, 58, 187, 60, 189, 190, 63,
+-    192, 65, 66, 195, 68, 197, 198, 71, 72, 201, 202, 75, 204, 77, 78, 207,
+-    80, 209, 210, 83, 212, 85, 86, 215, 216, 89, 90, 219, 92, 221, 222, 95,
+-    96, 225, 226, 99, 228, 101, 102, 231, 232, 105, 106, 235, 108, 237, 238, 111,
+-    240, 113, 114, 243, 116, 245, 246, 119, 120, 249, 250, 123, 252, 125, 126, 255,
++    0, 129, 130, 3, 132, 5, 6, 135, 136, 9, 10, 139, 12, 141, 142, 15, 144, 17, 18, 147, 20, 149,
++    150, 23, 24, 153, 154, 27, 156, 29, 30, 159, 160, 33, 34, 163, 36, 165, 166, 39, 40, 169, 170,
++    43, 172, 45, 46, 175, 48, 177, 178, 51, 180, 53, 54, 183, 184, 57, 58, 187, 60, 189, 190, 63,
++    192, 65, 66, 195, 68, 197, 198, 71, 72, 201, 202, 75, 204, 77, 78, 207, 80, 209, 210, 83, 212,
++    85, 86, 215, 216, 89, 90, 219, 92, 221, 222, 95, 96, 225, 226, 99, 228, 101, 102, 231, 232,
++    105, 106, 235, 108, 237, 238, 111, 240, 113, 114, 243, 116, 245, 246, 119, 120, 249, 250, 123,
++    252, 125, 126, 255,
+ ];
+ pub static KMASK_IQ2XS: [u8; 8] = [1, 2, 4, 8, 16, 32, 64, 128];
+ 
+@@ -188,8 +571,16 @@ pub fn dequant_iq2_xs(blk: &[u8], out: &mut [f32]) {
+ }
+ 
+ /// Dequant an entire row-major IQ2_XS tensor (`n * k` weights, `k` multiple of 256).
+-pub fn dequant_iq2_xs_tensor(raw: &[u8], n: usize, k: usize, out: &mut [f32]) -> anyhow::Result<()> {
+-    anyhow::ensure!(k > 0 && k % QK == 0, "IQ2_XS K={k} must be multiple of {QK}");
++pub fn dequant_iq2_xs_tensor(
++    raw: &[u8],
++    n: usize,
++    k: usize,
++    out: &mut [f32],
++) -> anyhow::Result<()> {
++    anyhow::ensure!(
++        k > 0 && k % QK == 0,
++        "IQ2_XS K={k} must be multiple of {QK}"
++    );
+     anyhow::ensure!(out.len() >= n * k, "IQ2_XS out too small");
+     let blocks_per_row = k / QK;
+     let row_bytes = blocks_per_row * BLOCK_BYTES;
+diff --git a/crates/spark-runtime/src/weights/gguf/dequant_cpu/iq3_xxs.rs b/crates/spark-runtime/src/weights/gguf/dequant_cpu/iq3_xxs.rs
+index 7fc2155..59e9816 100644
+--- a/crates/spark-runtime/src/weights/gguf/dequant_cpu/iq3_xxs.rs
++++ b/crates/spark-runtime/src/weights/gguf/dequant_cpu/iq3_xxs.rs
+@@ -67,8 +67,16 @@ pub fn dequant_iq3_xxs(blk: &[u8], out: &mut [f32]) {
+             let g2 = IQ3XXS_GRID[qs[8 * ib32 + 2 * l + 1] as usize].to_le_bytes();
+             let group_base = weight_base + l * 8;
+             for j in 0..4 {
+-                let s0 = if signs & KMASK_IQ2XS[j] != 0 { -1.0 } else { 1.0 };
+-                let s1 = if signs & KMASK_IQ2XS[j + 4] != 0 { -1.0 } else { 1.0 };
++                let s0 = if signs & KMASK_IQ2XS[j] != 0 {
++                    -1.0
++                } else {
++                    1.0
++                };
++                let s1 = if signs & KMASK_IQ2XS[j + 4] != 0 {
++                    -1.0
++                } else {
++                    1.0
++                };
+                 out[group_base + j] = db * g1[j] as f32 * s0;
+                 out[group_base + 4 + j] = db * g2[j] as f32 * s1;
+             }
+@@ -77,8 +85,16 @@ pub fn dequant_iq3_xxs(blk: &[u8], out: &mut [f32]) {
+ }
+ 
+ /// Dequant a row-major IQ3_XXS tensor (`n * k` weights, `k` multiple of 256).
+-pub fn dequant_iq3_xxs_tensor(raw: &[u8], n: usize, k: usize, out: &mut [f32]) -> anyhow::Result<()> {
+-    anyhow::ensure!(k > 0 && k % QK == 0, "IQ3_XXS K={k} must be multiple of {QK}");
++pub fn dequant_iq3_xxs_tensor(
++    raw: &[u8],
++    n: usize,
++    k: usize,
++    out: &mut [f32],
++) -> anyhow::Result<()> {
++    anyhow::ensure!(
++        k > 0 && k % QK == 0,
++        "IQ3_XXS K={k} must be multiple of {QK}"
++    );
+     anyhow::ensure!(out.len() >= n * k, "IQ3_XXS out too small");
+     let blocks_per_row = k / QK;
+     let row_bytes = blocks_per_row * BLOCK_BYTES;
+@@ -150,7 +166,11 @@ mod tests {
+         let mag = 4.0f32;
+         let scale = d * 0.25;
+         for (i, &v) in out.iter().enumerate() {
+-            let sign = if sign0 & KMASK_IQ2XS[i % 8] != 0 { -1.0 } else { 1.0 };
++            let sign = if sign0 & KMASK_IQ2XS[i % 8] != 0 {
++                -1.0
++            } else {
++                1.0
++            };
+             let expected = scale * mag * sign;
+             assert!((v - expected).abs() < 1e-4, "out[{i}]={v} want {expected}");
+         }
+diff --git a/crates/spark-runtime/src/weights/gguf/kimi_gguf_load.rs b/crates/spark-runtime/src/weights/gguf/kimi_gguf_load.rs
+index af69b33..321dcea 100644
+--- a/crates/spark-runtime/src/weights/gguf/kimi_gguf_load.rs
++++ b/crates/spark-runtime/src/weights/gguf/kimi_gguf_load.rs
+@@ -273,9 +273,7 @@ pub(super) fn upload_expert_stack(
+ }
+ 
+ pub(super) fn estimate_resident_bytes(tp_world: usize) -> usize {
+-    let tp = tp_world.max(1);
+-    let disk = 802usize * 1024 * 1024 * 1024;
+-    disk / tp + 12usize * 1024 * 1024 * 1024
++    super::kimi_gguf_preflight::estimate_resident_bytes(tp_world)
+ }
+ 
+ #[cfg(test)]
+diff --git a/crates/spark-runtime/src/weights/gguf/kimi_tp_contract_tests.rs b/crates/spark-runtime/src/weights/gguf/kimi_tp_contract_tests.rs
+index 8d40388..7170a21 100644
+--- a/crates/spark-runtime/src/weights/gguf/kimi_tp_contract_tests.rs
++++ b/crates/spark-runtime/src/weights/gguf/kimi_tp_contract_tests.rs
+@@ -201,3 +201,77 @@ fn ops_and_hopper_kernels_do_not_hardcode_the_production_widths() {
+         }
+     }
+ }
++
++#[test]
++fn gpu_forward_shape_contract_prints_green() {
++    let hidden_local = HIDDEN / TP; // 896 = hidden/tp, not n_experts
++    assert_eq!(hidden_local, 896);
++    assert_eq!(N_EXPERTS, 896);
++    let shexp_local = 6144 / TP; // 768
++    let dense_local = 33792 / TP; // 4224
++    let heads_local = 96 / TP; // 12
++    let qkv_local = heads_local * 128; // 1536
++    let ops: [(&str, &[usize], &str, &str); 12] = [
++        ("q/k/v/g_proj", &[qkv_local, HIDDEN], "rows:heads", "n/a"),
++        (
++            "o_proj",
++            &[HIDDEN, qkv_local],
++            "cols:head_concat_then_allreduce",
++            "n/a",
++        ),
++        ("q_a_proj", &[1536, HIDDEN], "replicated", "n/a"),
++        ("q_b_proj", &[heads_local * 192, 1536], "rows:heads", "n/a"),
++        ("attn_k_b", &[heads_local, 512, 128], "rows:heads", "n/a"),
++        ("attn_v_b", &[heads_local, 128, 512], "rows:heads", "n/a"),
++        (
++            "routed_down",
++            &[LATENT, hidden_local],
++            "cols:hidden_over_tp",
++            "hidden/tp",
++        ),
++        (
++            "routed_up",
++            &[hidden_local, LATENT],
++            "rows:hidden_over_tp",
++            "hidden/tp",
++        ),
++        (
++            "shexp gate/up",
++            &[shexp_local, HIDDEN],
++            "rows:out_features",
++            "n/a",
++        ),
++        (
++            "shexp down",
++            &[HIDDEN, shexp_local],
++            "cols:in_features_then_allreduce",
++            "n/a",
++        ),
++        (
++            "dense L0 gate/up",
++            &[dense_local, HIDDEN],
++            "rows:out_features",
++            "n/a",
++        ),
++        (
++            "expert w1 (one of 896)",
++            &[EXPERT_INTER / TP, LATENT],
++            "rows:out_features",
++            "n_experts present",
++        ),
++    ];
++    println!("op | on-rank shape | numel | op expects | tp axis | 896 meaning");
++    for (name, shape, axis, eight96) in ops {
++        let numel: usize = shape.iter().product();
++        println!("{name} | {shape:?} | {numel} | {numel} | {axis} | {eight96}");
++        assert_ne!(
++            shape,
++            &[LATENT, HIDDEN][..],
++            "routed down must not be 3584x7168 on-rank"
++        );
++    }
++    let down = contract(down_name(), &[LATENT, HIDDEN], TP).unwrap();
++    assert_eq!(down.after_tp, vec![LATENT, hidden_local]);
++    assert_eq!(down.numel_on_rank, LATENT * hidden_local);
++    assert_ne!(down.numel_on_rank, LATENT * HIDDEN);
++}
+diff --git a/crates/spark-runtime/src/weights/gguf/names.rs b/crates/spark-runtime/src/weights/gguf/names.rs
+index ef6b090..d1b79ef 100644
+--- a/crates/spark-runtime/src/weights/gguf/names.rs
++++ b/crates/spark-runtime/src/weights/gguf/names.rs
+@@ -21,9 +21,9 @@ mod deepseek41;
+ mod kimi_k3;
+ 
+ pub use deepseek41::deepseek41_deferred_name;
+-pub use kimi_k3::kimi_k3_expert_name;
+-pub use kimi_k3::kimi_k3_deferred_name;
+ use deepseek41::translate_deepseek41;
++pub use kimi_k3::kimi_k3_deferred_name;
++pub use kimi_k3::kimi_k3_expert_name;
+ use kimi_k3::translate_kimi_k3;
+ 
+ /// Result of translating one GGUF tensor name.
+diff --git a/crates/spark-runtime/src/weights/gguf/names/kimi_k3.rs b/crates/spark-runtime/src/weights/gguf/names/kimi_k3.rs
+index 636455d..23ec0ed 100644
+--- a/crates/spark-runtime/src/weights/gguf/names/kimi_k3.rs
++++ b/crates/spark-runtime/src/weights/gguf/names/kimi_k3.rs
+@@ -125,7 +125,6 @@ pub fn kimi_k3_expert_name(layer: usize, proj: &str, e: usize) -> String {
+     format!("{HF}.layers.{layer}.block_sparse_moe.experts.{e}.{w}.weight")
+ }
+ 
+-
+ /// Stacked expert tensors stay on disk (DeferredTensor). Non-experts stay
+ /// keep-packed on GPU. 896 x 92 x 3 experts will not fit as BF16.
+ pub fn kimi_k3_deferred_name(gguf_name: &str) -> Option<String> {
+diff --git a/crates/spark-runtime/src/weights/gguf/sidecar.rs b/crates/spark-runtime/src/weights/gguf/sidecar.rs
+index 55c4f2a..2127e73 100644
+--- a/crates/spark-runtime/src/weights/gguf/sidecar.rs
++++ b/crates/spark-runtime/src/weights/gguf/sidecar.rs
+@@ -320,7 +320,7 @@ pub fn load_pass(
+         };
+ 
+         match target {
+-                        names::GgufName::Direct(hf_name) => {
++            names::GgufName::Direct(hf_name) => {
+                 weights.insert(
+                     hf_name.clone(),
+                     WeightTensor {

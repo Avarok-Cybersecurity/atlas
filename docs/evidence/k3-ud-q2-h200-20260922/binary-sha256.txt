@@ -1,0 +1,2 @@
+bf74955574d401e3979acbea978778f33deedb264dc0f6cb627eaf48f30505ce  /data/workspace/atlas/target/k3-hopper/release/spark
+-rwxr-xr-x 2 shadeform shadeform 87848864 Sep 22 01:32 /data/workspace/atlas/target/k3-hopper/release/spark

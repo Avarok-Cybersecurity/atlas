@@ -1,0 +1,100 @@
+│ prefill_paged_nvfp4                93567af5ec44   -                    N
+│ prefill_paged_turbo2               446e9b812ce0   -                    N
+│ prefill_paged_turbo3               c7a1760f4e2f   -                    N
+│ prefill_paged_turbo3k_turbo8v      7a0791515ba8   -                    N
+│ prefill_paged_turbo4               76b75eed6d7a   -                    N
+│ prefill_paged_turbo4k_turbo3v      e09fa177e278   -                    N
+│ prefill_paged_turbo4k_turbo8v      c5a33cdc40e1   -                    N
+│ prefill_paged_turbo8               21b47042e410   -                    N
+│ q2_0_gemv                          3b90b298cad9   -                    N
+│ q2_0_gemv_vec                      3bc85dd41912   -                    N
+│ quant_rowwise_fp8                  2dc6e2fc87fa   -                    N
+│ quantize_bf16_to_fp8_blockscaled   f6079c52289f   -                    N
+│ quantize_nvfp4                     8085d542699a   used                 N
+│ relu2                              6729a9d6c360   -                    N
+│ reshape_and_cache                  810d5b214236   used                 N
+│ reshape_and_cache_fused_k_fp8      ec4be032e26d   -                    N
+│ reshape_and_cache_turbo            acbce8fc2902   -                    N
+│ residual_add                       d801cf5b5d95   -                    N
+│ rms_norm_vanilla                   ab7b5c037068   used                 N
+│ rope                               3721c393cea8   -                    N
+│ rope_mrope_interleaved             baf4c116039b   -                    N
+│ silu_mul_strided                   50c89dc8ff45   -                    N
+│ ssm_ba_gates_hopper                9ca02d7dfca1   -                    N
+│ ssm_h_dtype                        a31137285785   used                 N
+│ ssm_preprocess                     97d38f2c30fd   -                    N
+│ ssm_state_norm                     7711dfa14e00   used                 N
+│ token_overlay                      d00c6553e944   used                 N
+│ tq_plus_innerq_apply               6e01c306e8d6   -                    N
+│ transpose_u8                       7ae1ca666eeb   -                    N
+│ vector_add                         9252874fa550   -                    N
+│ w4a16                              e7b6ef240496   used                 N
+│ w4a16_fp8_ldmab                    092a455a41a7   -                    N
+│ w4a16_gemv                         88fb2f364b1d   used                 N
+│ w4a16_gemv_fused                   1f86e834ca1f   -                    N
+│ w8a16_gemm                         43ce6047a4b4   -                    N
+│ w8a16_gemm_m16                     26fcb7941aa6   -                    N
+│ w8a16_gemm_pipelined               ed1f65e08529   -                    N
+│ w8a16_gemm_t                       34a4ee711838   -                    N
+│ w8a16_gemm_t_m128                  0c15ac65e1c6   -                    N
+│ w8a16_gemv                         82b0342321d3   -                    N
+│ w8a16_gemv_batch4                  a846ce10b556   -                    N
+│ w8a16_gemv_fused                   42a8dbc763a0   -                    N
+│ w8a16_gemv_ncol                    9034bea7ea2e   -                    N
+│ wht_bf16                           8e90d66ff0bf   -                    N
+│ widen_block_scale_f32              d77b62100d5f   -                    N
+└─
+
+[2m2026-09-22T01:58:15.331374Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::runtime[0m[2m:[0m EOS tokens (from config.json): [0]
+[2m2026-09-22T01:58:15.331380Z[0m [33m WARN[0m [2mspark::main_modules::serve_phases::runtime[0m[2m:[0m generation_config.json absent or unparseable at /data/workspace/models/kimi-k3-q2/UD-Q2_K_XL/generation_config.json; sampling defaults fall back to the MODEL.toml [sampling.non_thinking] preset
+[2m2026-09-22T01:58:15.331384Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::runtime[0m[2m:[0m Default sampling: temperature=0.7, top_k=20, top_p=0.95, top_n_sigma=1, min_p=0.08
+[2m2026-09-22T01:58:15.692482Z[0m [33m WARN[0m [2mspark::tokenizer::chat_impl[0m[2m:[0m Official Kimi K3: raw completions only; XTML chat is unavailable
+[2m2026-09-22T01:58:15.692676Z[0m [32m INFO[0m [2mspark::tokenizer::chat_impl[0m[2m:[0m Loaded tokenizer from /data/workspace/models/kimi-k3-q2/UD-Q2_K_XL/tokenizer.json
+[2m2026-09-22T01:58:15.692774Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::tokenizer_runtime[0m[2m:[0m Reasoning parser: qwen (default for thinking-capable model)
+[2m2026-09-22T01:58:15.692985Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::tokenizer_runtime[0m[2m:[0m Code-fence token: 3251 (``` — F2 fence guard active)
+[2m2026-09-22T01:58:15.752395Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::tokenizer_runtime[0m[2m:[0m Numeric-token mask: 1110/163840 ids classified as digit-runs (digit-normalized content-loop path active)
+[2m2026-09-22T01:58:15.808078Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::tokenizer_runtime[0m[2m:[0m Boundary-token mask: 1788/163840 ids end in a newline / sentence boundary (Phase-C rollback-to-boundary active)
+[2m2026-09-22T01:58:15.863394Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::tokenizer_runtime[0m[2m:[0m Mid-word token mask: 157080/163840 ids end in alphanumeric (mid-word </think> defer active during thinking)
+[2m2026-09-22T01:58:15.863524Z[0m [33m WARN[0m [2mspark::main_modules::serve_phases::tokenizer_runtime[0m[2m:[0m Tool call start token unresolved for <tool_call> — require_tool_call / suppress / force-emit-after-think will be no-ops
+[2m2026-09-22T01:58:16.051831Z[0m [32m INFO[0m [2mspark::grammar::engine[0m[2m:[0m Grammar: detected tokenizer vocab_type=byte_level, add_prefix_space=false
+[2m2026-09-22T01:58:16.188171Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::tokenizer_runtime[0m[2m:[0m Grammar engine initialized (vocab_size=163840, vocab_type=auto-detected from tokenizer)
+[2m2026-09-22T01:58:16.195193Z[0m [32m INFO[0m [2mspark::grammar::mask_cache[0m[2m:[0m Grammar: no usable mask snapshot at /data/workspace/models/kimi-k3-q2/UD-Q2_K_XL/.avarok-grammar-cache/masks-2dc8d05973f64882.bin; the first grammar of this process will compute and persist one (#918)
+[2m2026-09-22T01:58:16.196178Z[0m [32m INFO[0m [2mspark::main_modules::serve_load[0m[2m:[0m EP v1 active: forcing max_batch_size=1
+[2m2026-09-22T01:58:16.196188Z[0m [32m INFO[0m [2mspark::main_modules::serve_load[0m[2m:[0m Scheduling policy: FIFO
+[2m2026-09-22T01:58:16.196456Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::runtime[0m[2m:[0m Tool call parser: disabled (no mapping for model_type 'kimi_k3')
+[2m2026-09-22T01:58:16.196466Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::runtime[0m[2m:[0m Response store: max_entries=10000, ttl=86400s, persist=memory-only
+[2m2026-09-22T01:58:16.196487Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::runtime[0m[2m:[0m Model behavior: max_thinking_budget=256, thinking_default=false
+[2m2026-09-22T01:58:16.196491Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::runtime[0m[2m:[0m Model behavior: watchdog rollback+re-steer ENABLED (cap 2 per sequence)
+[2m2026-09-22T01:58:16.196656Z[0m [32m INFO[0m [2mspark::scheduler[0m[2m:[0m Scheduler started (batched mode, max_batch=1, mtp=false, ngram=false, num_drafts=0, policy=fifo, chunked_prefill=true, max_prefill_tokens=512)
+[2m2026-09-22T01:58:16.198131Z[0m [32m INFO[0m [2mspark::scheduler[0m[2m:[0m Swap space: 3 GB at /tmp/avarok-swap-223853
+[2m2026-09-22T01:58:16.199122Z[0m [32m INFO[0m [2mspark::main_modules::serve_router[0m[2m:[0m API reachable only from this machine (loopback). To expose on the LAN pass --bind 0.0.0.0; combine with --require-auth and --auth-tokens-file for non-trusted networks.
+[2m2026-09-22T01:58:16.199252Z[0m [32m INFO[0m [2mspark::main_modules::serve_router[0m[2m:[0m Server live and ready at 127.0.0.1:18889 running kimi-k3
+[2m2026-09-22T01:58:19.584485Z[0m [32m INFO[0m [2mspark::scheduler::prefill_a_step[0m[2m:[0m Chunked prefill start: 14 prompt tokens, chunk_size=14, max_tokens=16
+[2m2026-09-22T01:58:20.204654Z[0m [32m INFO[0m [2mspark_model::kimi_k3::host_decode[0m[2m:[0m K3 LinearAttention decode via CUDA kda_decode
+[2m2026-09-22T01:58:34.039660Z[0m [32m INFO[0m [2mspark_model::kimi_k3::host_decode[0m[2m:[0m K3 FullAttention decode via CUDA mla_decode
+[2m2026-09-22T02:07:51.212081Z[0m [32m INFO[0m [2mspark::scheduler::prefill_a_step[0m[2m:[0m Prefill first token: 11
+[2m2026-09-22T02:07:51.212129Z[0m [32m INFO[0m [2mspark::scheduler::phase_start_prefills[0m[2m:[0m Prefilled (single chunk): seq_len=14, remaining=15
+[2m2026-09-22T02:08:36.490273Z[0m [33m WARN[0m [2mspark::scheduler::mod_helpers[0m[2m:[0m Request TIMEOUT: response TRUNCATED by the server deadline (--request-timeout / per-request `timeout`); reporting finish_reason="timeout", not "length" [3mslot[0m[2m=[0m0 [3msession_hash[0m[2m=[0m9725679947704784863 [3melapsed_s[0m[2m=[0m616.905781136 [3mbudget_s[0m[2m=[0m299.999813469 [3memitted_tokens[0m[2m=[0m2 [3mrequested_tokens[0m[2m=[0m16
+[2m2026-09-22T02:08:36.490343Z[0m [32m INFO[0m [2mspark::scheduler::mtp_accept_debug[0m[2m:[0m Done: 2 tokens (timeout) 0.0 tok/s, TTFT=571627.7ms, serial=1.00 mtp=0.00 p1=0.000 mean_na=0.000 tok_step=1.000 regime_reprobes=0
+[2m2026-09-22T02:09:48.843835Z[0m [32m INFO[0m [2mspark::scheduler::prefill_a_step[0m[2m:[0m Chunked prefill start: 14 prompt tokens, chunk_size=14, max_tokens=32
+[2m2026-09-22T02:19:02.770699Z[0m [32m INFO[0m [2mspark::scheduler::prefill_a_step[0m[2m:[0m Prefill first token: 11
+[2m2026-09-22T02:19:02.770749Z[0m [32m INFO[0m [2mspark::scheduler::phase_start_prefills[0m[2m:[0m Prefilled (single chunk): seq_len=14, remaining=31
+[2m2026-09-22T02:19:47.829711Z[0m [33m WARN[0m [2mspark::scheduler::mod_helpers[0m[2m:[0m Request TIMEOUT: response TRUNCATED by the server deadline (--request-timeout / per-request `timeout`); reporting finish_reason="timeout", not "length" [3mslot[0m[2m=[0m0 [3msession_hash[0m[2m=[0m9725679947704784863 [3melapsed_s[0m[2m=[0m598.985880015 [3mbudget_s[0m[2m=[0m299.999719174 [3memitted_tokens[0m[2m=[0m2 [3mrequested_tokens[0m[2m=[0m32
+[2m2026-09-22T02:19:47.829795Z[0m [32m INFO[0m [2mspark::scheduler::mtp_accept_debug[0m[2m:[0m Done: 2 tokens (timeout) 0.0 tok/s, TTFT=553926.9ms, serial=1.00 mtp=0.00 p1=0.000 mean_na=0.000 tok_step=1.000 regime_reprobes=0
+[2m2026-09-22T02:19:47.840132Z[0m [32m INFO[0m [2mspark::scheduler::prefill_a_step[0m[2m:[0m Chunked prefill start: 8 prompt tokens, chunk_size=8, max_tokens=16
+[2m2026-09-22T02:25:06.636328Z[0m [32m INFO[0m [2mspark::scheduler::prefill_a_step[0m[2m:[0m Prefill first token: 16978
+[2m2026-09-22T02:25:06.636389Z[0m [32m INFO[0m [2mspark::scheduler::phase_start_prefills[0m[2m:[0m Prefilled (single chunk): seq_len=8, remaining=15
+[2m2026-09-22T02:25:50.213618Z[0m [33m WARN[0m [2mspark::scheduler::mod_helpers[0m[2m:[0m Request TIMEOUT: response TRUNCATED by the server deadline (--request-timeout / per-request `timeout`); reporting finish_reason="timeout", not "length" [3mslot[0m[2m=[0m0 [3msession_hash[0m[2m=[0m11938550335103736831 [3melapsed_s[0m[2m=[0m362.373482086 [3mbudget_s[0m[2m=[0m25.846350383 [3memitted_tokens[0m[2m=[0m2 [3mrequested_tokens[0m[2m=[0m16
+[2m2026-09-22T02:25:50.213690Z[0m [33m WARN[0m [2mspark::scheduler::lifecycle[0m[2m:[0m finish_sequence: blocking response send failed (receiver dropped)
+[2m2026-09-22T02:25:50.213700Z[0m [32m INFO[0m [2mspark::scheduler::mtp_accept_debug[0m[2m:[0m Done: 2 tokens (timeout) 0.0 tok/s, TTFT=318796.2ms, serial=1.00 mtp=0.00 p1=0.000 mean_na=0.000 tok_step=1.000 regime_reprobes=0
+[2m2026-09-22T02:25:50.224161Z[0m [32m INFO[0m [2mspark::scheduler::prefill_a_step[0m[2m:[0m Chunked prefill start: 8 prompt tokens, chunk_size=8, max_tokens=8
+[2m2026-09-22T02:31:09.358942Z[0m [32m INFO[0m [2mspark::scheduler::prefill_a_step[0m[2m:[0m Prefill first token: 16978
+[2m2026-09-22T02:31:09.359004Z[0m [32m INFO[0m [2mspark::scheduler::phase_start_prefills[0m[2m:[0m Prefilled (single chunk): seq_len=8, remaining=7
+[2m2026-09-22T02:31:54.946583Z[0m [33m WARN[0m [2mspark::scheduler::mod_helpers[0m[2m:[0m Request TIMEOUT: response TRUNCATED by the server deadline (--request-timeout / per-request `timeout`); reporting finish_reason="timeout", not "length" [3mslot[0m[2m=[0m0 [3msession_hash[0m[2m=[0m11938550335103736831 [3melapsed_s[0m[2m=[0m364.722418021 [3mbudget_s[0m[2m=[0m0.0 [3memitted_tokens[0m[2m=[0m2 [3mrequested_tokens[0m[2m=[0m8
+[2m2026-09-22T02:31:54.946682Z[0m [32m INFO[0m [2mspark::scheduler::mtp_accept_debug[0m[2m:[0m Done: 2 tokens (timeout) 0.0 tok/s, TTFT=319134.8ms, serial=1.00 mtp=0.00 p1=0.000 mean_na=0.000 tok_step=1.000 regime_reprobes=0
+[2m2026-09-22T02:37:11.613472Z[0m [32m INFO[0m [2mspark::api::chat::prepare[0m[2m:[0m Request: model=kimi-k3, messages=1, tools=0, tools_active=false, tool_choice=None, stream=false, temp=Some(0.0), max_tokens=32, freq_pen=None, rep_pen=None
+[2m2026-09-22T02:38:06.418561Z[0m [32m INFO[0m [2mspark::scheduler::prefill_a_step[0m[2m:[0m Chunked prefill start: 9 prompt tokens, chunk_size=9, max_tokens=32
+[2m2026-09-22T02:43:59.183337Z[0m [32m INFO[0m [2mspark::scheduler::prefill_a_step[0m[2m:[0m Prefill first token: 11
+[2m2026-09-22T02:43:59.183390Z[0m [32m INFO[0m [2mspark::scheduler::phase_start_prefills[0m[2m:[0m Prefilled (single chunk): seq_len=9, remaining=31
+[2m2026-09-22T02:44:45.049590Z[0m [33m WARN[0m [2mspark::scheduler::mod_helpers[0m[2m:[0m Request TIMEOUT: response TRUNCATED by the server deadline (--request-timeout / per-request `timeout`); reporting finish_reason="timeout", not "length" [3mslot[0m[2m=[0m0 [3msession_hash[0m[2m=[0m1629158141190564762 [3melapsed_s[0m[2m=[0m398.631029312 [3mbudget_s[0m[2m=[0m299.999554462 [3memitted_tokens[0m[2m=[0m2 [3mrequested_tokens[0m[2m=[0m32
+[2m2026-09-22T02:44:45.049664Z[0m [32m INFO[0m [2mspark::scheduler::mtp_accept_debug[0m[2m:[0m Done: 2 tokens (timeout) 0.0 tok/s, TTFT=352764.8ms, serial=1.00 mtp=0.00 p1=0.000 mean_na=0.000 tok_step=1.000 regime_reprobes=0

@@ -1,0 +1,26 @@
+## feat/kimi-k3-ud-q2
+ M crates/avarok-core/src/config/gguf/kimi_k3.rs
+ M crates/avarok-core/src/kimi_k3/cpu_forward.rs
+ M crates/avarok-core/src/kimi_k3/cpu_forward/dense.rs
+ M crates/avarok-core/src/kimi_k3/cpu_forward/moe.rs
+ M crates/avarok-core/src/kimi_k3/cpu_weights.rs
+ M crates/spark-model/src/kimi_k3/host_decode.rs
+ M crates/spark-model/src/kimi_k3/iq2_moe.rs
+ M crates/spark-model/src/kimi_k3/mod.rs
+ M crates/spark-model/src/weight_loader/kimi_k3/tp.rs
+ M crates/spark-model/tests/k3_tp4_composed_cuda.rs
+ M crates/spark-runtime/src/weights/gguf.rs
+ M crates/spark-runtime/src/weights/gguf/dequant_cpu/iq2_xs.rs
+ M crates/spark-runtime/src/weights/gguf/dequant_cpu/iq3_xxs.rs
+ M crates/spark-runtime/src/weights/gguf/kimi_gguf_load.rs
+ M crates/spark-runtime/src/weights/gguf/kimi_tp_contract_tests.rs
+ M crates/spark-runtime/src/weights/gguf/names.rs
+ M crates/spark-runtime/src/weights/gguf/names/kimi_k3.rs
+ M crates/spark-runtime/src/weights/gguf/sidecar.rs
+?? crates/avarok-core/src/kimi_k3/cpu_forward/mixer.rs
+?? crates/spark-model/src/kimi_k3/gpu_gemv.rs
+?? crates/spark-model/src/kimi_k3/iq2_cuda.rs
+?? crates/spark-runtime/src/weights/gguf/kimi_gguf_preflight.rs
+?? crates/spark-runtime/src/weights/gguf/kimi_mla_kv.rs
+?? kernels/hopper/kimi-k3/bf16/iq2_xs_gemv.cu
+?? kernels/hopper/kimi-k3/bf16/iq2_xs_tables.cuh

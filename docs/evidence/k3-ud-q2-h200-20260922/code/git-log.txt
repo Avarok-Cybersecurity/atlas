@@ -1,0 +1,6 @@
+2aa9872 kimi-k3: slice routed down and up on hidden under TP
+b03824f kimi-k3: label the 896 in the panic test as hidden/tp
+384c149 kimi-k3: keep routed down and up replicated under TP
+e6f21e0 kimi-k3: bind GGUF attn_k_b and attn_v_b as stored
+5507e21 kimi-k3: keep-packed TP8 load for UD-Q2_K_XL
+01a40bf site: put facility overhead (PUE) beside the electricity price, as a band (#1221)
