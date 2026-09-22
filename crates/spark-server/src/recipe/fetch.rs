@@ -212,7 +212,9 @@ pub fn cached(root: &Path) -> Index {
     }
 }
 
-fn parse_cache(text: &str) -> Result<Index> {
+/// `pub(crate)` so `cli::doctor` can count what is on disk without keeping a
+/// second, drifting idea of the index schema — see `check_recipes`.
+pub(crate) fn parse_cache(text: &str) -> Result<Index> {
     let doc: serde_json::Value = serde_json::from_str(text)?;
     let files = doc
         .get("files")

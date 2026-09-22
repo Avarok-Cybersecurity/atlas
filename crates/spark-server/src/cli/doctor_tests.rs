@@ -120,15 +120,30 @@ fn writable_goes_red_when_the_home_is_a_file() {
     assert!(f.detail.contains("not a directory"), "{}", f.detail);
 }
 
+/// A minimal recipe body that `Recipe::parse` accepts — only the keys it
+/// requires (`recipe_version`, `model`, `container`, a `defaults:` mapping).
+fn a_recipe_body(n: usize) -> String {
+    format!("recipe_version: \"2\"\nmodel: test/model-{n}\ncontainer: c\ndefaults:\n  port: 8888\n")
+}
+
+/// GREEN, and the real schema: `files: { <path>: <recipe body> }`, not a
+/// top-level `recipes` array — that array never existed on disk, only in this
+/// check's own stale assumption. A box with a complete `files` map used to be
+/// reported as "parses but lists none".
 #[test]
-fn recipes_is_green_when_the_index_lists_some() {
+fn recipes_is_green_when_the_files_map_lists_some() {
     let d = Dir::new("r-ok");
     std::fs::create_dir_all(d.0.join("atlas-recipes")).expect("mkdir");
-    std::fs::write(
-        d.0.join("atlas-recipes/index.json"),
-        br#"{"recipes":[1,2,3]}"#,
-    )
-    .expect("write");
+    let doc = serde_json::json!({
+        "tree_sha": "deadbeef",
+        "fetched_at": 0,
+        "files": {
+            "family/one": a_recipe_body(1),
+            "family/two": a_recipe_body(2),
+            "family/three": a_recipe_body(3),
+        },
+    });
+    std::fs::write(d.0.join("atlas-recipes/index.json"), doc.to_string()).expect("write");
     let f = with_home(&d.0, check_recipes);
     assert!(!f.problem, "{}", f.detail);
     assert!(f.detail.contains('3'), "{}", f.detail);
@@ -179,7 +194,7 @@ fn an_unreadable_index_is_not_reported_as_a_missing_one() {
 fn recipes_goes_red_when_the_index_is_empty() {
     let d = Dir::new("r-empty");
     std::fs::create_dir_all(d.0.join("atlas-recipes")).expect("mkdir");
-    std::fs::write(d.0.join("atlas-recipes/index.json"), br#"{"recipes":[]}"#).expect("write");
+    std::fs::write(d.0.join("atlas-recipes/index.json"), br#"{"files":{}}"#).expect("write");
     let f = with_home(&d.0, check_recipes);
     assert!(f.problem);
     assert!(f.detail.contains("lists none"), "{}", f.detail);

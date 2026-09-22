@@ -160,13 +160,16 @@ pub fn check_recipes() -> Finding {
     // false alarm this command exists to eliminate.
     let index = crate::recipe::fetch::cache_dir(&h.root).join("index.json");
     match std::fs::read_to_string(&index) {
-        Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
-            Ok(v) => {
-                let n = v
-                    .get("recipes")
-                    .and_then(|r| r.as_array().map(|a| a.len()))
-                    .or_else(|| v.as_array().map(|a| a.len()))
-                    .unwrap_or(0);
+        // Parsed through `crate::recipe::fetch::parse_cache` — the exact
+        // reader the index writer's own consumers use (`{ tree_sha,
+        // fetched_at, files: { <path>: <recipe body> } }`) — rather than
+        // poking a `serde_json::Value` by a schema this file guessed at. The
+        // guess (a top-level `recipes` array) was never what
+        // `recipe::fetch_github::write_cache` produces, so a fully synced box
+        // was reported as "parses but lists none".
+        Ok(text) => match crate::recipe::fetch::parse_cache(&text) {
+            Ok(idx) => {
+                let n = idx.recipes.len();
                 if n == 0 {
                     Finding::bad(
                         "recipes",
@@ -179,7 +182,10 @@ pub fn check_recipes() -> Finding {
             }
             Err(e) => Finding::bad(
                 "recipes",
-                format!("{} is not valid JSON: {e}", index.display()),
+                format!(
+                    "{} does not parse as a recipe index: {e:#}",
+                    index.display()
+                ),
                 "delete it and run `spark sync-recipes`.",
             ),
         },
