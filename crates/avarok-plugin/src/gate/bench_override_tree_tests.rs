@@ -220,7 +220,7 @@ fn the_moe_concurrency_entry_is_the_published_instrument_and_still_unmeasured() 
     );
     assert_eq!(
         entry.recipe.as_deref(),
-        Some("qwen3.6/qwen3.6-35b-a3b-fp8-bf16head")
+        Some("qwen3.6/qwen3.6-35b-a3b-fp8-nvfp4head")
     );
     let pins = |kv: &[(&str, &str)]| {
         kv.iter()
@@ -244,7 +244,7 @@ fn the_moe_concurrency_entry_is_the_published_instrument_and_still_unmeasured() 
             ("kv_cache_dtype", "bf16"),
             ("max_batch_size", "128"),
             ("max_model_len", "2048"),
-            ("num_drafts", "3"),
+            ("num_drafts", "1"),
             ("scheduling_policy", "fifo"),
             ("ssm_cache_slots", "32"),
         ])

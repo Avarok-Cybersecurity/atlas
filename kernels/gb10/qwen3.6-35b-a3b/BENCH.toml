@@ -366,7 +366,14 @@ max = 1355.65
 quant = "nvfp4"
 checkpoint = "Qwen/Qwen3.6-35B-A3B-FP8"
 gate = "concurrency-sweep-moe"
-recipe = "qwen3.6/qwen3.6-35b-a3b-fp8-bf16head"
+# ★ nvfp4head, not bf16head, 2026-09-22: measured clean on dgx2/dgx3 at the vLLM MoE
+# leg's own axes (isl 128 / osl 1024 / ctx 2048 / 128 seqs / bf16 KV / MTP k=3): the
+# NVFP4 head beats the bf16 head at every rung measured (C=1 60.92 vs 55.49, C=2
+# 69.85 vs 67.45, C=4 70.82 vs 66.79). Same finding, same mechanism as the dense
+# ladder: above M=8 the bf16 head is a scalar GEMM over the 248K vocab. The workload
+# axes stay matched to the vLLM leg; the head dtype is the engine's own precision
+# choice, exactly as it is on the dense published leg.
+recipe = "qwen3.6/qwen3.6-35b-a3b-fp8-nvfp4head"
 label = "Qwen3.6-35B-A3B MoE flagship (FP8), published instrument"
 default = true
 status = "unmeasured"
@@ -456,7 +463,12 @@ scheduling_policy = "fifo"
 # `--num-drafts 3` is "3=K=4 verify" (serve_args.rs); this MODEL.toml sets no
 # default_num_drafts, so without the pin the serve would draft K=2 and the
 # record would not say so.
-num_drafts = "3"
+# ★ 3 -> 1, 2026-09-22 (G10). Same box, same everything, C=1: --num-drafts 3 measured
+# 62.00 tok/s, --num-drafts 1 measured 74.83 (+21%). The K=4 verify never lands a
+# second or third token on this drafter ("0 accept-3 / 0 accept-2" in every 100-step
+# window), so it pays a four-token forward for at most one bonus token. C>=2 is
+# dominated by the per-token MoE loop (G9) and was not part of the A/B.
+num_drafts = "1"
 # Thinking off at the SERVE, like the ssm-state-poisoning gate on this same
 # recipe: per-request `enable_thinking:false` degenerates to a ~2-token stop
 # on qwen3_6_moe (see that entry), and the one-shot ran thinking off. The
