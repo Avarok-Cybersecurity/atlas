@@ -120,6 +120,22 @@ impl BufferArena {
     pub fn expert_down_out(&self) -> DevicePtr {
         self.expert_down_out
     }
+    /// Allocated byte size of `expert_down_out`.
+    pub fn expert_down_out_bytes(&self) -> usize {
+        self.sizes.expert_down_out
+    }
+    /// Allocated byte size of `gate_logits` (also the MoE sort scratch).
+    pub fn gate_logits_bytes(&self) -> usize {
+        self.sizes.gate_logits
+    }
+    /// Allocated byte size of `logits`.
+    pub fn logits_bytes(&self) -> usize {
+        self.sizes.logits
+    }
+    /// Allocated byte size of `attn_output`.
+    pub fn attn_output_bytes(&self) -> usize {
+        self.sizes.attn_output
+    }
     /// Split-K decode attention workspace (F32 partials).
     /// GDN FLA chunked-prefill scratch base (W|U|S|uc sub-divided by the caller).
     /// `DevicePtr::NULL` unless this is a 128-dim-linear-head GDN model.

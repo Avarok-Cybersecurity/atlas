@@ -449,6 +449,21 @@ impl MoeLayer {
                 "moe_shared_expert_fused_fp8_batch3",
                 "moe_weighted_sum_blend_fp8_batch3",
             )?,
+            moe_expert_gate_up_shared_fp8_grouped_k: super::super::try_kernel(
+                gpu,
+                "moe_shared_expert_fused_fp8_grouped",
+                "moe_expert_gate_up_shared_fp8_grouped",
+            ),
+            moe_expert_silu_down_shared_fp8_grouped_k: super::super::try_kernel(
+                gpu,
+                "moe_shared_expert_fused_fp8_grouped",
+                "moe_expert_silu_down_shared_fp8_grouped",
+            ),
+            moe_weighted_sum_blend_fp8_grouped_k: super::super::try_kernel(
+                gpu,
+                "moe_fp8_grouped_blend",
+                "moe_weighted_sum_blend_fp8_grouped",
+            ),
             fp8_gate_weight_ptrs: None,
             fp8_up_weight_ptrs: None,
             fp8_down_weight_ptrs: None,

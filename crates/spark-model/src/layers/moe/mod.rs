@@ -281,6 +281,11 @@ pub struct MoeLayer {
     moe_expert_gate_up_shared_fp8_batch3: KernelHandle,
     moe_expert_silu_down_shared_fp8_batch3: KernelHandle,
     moe_weighted_sum_blend_fp8_batch3: KernelHandle,
+    // Cross-row GROUPED FP8 decode kernels (M rows, one CTA per expert):
+    // optional — `KernelHandle(0)` on images that do not ship them.
+    moe_expert_gate_up_shared_fp8_grouped_k: KernelHandle,
+    moe_expert_silu_down_shared_fp8_grouped_k: KernelHandle,
+    moe_weighted_sum_blend_fp8_grouped_k: KernelHandle,
     // THE routed-expert FP8 grouped GEMM for sorted MoE prefill: grid-compaction
     // (persistent 96-CTA grid over a COMPACTED (expert, m_tile, n_tile) work-list
     // built by `moe_build_tile_worklist`). Handle may be 0 on images that don't
@@ -413,6 +418,8 @@ mod forward_atomic_c4;
 mod forward_batched;
 mod forward_batched_gate;
 mod forward_ep;
+mod forward_fp8_grouped_decode;
+pub use forward_fp8_grouped_decode::fp8_grouped_decode_shape_ok;
 mod forward_k2;
 mod forward_k3;
 mod forward_phase;
