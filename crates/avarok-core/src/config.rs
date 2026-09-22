@@ -917,6 +917,76 @@ pub struct VisionConfig {
     /// the encoder is constructed. `None` keeps the historical behaviour on
     /// both sides.
     pub max_pixels: Option<usize>,
+
+    // ── Fields below exist because GLM-5.3's tower needs them. Every one has
+    // a default that reproduces the Qwen3-VL behaviour exactly, so a Qwen
+    // checkpoint that declares none of them is unaffected. ──
+    /// Block-MLP activation. `"silu"` for GLM (a clamped SwiGLU);
+    /// `"gelu_pytorch_tanh"` for the Qwen family's 2-matrix GELU MLP.
+    pub hidden_act: String,
+    /// Epsilon of every RMSNorm in the tower (GLM: 1e-5). Unused by the
+    /// Qwen tower, whose norms are LayerNorms at a compiled 1e-6.
+    pub rms_norm_eps: f32,
+    /// Whether the ViT's `qkv`/`proj`/MLP Linears carry biases (GLM: true).
+    pub attention_bias: bool,
+    /// Hidden width of GLM's merger SwiGLU (10240). 0 when the family has no
+    /// such stage.
+    pub projection_intermediate_size: usize,
+    /// Symmetric clamp applied inside GLM's SwiGLU, on both the block MLP and
+    /// the merger (10.0). 0 disables it.
+    pub swiglu_limit: f32,
+    /// Base of the ViT's own rotary embedding. GLM's `vision_config` carries
+    /// `rope_parameters = {rope_theta: 10000.0, rope_type: "axial"}`.
+    pub rope_theta: f32,
+    /// Per-channel normalization the image processor applies. GLM ships
+    /// CLIP-style stats; the Qwen family ships SigLIP's 0.5/0.5/0.5, which is
+    /// the default here so an absent `preprocessor_config.json` is unchanged.
+    pub image_mean: [f32; 3],
+    pub image_std: [f32; 3],
+    /// Dynamic-resolution token budget (`processor_config.json`). GLM states
+    /// its bound in MERGED tokens (16 / 8000) rather than as a pixel area;
+    /// `min_pixels/max_pixels = tokens * (patch_size * merge_size)^2`.
+    pub min_image_tokens: usize,
+    pub max_image_tokens: usize,
+    /// Patch tokens are emitted in 2x2-block-major order rather than raster.
+    ///
+    /// GLM's image processor and its `get_vision_position_ids` share this
+    /// nesting, which is the ONLY reason the tower's `view(-1, 2, 2, C)`
+    /// downsample reshape is free. A raster-ordered buffer through the same
+    /// tower produces a perfectly plausible, wrong embedding — so the order is
+    /// a declared property of the checkpoint, not an implementation detail of
+    /// whoever writes the loop.
+    pub block_major_patches: bool,
+}
+
+impl Default for VisionConfig {
+    fn default() -> Self {
+        Self {
+            depth: 0,
+            hidden_size: 0,
+            num_heads: 0,
+            patch_size: 0,
+            temporal_patch_size: 0,
+            spatial_merge_size: 0,
+            intermediate_size: 0,
+            out_hidden_size: 0,
+            deepstack_visual_indexes: Vec::new(),
+            image_pad_token_id: 0,
+            video_pad_token_id: 0,
+            max_pixels: None,
+            hidden_act: "gelu_pytorch_tanh".to_string(),
+            rms_norm_eps: 1e-6,
+            attention_bias: true,
+            projection_intermediate_size: 0,
+            swiglu_limit: 0.0,
+            rope_theta: 10_000.0,
+            image_mean: [0.5, 0.5, 0.5],
+            image_std: [0.5, 0.5, 0.5],
+            min_image_tokens: 0,
+            max_image_tokens: 0,
+            block_major_patches: false,
+        }
+    }
 }
 
 impl VisionConfig {

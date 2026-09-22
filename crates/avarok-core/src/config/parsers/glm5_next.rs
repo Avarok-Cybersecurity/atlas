@@ -267,10 +267,110 @@ pub fn parse_glm5_next(json: &str) -> Result<ModelConfig> {
         })?,
     };
 
+    // ---- Vision tower -----------------------------------------------------
+    // Read from the OUTER object: `vision_config` is a sibling of
+    // `text_config`, not a member of it. A `glm5_next_text` checkpoint has no
+    // outer wrapper and therefore no `vision_config` — it stays text-only,
+    // which is the behaviour every GLM serve had before this branch existed.
+    config.vision = parse_glm5_next_vision(&raw);
+
     finalize_config(&mut config, &raw).context("glm5_next: finalize_config")?;
     refuse_shared_indexer(text, &config).context("glm5_next: indexer_types")?;
     validate_glm5_next(&config)?;
     Ok(config)
+}
+
+/// GLM-5.3's `vision_config` → [`VisionConfig`].
+///
+/// Not `parsers::vision::parse_vision_config`: that one reads the Qwen3-VL
+/// field set and leaves everything GLM-specific at its default, which would
+/// hand the loader a tower with `rms_norm_eps = 1e-6`, no `swiglu_limit` and
+/// no merger width — three numbers that produce a running, wrong encoder
+/// rather than an error.
+///
+/// Every value is READ, never defaulted: a GLM checkpoint that omits one is a
+/// variant we have not seen, and guessing is how a vision tower comes out
+/// plausible and wrong.
+fn parse_glm5_next_vision(raw: &serde_json::Value) -> Option<super::super::VisionConfig> {
+    let vc = raw.get("vision_config")?;
+    let u = |k: &str| {
+        vc.get(k)
+            .and_then(serde_json::Value::as_u64)
+            .map(|v| v as usize)
+    };
+    let f = |k: &str| {
+        vc.get(k)
+            .and_then(serde_json::Value::as_f64)
+            .map(|v| v as f32)
+    };
+    // `rope_parameters = {rope_theta, rope_type: "axial"}`. Read live from the
+    // official checkpoint 2026-09-22; the transformers default is the same
+    // 10000.0, but reading beats inheriting.
+    let rope_theta = vc
+        .get("rope_parameters")
+        .and_then(|r| r.get("rope_theta"))
+        .and_then(serde_json::Value::as_f64)
+        .map(|v| v as f32)
+        .unwrap_or(10_000.0);
+    let stats = |k: &str, fallback: [f32; 3]| -> [f32; 3] {
+        let Some(arr) = vc.get(k).and_then(serde_json::Value::as_array) else {
+            return fallback;
+        };
+        let v: Vec<f32> = arr
+            .iter()
+            .filter_map(serde_json::Value::as_f64)
+            .map(|x| x as f32)
+            .collect();
+        match v.len() {
+            3 => [v[0], v[1], v[2]],
+            _ => fallback,
+        }
+    };
+    Some(super::super::VisionConfig {
+        depth: u("depth")?,
+        hidden_size: u("hidden_size")?,
+        num_heads: u("num_heads")?,
+        patch_size: u("patch_size")?,
+        temporal_patch_size: u("temporal_patch_size")?,
+        spatial_merge_size: u("spatial_merge_size")?,
+        intermediate_size: u("intermediate_size")?,
+        out_hidden_size: u("out_hidden_size")?,
+        // GLM's tower is single-scale: no deepstack list in the config and no
+        // deepstack merger in the checkpoint.
+        deepstack_visual_indexes: Vec::new(),
+        image_pad_token_id: raw
+            .get("image_token_id")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0) as u32,
+        video_pad_token_id: raw
+            .get("video_token_id")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0) as u32,
+        // Resolved by the server from the operator flag / preprocessor config.
+        max_pixels: None,
+        hidden_act: vc
+            .get("hidden_act")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("silu")
+            .to_string(),
+        rms_norm_eps: f("rms_norm_eps").unwrap_or(1e-5),
+        attention_bias: vc
+            .get("attention_bias")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true),
+        projection_intermediate_size: u("projection_intermediate_size")?,
+        swiglu_limit: f("swiglu_limit").unwrap_or(10.0),
+        rope_theta,
+        // CLIP-style stats. They live in `processor_config.json`, which this
+        // parser does not see, so the checkpoint's own values are the default
+        // here rather than SigLIP's 0.5s — feeding a GLM tower SigLIP-normalised
+        // pixels is a ~2x scale error on every channel.
+        image_mean: stats("image_mean", [0.4815, 0.4578, 0.4082]),
+        image_std: stats("image_std", [0.2686, 0.2613, 0.2758]),
+        min_image_tokens: u("min_image_tokens").unwrap_or(16),
+        max_image_tokens: u("max_image_tokens").unwrap_or(8000),
+        block_major_patches: true,
+    })
 }
 
 /// Layers whose MLP is dense rather than routed.

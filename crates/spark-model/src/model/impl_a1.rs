@@ -70,7 +70,7 @@ impl TransformerModel {
         comm: Option<std::sync::Arc<dyn spark_comm::CommBackend>>,
         self_speculative: bool,
         num_drafts: usize,
-        vision_encoder: Option<crate::layers::VisionEncoder>,
+        vision_encoder: Option<crate::layers::VisionTower>,
         ssm_cache_slots: usize,
         ssm_checkpoint_interval: usize,
     ) -> Result<Self> {

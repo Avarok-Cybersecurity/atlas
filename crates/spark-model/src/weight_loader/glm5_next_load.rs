@@ -553,14 +553,42 @@ fn dense(store: &WeightStore, name: &str) -> Result<DenseWeight> {
 }
 
 impl ModelWeightLoader for Glm5NextWeightLoader {
-    /// Text-only port. `weight_loader/glm5_next.rs` classifies `model.visual.*`
-    /// as `TensorRole::Vision` and excludes it from `is_required()`; nothing in
-    /// this loader binds it. Saying so here keeps the tower off the GPU in the
-    /// first place — on the LibertAIDAI NVFP4 checkpoint that is 1.05 GiB per
-    /// rank, sitting between `--speculative --num-drafts 2` and a serve that
-    /// fits (measured 2026-08-29: K=3 at 32 K needs 13.58 GiB against 12.07 free).
+    /// This loader binds the tower when — and only when — the checkpoint
+    /// declares one.
+    ///
+    /// It used to answer a flat `false`, which kept 1.05 GiB/rank of
+    /// `model.visual.*` off the GPU entirely. That was not free: measured
+    /// 2026-08-29, K=3 at 32 K needs 13.58 GiB against 12.07 GiB free, so the
+    /// tower is exactly the difference between `--speculative --num-drafts 2`
+    /// and a serve that fits. Binding it is a real memory decision, not a
+    /// correctness cleanup, and a GLM serve that wants the old headroom back
+    /// has to be given it deliberately.
+    ///
+    /// 🪤 This method takes no `ModelConfig`, so it CANNOT answer per
+    /// checkpoint — `binds_vision(config)` in the server resolves the loader
+    /// from the config and then asks the loader alone. A `glm5_next_text`
+    /// export is unaffected only because it ships no `model.visual.*` tensors
+    /// for the withhold to have applied to; a multimodal checkpoint served
+    /// text-only now uploads the tower. Making that per-checkpoint means
+    /// passing the config through the trait, which is a wider change than this
+    /// one.
+    ///
+    /// The `true` arm is a real bind (`glm5_next_vision.rs`), not a
+    /// load-then-free: `factory::build`'s reclaim is keyed off whether a tower
+    /// came back, so it stops firing for this model on its own.
     fn binds_vision_encoder(&self) -> bool {
-        false
+        true
+    }
+
+    /// Bind the 347-tensor `model.visual.*` tower. See
+    /// [`crate::weight_loader::glm5_next_vision`].
+    fn load_vision_encoder(
+        &self,
+        store: &WeightStore,
+        config: &ModelConfig,
+        gpu: &dyn GpuBackend,
+    ) -> Result<Option<crate::layers::VisionTower>> {
+        crate::weight_loader::glm5_next_vision::load_glm5_next_vision(store, config, gpu)
     }
 
     /// Keep the MTP block's full-width routed experts off the device.
@@ -981,13 +1009,15 @@ mod vision_capability_tests {
     use crate::weight_loader::ModelWeightLoader;
 
     #[test]
-    fn glm5_next_declares_itself_text_only() {
-        // Mutation gate: flipping this to `true` re-loads 1.05 GiB/rank of
-        // vision tower that nothing binds, and K=3 stops fitting at 32 K.
+    fn glm5_next_now_binds_its_vision_tower() {
+        // Was `false` until the tower was ported. A `glm5_next_text` export
+        // has no `model.visual.*` tensors to withhold, so it is unaffected;
+        // `load_vision_encoder` also returns `None` there, because the parser
+        // leaves `config.vision` at `None` when there is no `vision_config`.
         assert!(
-            !Glm5NextWeightLoader.binds_vision_encoder(),
-            "GLM-5.3's port binds no vision encoder; saying otherwise makes the \
-             weight loader read the tower into unified memory for nothing"
+            Glm5NextWeightLoader.binds_vision_encoder(),
+            "GLM-5.3 binds `model.visual.*`; answering false here makes the \
+             checkpoint loader withhold the tensors this loader then asks for"
         );
     }
 
