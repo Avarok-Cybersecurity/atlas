@@ -187,6 +187,53 @@ describe('a live record that pairs outranks the published pair', () => {
     ...over
   });
 
+  // ★ THE SHAPE #1220 ACTUALLY EMITS, asserted separately from `repointed()`.
+  // That fixture still declares `ssm_cache_slots: '32'`, which the gate pinned
+  // when it was written. On 2026-09-22 the entry was re-pointed at the
+  // THROUGHPUT recipe and its serve_overrides went from seventeen pins to
+  // three — max_batch_size, kv_cache_dtype and max_model_len, which survive
+  // only because ladder-baselines builds a record's fingerprint from
+  // `params` + `serve_overrides` and those three are REQUIRED_AXES. Everything
+  // else, ssm_cache_slots included, is now inherited from the recipe and never
+  // reaches the record's override map.
+  //
+  // So this asserts the pairing on the map the live gate will really produce.
+  // It is not a duplicate of the test below: that one would keep passing if the
+  // pin set changed underneath it, because `comparable()` skips a non-required
+  // axis unless BOTH sides declare it — which is exactly why dropping pins is
+  // safe, and exactly why nothing would have failed if it were not.
+  const asShipped = (over = {}) => ({
+    ...repointed(),
+    serve_overrides: {
+      max_batch_size: '128',
+      kv_cache_dtype: 'fp8',
+      max_model_len: '2048'
+    },
+    ...over
+  });
+
+  test('the three-pin record #1220 emits still pairs, so the top chart goes live on merge', () => {
+    expect(comparisonStateOf(DENSE, [asShipped()], ladders)).toBe('live');
+    const { drawn, refused } = pairWith(asShipped(), dense);
+    // Drawn against the MATCHED vLLM leg, exactly as the seventeen-pin record
+    // was. The no-speculation leg stays refused for the reason it always was —
+    // a different context and KV dtype — and NOT because pins were dropped;
+    // asserting the reason string is what separates those two explanations.
+    expect(drawn.map((d) => d.id)).toEqual(['vllm-mtp']);
+    expect(refused.map((r) => r.series.id)).toEqual(['vllm-nospec']);
+    expect(refused[0].why).toBe('max_model_len 2048 → 4096, kv_cache_dtype fp8 → bf16');
+  });
+
+  test('a REQUIRED axis dropped from the pins refuses the pair rather than drawing it', () => {
+    // The control for the test above: the three pins are not decoration. Drop
+    // one and the axis reads null, null counts as a difference on a required
+    // axis, and the tab must fall back rather than draw an incomparable curve.
+    const { max_model_len, ...withoutCtx } = asShipped().serve_overrides;
+    const crippled = asShipped({ serve_overrides: withoutCtx });
+    expect(pairWith(crippled, dense).drawn).toEqual([]);
+    expect(comparisonStateOf(DENSE, [crippled], ladders)).not.toBe('live');
+  });
+
   test('THE ASK: a record on the published instrument makes the dense tab live, drawn against vllm-mtp', () => {
     expect(comparisonStateOf(DENSE, [repointed()], ladders)).toBe('live');
     const { drawn, refused } = pairWith(repointed(), dense);
