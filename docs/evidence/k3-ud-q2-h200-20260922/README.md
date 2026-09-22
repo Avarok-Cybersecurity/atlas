@@ -31,7 +31,7 @@ Expected for the math prompts: 408. Observed punctuation / "vrvr". First token i
 q/k/v/o, routed down/up, shexp, and IQ2 mix run on the host (D2H packed bytes). CUDA only replaces KDA recurrent + MLA SDPA. moe_w4a16 is MXFP4/E8M0, so use_cuda_moe stays false. GPU util during forward ~0-8%. /v1/completions ignores JSON timeout:1800 and uses the 300 s server default. Prefill overruns it; decode stops after 2 tokens.
 
 ## Shapes that fit (do not reverse)
-TP=8 EP=1, hidden=7168. 896 is cursed: hidden/tp=7168/8=896, and n_experts=896.
+TP=8 EP=1, hidden=7168. 7168/8 and n_experts are both 896; label which.
 Routed down on-rank [3584, 896] (hidden/tp), not 3584x7168.
 Routed up [896, 3584]. shexp [7168, 768]/[768, 7168].
 attn_k_b / attn_v_b stay split. Do not fuse into kv_b.

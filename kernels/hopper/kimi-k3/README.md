@@ -1,5 +1,8 @@
 # Hopper Kimi K3 target
 
+Keep-packed Unsloth UD-Q2_K_XL at TP=8 is the path this tree serves on
+H200. Official `moonshotai/Kimi-K3` MXFP4 is a different file (below).
+
 Build with `AVAROK_TARGET_HW=hopper AVAROK_TARGET_MODEL=kimi-k3
 AVAROK_TARGET_QUANT=bf16 CARGO_TARGET_DIR=target/k3-hopper cargo build
 --locked --release -p spark-server --features nccl`. Selects `sm_90a`.
