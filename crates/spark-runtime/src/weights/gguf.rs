@@ -36,11 +36,12 @@ mod expert_lru_pool;
 mod expert_prefetch;
 mod expert_reads;
 pub mod expert_stream;
+mod kimi_gguf_load;
+mod kimi_tp_contract;
+mod kimi_tp_slice;
 mod names;
 mod shards;
 mod sidecar;
-mod kimi_tp_slice;
-mod kimi_gguf_load;
 mod value_transform;
 
 pub use config::config_from_gguf_dir;
@@ -370,7 +371,8 @@ impl super::WeightLoader for GgufLoader {
                 let (_f, _m, g) = sidecar::open_gguf(p)?;
                 est += sidecar::est_bf16(&g, &arch);
             }
-            if let (Some((_, _, mm_gguf)), Some(mm_arch)) = (mmproj.as_ref(), mmproj_arch.as_ref()) {
+            if let (Some((_, _, mm_gguf)), Some(mm_arch)) = (mmproj.as_ref(), mmproj_arch.as_ref())
+            {
                 est += sidecar::est_bf16(mm_gguf, mm_arch);
             }
             est

@@ -35,6 +35,7 @@ pub use moe_cuda::{K3MoeGemmKernels, launch_k3_latent_moe_experts};
 pub use tp::{supports_tp, tensor_plan};
 
 pub mod bound;
+mod forward_panic;
 mod host_decode;
 mod iq2_moe;
 pub mod state;

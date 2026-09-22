@@ -5,35 +5,27 @@ use std::collections::HashMap;
 
 use anyhow::{Context, Result, ensure};
 
+use super::GgufLoader;
 use super::dequant_cpu::{self, GgmlType};
 use super::kimi_tp_slice::{self, PackKind};
 use super::names;
-use super::GgufLoader;
 use crate::gpu::GpuBackend;
 use crate::weights::{WeightDtype, WeightTensor};
 
 fn kimi_rows(name: &str) -> bool {
-    name.contains("q_proj")
-        || name.contains("k_proj")
-        || name.contains("v_proj")
-        || name.contains("g_proj")
-        || name.contains("q_b_proj")
-        || name.contains("kv_b_proj")
-        || name.contains("v_b_proj")
-        || name.contains("gate_proj")
-        || name.contains("up_proj")
-        || name.contains(".w1.weight")
-        || name.contains(".w3.weight")
-        || name.contains("b_proj")
-        || name.contains("f_b_proj")
-        || name.ends_with(".A_log")
-        || name.ends_with(".dt_bias")
-        || name.contains("q_conv1d")
-        || name.contains("k_conv1d")
-        || name.contains("v_conv1d")
+    matches!(
+        super::kimi_tp_contract::axis_for(name),
+        super::kimi_tp_contract::Axis::SplitRows { .. }
+    )
 }
 
-/// Contiguous row-slice of a dense (F32/BF16) or packed tensor along dim0.
+fn kimi_cols(name: &str) -> bool {
+    matches!(
+        super::kimi_tp_contract::axis_for(name),
+        super::kimi_tp_contract::Axis::SplitCols { .. }
+    )
+}
+
 fn slice_rows_bytes(
     raw: &[u8],
     shape: &[usize],
@@ -49,7 +41,6 @@ fn slice_rows_bytes(
     let mut out_shape = shape.to_vec();
     out_shape[0] = local_n;
     if packed {
-        // caller passes per-row packed byte width as elem_or_row_bytes
         let row_bytes = elem_or_row_bytes;
         ensure!(raw.len() == n * row_bytes, "packed row bytes mismatch");
         let start = rank * local_n * row_bytes;
@@ -61,12 +52,6 @@ fn slice_rows_bytes(
         let start = rank * local_n * row_bytes;
         Ok((raw[start..start + local_n * row_bytes].to_vec(), out_shape))
     }
-}
-
-fn kimi_cols(name: &str) -> bool {
-    name.contains("o_proj")
-        || name.contains("down_proj")
-        || name.contains(".w2.weight")
 }
 
 fn dtype_for_id(id: u32) -> WeightDtype {
@@ -216,7 +201,10 @@ pub(super) fn upload_expert_stack(
     let count = *hf_shape
         .first()
         .context("kimi expert stack missing leading expert dim")?;
-    ensure!(hf_shape.len() == 3, "{tensor_name}: want [E, out, in], got {hf_shape:?}");
+    ensure!(
+        hf_shape.len() == 3,
+        "{tensor_name}: want [E, out, in], got {hf_shape:?}"
+    );
     let out = hf_shape[1];
     let inn = hf_shape[2];
     let dtype = dtype_for_id(id);
@@ -290,8 +278,6 @@ pub(super) fn estimate_resident_bytes(tp_world: usize) -> usize {
     disk / tp + 12usize * 1024 * 1024 * 1024
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -307,5 +293,14 @@ mod tests {
             "model.layers.1.block_sparse_moe.experts.0.w2.weight"
         ));
     }
-}
 
+    #[test]
+    fn routed_latent_projections_stay_replicated() {
+        let down = "model.layers.1.block_sparse_moe.routed_expert_down_proj.weight";
+        let up = "model.layers.1.block_sparse_moe.routed_expert_up_proj.weight";
+        assert!(!kimi_cols(down), "routed down is full [latent, hidden]");
+        assert!(!kimi_rows(up), "routed up is full [hidden, latent]");
+        assert!(kimi_cols("model.layers.0.mlp.down_proj.weight"));
+        assert!(kimi_rows("model.layers.0.mlp.up_proj.weight"));
+    }
+}
