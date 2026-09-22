@@ -106,6 +106,24 @@ pub(super) fn dequant_nvfp4_to_f32(
         let srow = &scales[r * groups_per_row..(r + 1) * groups_per_row];
         let orow = &mut out[r * cols..(r + 1) * cols];
         for (g, &sb) in srow.iter().enumerate() {
+            // 🪤 The LUT is the full 256-entry E4M3 table, so every byte
+            // INDEXES — `0x7F` is NaN, `0x80..` are the negatives, and both
+            // would silently produce a tensor of NaNs or a sign-flipped block
+            // instead of an error. A block scale is an amax ratio: non-
+            // negative and finite by construction, i.e. `0x00..=0x7E`. A byte
+            // outside that means the `.weight_scale` sibling is not the E4M3
+            // block-scale tensor this code thinks it is — a different export
+            // convention, a misaligned read, or the wrong tensor entirely —
+            // and saying so here beats debugging NaN logits.
+            if sb >= 0x7F {
+                bail!(
+                    "{what}: block scale byte 0x{sb:02X} at row {r}, block {g} is not a \
+                     finite non-negative E4M3 value (0x7F is NaN, 0x80.. are negative). \
+                     The `.weight_scale` sibling is not ModelOpt E4M3 block scales — check \
+                     that it is F8_E4M3 of shape [{rows}, {groups_per_row}] and not, say, a \
+                     compressed-tensors `weight_global_scale`."
+                );
+            }
             // 🪤 The kernel multiplies `(E2M1 * fp8) * scale2`, in that order.
             // Folding `fp8 * scale2` first is a different f32 rounding and the
             // difference is visible in a byte-identity check.

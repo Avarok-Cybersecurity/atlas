@@ -110,3 +110,25 @@ fn malformed_inputs_are_errors() {
     let not_2d = dequant_nvfp4_to_f32("t", &[0u8; 8], &[1, 2, 4], &[E4M3_ONE], 1.0);
     assert!(e(not_2d).contains("must be 2-D"));
 }
+
+/// 🪤 The E4M3 LUT has all 256 entries, so a malformed block-scale byte
+/// INDEXES rather than panicking: `0x7F` decodes to NaN and `0x80..` to a
+/// negative. Both produce a well-formed tensor of the right shape — one full
+/// of NaNs, one with a sign-flipped block — and neither has anything to assert
+/// on until the logits are wrong. Range-check before the lookup.
+#[test]
+fn a_block_scale_byte_outside_the_finite_non_negative_range_is_refused() {
+    // 0x7F = NaN, 0x80 = -0.0, 0xFF = -NaN, 0xB8 = -1.0.
+    for bad in [0x7Fu8, 0x80, 0xB8, 0xFF] {
+        let r = dequant_nvfp4_to_f32("t", &[0u8; 8], &[1, 8], &[bad], 1.0);
+        let e = r.unwrap_err().to_string();
+        assert!(
+            e.contains(&format!("0x{bad:02X}")),
+            "byte 0x{bad:02X} must be named in the error, got: {e}"
+        );
+        assert!(e.contains("E4M3"), "{e}");
+    }
+    // The boundary holds from the other side: 0x7E is 448.0, the largest
+    // finite E4M3, and stays legal.
+    assert!(dequant_nvfp4_to_f32("t", &[0u8; 8], &[1, 8], &[0x7E], 1.0).is_ok());
+}
