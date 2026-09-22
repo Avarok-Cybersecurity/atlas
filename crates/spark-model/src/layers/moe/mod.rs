@@ -286,6 +286,7 @@ pub struct MoeLayer {
     moe_expert_gate_up_shared_fp8_grouped_k: KernelHandle,
     moe_expert_silu_down_shared_fp8_grouped_k: KernelHandle,
     moe_weighted_sum_blend_fp8_grouped_k: KernelHandle,
+    moe_fp8_grouped_compact_k: KernelHandle,
     // THE routed-expert FP8 grouped GEMM for sorted MoE prefill: grid-compaction
     // (persistent 96-CTA grid over a COMPACTED (expert, m_tile, n_tile) work-list
     // built by `moe_build_tile_worklist`). Handle may be 0 on images that don't

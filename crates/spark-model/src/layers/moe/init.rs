@@ -464,6 +464,11 @@ impl MoeLayer {
                 "moe_fp8_grouped_blend",
                 "moe_weighted_sum_blend_fp8_grouped",
             ),
+            moe_fp8_grouped_compact_k: super::super::try_kernel(
+                gpu,
+                "moe_shared_expert_fused_fp8_grouped",
+                "moe_fp8_grouped_compact",
+            ),
             fp8_gate_weight_ptrs: None,
             fp8_up_weight_ptrs: None,
             fp8_down_weight_ptrs: None,

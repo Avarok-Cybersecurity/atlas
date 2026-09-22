@@ -40,7 +40,8 @@ fn fp8_grouped_decode_enabled() -> bool {
 /// * `m` in `2..=FP8_GROUPED_DECODE_MAX_ROWS` (1 row is the single-token path).
 /// * `hidden % 16 == 0`: the gate/up loop consumes 16 K-elements per lane
 ///   iteration (two `uint4` activation loads), the blend 8.
-/// * `inter % 8 == 0`: the silu/down loop consumes 8 per iteration.
+/// * `inter % 8 == 0`: the silu/down loop consumes 8 per iteration (and its
+///   float4 activation reads need 16-byte-aligned rows, which `% 8` gives).
 /// * The silu/down pass keeps `GROUP_ROWS × inter` FP32 activations in dynamic
 ///   shared memory next to the 1 KB LUT, under the 48 KB no-opt-in limit.
 pub fn fp8_grouped_decode_shape_ok(m: usize, hidden: u32, inter: u32) -> bool {
@@ -78,8 +79,10 @@ pub(crate) fn grouped_decode_buffer_need(
         // indices [te] u32 + weights [te] f32
         scratch: 2 * te * 4,
         // max(gate logits [m, E] BF16, sort scratch: sorted_token_ids [te] +
-        // sorted_expert_ids [te] + expert_offsets [E+1] + token_to_perm [te])
-        gate_logits: (m * num_experts * 2).max(te * 4 * 3 + (num_experts + 1) * 4),
+        // sorted_expert_ids [te] + expert_offsets [E+1] + token_to_perm [te] +
+        // active_experts [cap] + active_count [1])
+        gate_logits: (m * num_experts * 2)
+            .max(te * 4 * 3 + (num_experts + 1) * 4 + (te.min(num_experts) + 1) * 4),
         expert_gate_out: te * inter * 2,
         expert_down_out: te * hidden * 2,
         // shared gate/up scratch [m, inter] BF16
@@ -110,6 +113,7 @@ impl MoeLayer {
             && self.moe_expert_gate_up_shared_fp8_grouped_k.0 != 0
             && self.moe_expert_silu_down_shared_fp8_grouped_k.0 != 0
             && self.moe_weighted_sum_blend_fp8_grouped_k.0 != 0
+            && self.moe_fp8_grouped_compact_k.0 != 0
             && self.moe_sort_by_expert.0 != 0
             // No fold hooks here: a resident MoE adapter takes forward_batched.
             && self.lora.is_none()
@@ -253,7 +257,21 @@ impl MoeLayer {
             stream,
         )?;
 
-        // 4. One grouped dispatch: gate+up, silu+down, blend.
+        // 4. Compact the active experts (fixed cap per M keeps the grids
+        //    graph-shape-stable), then one grouped dispatch: gate+up,
+        //    silu+down, blend.
+        let cap = ops::fp8_grouped_active_cap(n, top_k, num_experts);
+        let active_experts = token_to_perm.offset(te * 4);
+        let active_count = active_experts.offset(cap as usize * 4);
+        ops::moe_fp8_grouped_compact(
+            ctx.gpu,
+            self.moe_fp8_grouped_compact_k,
+            expert_offsets,
+            active_experts,
+            active_count,
+            num_experts,
+            stream,
+        )?;
         let expert_gate_out = ctx.buffers.expert_gate_out();
         let expert_up_out = ctx.buffers.expert_up_out();
         let expert_down_out = ctx.buffers.expert_down_out();
@@ -274,13 +292,15 @@ impl MoeLayer {
             expert_up_out,
             expert_offsets,
             sorted_token_ids,
+            active_experts,
+            active_count,
             &sh.gate_proj,
             shared_gate_scratch,
             &sh.up_proj,
             shared_up_scratch,
             inter,
             h,
-            num_experts,
+            cap,
             n,
             stream,
         )?;
@@ -293,13 +313,15 @@ impl MoeLayer {
             dp.scale_ptrs,
             expert_down_out,
             expert_offsets,
+            active_experts,
+            active_count,
             shared_gate_scratch,
             shared_up_scratch,
             &sh.down_proj,
             shared_out,
             h,
             inter,
-            num_experts,
+            cap,
             n,
             stream,
         )?;

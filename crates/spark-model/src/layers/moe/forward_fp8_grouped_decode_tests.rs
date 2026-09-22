@@ -50,14 +50,21 @@ fn buffer_need_matches_the_launch_layout() {
     let n = grouped_decode_buffer_need(16, 2048, 512, 256, 8);
     let te = 16 * 8;
     assert_eq!(n.scratch, 2 * te * 4);
-    // sort scratch (3*te*4 + (E+1)*4 = 2564) is wider than 16x256 BF16 (8192)? no:
-    assert_eq!(n.gate_logits, (16 * 256 * 2).max(3 * te * 4 + 257 * 4));
+    // sort scratch 3*te*4 + (E+1)*4 + (min(te,E)+1)*4 = 3080 < 16x256 BF16 = 8192
+    assert_eq!(
+        n.gate_logits,
+        (16 * 256 * 2).max(3 * te * 4 + 257 * 4 + 129 * 4)
+    );
     assert_eq!(n.gate_logits, 8192);
     assert_eq!(n.expert_gate_out, te * 512 * 2);
     assert_eq!(n.expert_down_out, te * 2048 * 2);
     assert_eq!(n.shared_inter, 16 * 512 * 2);
     assert_eq!(n.row_hidden, 16 * 2048 * 2);
-    // At M=2 the sort scratch dominates the logits extent.
+    // At M=2 the sort scratch dominates the logits extent (cap = 16 < E).
     let n2 = grouped_decode_buffer_need(2, 2048, 256, 256, 8);
-    assert_eq!(n2.gate_logits, 3 * 16 * 4 + 257 * 4);
+    assert_eq!(n2.gate_logits, 3 * 16 * 4 + 257 * 4 + 17 * 4);
+    // Wide batch: cap saturates at E; the [64, 256] BF16 logits (32768 B)
+    // still dominate the sort scratch (3*512*4 + 257*4 + 257*4 = 8200 B).
+    let n64 = grouped_decode_buffer_need(64, 2048, 512, 256, 8);
+    assert_eq!(n64.gate_logits, 32768);
 }

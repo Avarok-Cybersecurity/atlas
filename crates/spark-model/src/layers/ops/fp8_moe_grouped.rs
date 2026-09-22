@@ -18,13 +18,45 @@ use crate::weight_map::Fp8Weight;
 /// in the `.cu`; the silu/down launch sizes its dynamic smem from it.
 pub const FP8_GROUPED_ROWS_PER_PASS: u32 = 8;
 
+/// Output columns per silu/down CTA — MUST equal `DOWN_COLS_PER_CTA` in the `.cu`.
+pub const FP8_GROUPED_DOWN_COLS_PER_CTA: u32 = 32;
+
 /// Dynamic shared memory the silu/down kernel needs for intermediate width `k`.
 pub fn fp8_grouped_silu_down_smem_bytes(k: u32) -> usize {
     FP8_GROUPED_ROWS_PER_PASS as usize * k as usize * 4
 }
 
-/// Grouped FP8 gate+up: grid `(ceil(n/8), num_experts+1, 2)`, block 128.
-/// `gate_out`/`up_out` rows are SORTED positions (`[num_tokens*top_k, n]`).
+/// Fixed expert-row cap of the grouped grids for `num_tokens` rows: at most
+/// `num_tokens*top_k` distinct experts can be active. Fixed per M so a
+/// captured graph stays valid for every routing.
+pub fn fp8_grouped_active_cap(num_tokens: u32, top_k: u32, num_experts: u32) -> u32 {
+    (num_tokens * top_k).min(num_experts)
+}
+
+/// Builds the compacted active-expert list from `expert_offsets`:
+/// `active_experts[0..count]` ascending, `active_count[0] = count`.
+/// Grid (1,1,1), block 256. Same stream as the grouped kernels that read it.
+pub fn moe_fp8_grouped_compact(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    expert_offsets: DevicePtr,
+    active_experts: DevicePtr,
+    active_count: DevicePtr,
+    num_experts: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([1, 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(expert_offsets)
+        .arg_ptr(active_experts)
+        .arg_ptr(active_count)
+        .arg_u32(num_experts)
+        .launch(stream)
+}
+
+/// Grouped FP8 gate+up: grid `(ceil(n/8), cap+1, 2)`, block 128, where `cap`
+/// is `fp8_grouped_active_cap`. `gate_out`/`up_out` rows are SORTED positions.
 #[allow(clippy::too_many_arguments)]
 pub fn moe_expert_gate_up_shared_fp8_grouped(
     gpu: &dyn GpuBackend,
@@ -38,18 +70,20 @@ pub fn moe_expert_gate_up_shared_fp8_grouped(
     up_out: DevicePtr,
     expert_offsets: DevicePtr,
     sorted_token_ids: DevicePtr,
+    active_experts: DevicePtr,
+    active_count: DevicePtr,
     sh_gate: &Fp8Weight,
     sh_gate_out: DevicePtr,
     sh_up: &Fp8Weight,
     sh_up_out: DevicePtr,
     n: u32,
     k: u32,
-    num_experts: u32,
+    cap: u32,
     num_tokens: u32,
     stream: u64,
 ) -> Result<()> {
     KernelLaunch::new(gpu, kernel)
-        .grid([div_ceil(n, 8), num_experts + 1, 2])
+        .grid([div_ceil(n, 8), cap + 1, 2])
         .block([128, 1, 1])
         .arg_ptr(input)
         .arg_ptr(gp_w)
@@ -60,6 +94,8 @@ pub fn moe_expert_gate_up_shared_fp8_grouped(
         .arg_ptr(up_out)
         .arg_ptr(expert_offsets)
         .arg_ptr(sorted_token_ids)
+        .arg_ptr(active_experts)
+        .arg_ptr(active_count)
         .arg_ptr(sh_gate.weight)
         .arg_ptr(sh_gate.row_scale)
         .arg_ptr(sh_gate_out)
@@ -68,14 +104,14 @@ pub fn moe_expert_gate_up_shared_fp8_grouped(
         .arg_ptr(sh_up_out)
         .arg_u32(n)
         .arg_u32(k)
-        .arg_u32(num_experts)
+        .arg_u32(cap)
         .arg_u32(num_tokens)
         .launch(stream)
 }
 
-/// Grouped FP8 SiLU+down: grid `(ceil(n/8), num_experts+1, 1)`, block 128,
-/// dynamic smem `fp8_grouped_silu_down_smem_bytes(k)`. `k` is the
-/// intermediate width; rows of `gate_out`/`up_out`/`output` are SORTED positions.
+/// Grouped FP8 SiLU+down: grid `(ceil(n/32), cap+1, 1)`, block 256 (8 warps
+/// x 4 columns), dynamic smem `fp8_grouped_silu_down_smem_bytes(k)`. `k` is
+/// the intermediate width; rows of `gate_out`/`up_out`/`output` are SORTED.
 #[allow(clippy::too_many_arguments)]
 pub fn moe_expert_silu_down_shared_fp8_grouped(
     gpu: &dyn GpuBackend,
@@ -86,19 +122,21 @@ pub fn moe_expert_silu_down_shared_fp8_grouped(
     down_s: DevicePtr,
     output: DevicePtr,
     expert_offsets: DevicePtr,
+    active_experts: DevicePtr,
+    active_count: DevicePtr,
     sh_gate_in: DevicePtr,
     sh_up_in: DevicePtr,
     sh_down: &Fp8Weight,
     sh_down_out: DevicePtr,
     n: u32,
     k: u32,
-    num_experts: u32,
+    cap: u32,
     num_tokens: u32,
     stream: u64,
 ) -> Result<()> {
     KernelLaunch::new(gpu, kernel)
-        .grid([div_ceil(n, 8), num_experts + 1, 1])
-        .block([128, 1, 1])
+        .grid([div_ceil(n, FP8_GROUPED_DOWN_COLS_PER_CTA), cap + 1, 1])
+        .block([256, 1, 1])
         .shared_mem(fp8_grouped_silu_down_smem_bytes(k) as u32)
         .arg_ptr(gate_out)
         .arg_ptr(up_out)
@@ -106,6 +144,8 @@ pub fn moe_expert_silu_down_shared_fp8_grouped(
         .arg_ptr(down_s)
         .arg_ptr(output)
         .arg_ptr(expert_offsets)
+        .arg_ptr(active_experts)
+        .arg_ptr(active_count)
         .arg_ptr(sh_gate_in)
         .arg_ptr(sh_up_in)
         .arg_ptr(sh_down.weight)
@@ -113,7 +153,7 @@ pub fn moe_expert_silu_down_shared_fp8_grouped(
         .arg_ptr(sh_down_out)
         .arg_u32(n)
         .arg_u32(k)
-        .arg_u32(num_experts)
+        .arg_u32(cap)
         .arg_u32(num_tokens)
         .launch(stream)
 }
