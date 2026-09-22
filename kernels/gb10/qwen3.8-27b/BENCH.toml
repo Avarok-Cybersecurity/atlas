@@ -596,6 +596,55 @@ kv_cache_dtype = "fp8"
 # was cut cold on the 8-slot pin, so nothing it measures changes; C=2/4
 # keep their warm TTFT (506 / 656 ms, 2026-09-14).
 ssm_cache_slots = "32"
+# ★ THE PUBLISHED WINNING PROFILE, PINNED 2026-09-22. The gate served the
+# recipe's own speculation policy, and `serve_resolved` on every record proves
+# what that meant: it disclosed `speculative = true` and NOTHING for the MTP
+# gate. record_serve::disclosure omits `mtp_gate` precisely when the flag was
+# never given -- "the recipe pinned nothing" is the finding a reader needs --
+# so the scheduler's own policy decided, and speculation tailed off as the
+# ladder widened.
+#
+# It showed up as a widening deficit against bench/ladder38/published.json on
+# the SAME declared instrument, measured by campaign 8's aborted first run
+# (kept at campaign-1220/events.wrongconfig.ndjson):
+#
+#     C=1  20.70 vs 23.59  (0.88x)     C=8   72.10 vs 125.95 (0.57x)
+#     C=2  31.60 vs 41.02  (0.77x)     C=16 117.70 vs 203.36 (0.58x)
+#     C=4  53.60 vs 74.21  (0.72x)
+#
+# A ratio that DEGRADES with concurrency is the signature of a speculation
+# policy giving way, not of a flat regression -- and at those numbers the live
+# leg loses to vllm-mtp at C=2,4,8,16, which would have published Atlas as
+# slower than the baseline this same file says it beats on every rung.
+#
+# So the levers of the published Atlas leg's own `cli` are pinned here, keys
+# rendered by recipe::schema::argv_for (underscores become dashes; a
+# presence-only flag takes "true"). `speculative` is pinned even though the
+# recipe already sets it: check_record demands every pin on the record, so
+# pinning it turns an inherited default into a checked fact.
+mtp_gate = "force"
+num_drafts = "3"
+mtp_quantization = "bf16"
+speculative = "true"
+ssm_checkpoint_interval = "32"
+ssm_h_dtype = "f16-pool"
+gdn_fused_norm = "true"
+ssm_batched_recurrent = "true"
+ssm_tail_midchunk = "false"
+prefill_varlen_batch = "true"
+# ★ ssm_cache_slots STAYS AT 32 and is NOT reverted to the published leg's 8.
+# That pin is a measured decision with its own justification above -- the
+# slots_needed rule, and the note that C=8's floor was cut cold on the 8-slot
+# pin so nothing it measures changes. Copying the published CLI wholesale would
+# have overwritten a documented measurement with a number from a hand-built
+# serve; the subject of this block is the speculation policy, not the pool.
+#
+# ★ WHAT CANNOT BE PINNED HERE: the published leg also carries four
+# environment variables (ATLAS_PREFILL_CODISPATCH, ATLAS_FP8_ROWWISE,
+# ATLAS_MTP_DCUT_RATIO, ATLAS_MTP_K_LADDER). serve_overrides render to `spark
+# serve` FLAGS only, so an entry here cannot set them and one that tried would
+# be refused by clap as an unknown flag. If a gap remains after this campaign,
+# it needs a different mechanism than this table.
 # ★ 4096 -> 2048 on 2026-09-21, with the instrument re-point. 2048 is the
 # published ladder's context on BOTH legs of the matched pair — the vLLM+MTP
 # baseline's instrument.max_model_len and the Atlas leg's own
