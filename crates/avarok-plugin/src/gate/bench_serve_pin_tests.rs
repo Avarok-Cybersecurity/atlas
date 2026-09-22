@@ -157,6 +157,12 @@ fn the_trees_serve_pins_sit_on_the_gates_that_need_them() {
         ("max_batch_size", "128"),
         ("kv_cache_dtype", "fp8"),
         ("max_model_len", "2048"),
+        // ★ The fourth pin is a SERVE pin, not a fingerprint pin: the one lever
+        // of the published leg the recipe cannot carry, promoted from a
+        // node-wide env var to a per-gate flag on this same stack so the ladder
+        // can have it while ttft-warm-gate does not. The dense proof that beats
+        // vLLM at every rung was measured WITH it.
+        ("prefill_codispatch", "true"),
     ] {
         assert_eq!(
             c.serve_overrides.get(key).map(String::as_str),
@@ -165,7 +171,7 @@ fn the_trees_serve_pins_sit_on_the_gates_that_need_them() {
             c.serve_overrides
         );
     }
-    assert_eq!(c.serve_overrides.len(), 3, "{:?}", c.serve_overrides);
+    assert_eq!(c.serve_overrides.len(), 4, "{:?}", c.serve_overrides);
     assert!(
         !c.serve_overrides.contains_key("lm_head_dtype"),
         "the throughput recipe leaves the head at the checkpoint's native NVFP4; pinning \
@@ -237,6 +243,13 @@ fn the_trees_serve_pins_sit_on_the_gates_that_need_them() {
     // being directly comparable at the same moment, which is stated in
     // bench_override_tree_tests and in both BENCH.toml entries.
     const FORCED_BY_THE_REPOINT: [&str; 1] = ["max_model_len"];
+    // prefill_codispatch: the published leg's lever, promoted from a node-wide
+    // env var to a per-gate flag on 2026-09-22 and pinned on the plain ladder
+    // because the all-rung proof against vLLM was measured WITH it. DFlash2 was
+    // never measured with co-dispatch on; pinning it there would move a ladder
+    // nothing has re-measured, so it is listed as forced apart rather than
+    // silently copied.
+    const FORCED_BY_THE_LEVER_PROMOTION: [&str; 1] = ["prefill_codispatch"];
     // ★ WHAT THIS RULE NO LONGER COVERS, stated because a narrowed test that
     // does not say it narrowed is worse than no test. Until 2026-09-22 the two
     // ladders shared the agentic recipe and differed only in their pins, so
@@ -253,6 +266,7 @@ fn the_trees_serve_pins_sit_on_the_gates_that_need_them() {
     for (key, want) in &c.serve_overrides {
         if FORCED_BY_THE_DRAFTER.contains(&key.as_str())
             || FORCED_BY_THE_REPOINT.contains(&key.as_str())
+            || FORCED_BY_THE_LEVER_PROMOTION.contains(&key.as_str())
         {
             assert_ne!(
                 d.serve_overrides.get(key),
