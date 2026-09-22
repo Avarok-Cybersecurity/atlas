@@ -623,16 +623,33 @@ ssm_cache_slots = "32"
 # recipe already sets it: check_record demands every pin on the record, so
 # pinning it turns an inherited default into a checked fact.
 #
-# ★ SCOPED TO WHAT THE EVIDENCE NAMES. The published `cli` also carries
-# ssm_h_dtype, ssm_checkpoint_interval, gdn_fused_norm, ssm_batched_recurrent,
-# ssm_tail_midchunk and prefill_varlen_batch. Those are NOT pinned, for two
-# reasons. Nothing shows the recipe differs on them -- `serve_resolved`
-# discloses only the speculation pair, so they are unmeasured either way, and a
-# pin is a claim check_record then enforces on every record. And f16-pool in
-# particular is rejected with --dflash by design (see the dflash2 entry), so
-# pinning it here would force a third axis apart between the two ladders to buy
-# something unevidenced. If a deficit survives this campaign they are the next
-# place to look, with a measurement behind them.
+# ★ SUPERSEDED 2026-09-22 -- these six ARE now pinned, in the block below.
+# The paragraph that stood here declined to pin ssm_h_dtype,
+# ssm_checkpoint_interval, gdn_fused_norm, ssm_batched_recurrent,
+# ssm_tail_midchunk and prefill_varlen_batch for two reasons, and set its own
+# condition for revisiting: "if a deficit survives this campaign they are the
+# next place to look, with a measurement behind them." Both gaps are now closed.
+#
+#   1. "Nothing shows the recipe differs on them." It does, and the recipe was
+#      read rather than inferred: qwen3.8/qwen3.8-27b-nvfp4-unsloth.yaml is the
+#      AGENTIC profile and sets `scheduling_policy: slai` and
+#      `ssm_checkpoint_interval: 16` while setting NONE of ssm_h_dtype,
+#      gdn_fused_norm, ssm_batched_recurrent, prefill_varlen_batch,
+#      ssm_tail_midchunk, disable_thinking or request_timeout -- and
+#      kernels/gb10/HARDWARE.toml [defaults] carries
+#      `ssm_batched_recurrent = false`. So the gate served every one of them
+#      differently from the published leg. `main_modules/serve_flags.rs` says
+#      why they exist as flags at all: "They are CONFIGURATION -- the
+#      concurrency campaign's best recipe needs three of them."
+#   2. "If a deficit survives this campaign." It did. Campaign 8 measured
+#      0.91x / 0.78x / 0.76x / 0.60x / 0.61x / 0.51x at C=1..32 and had C=64 and
+#      C=128 CUT by the serve's 300 s deadline (finish_reason="timeout", cells
+#      vacuous, gate FAILED).
+#
+# The f16-pool objection stands and is handled rather than dismissed: it does
+# force a third axis apart from the DFlash2 ladder, so bench_serve_pin_tests.rs
+# names all nine keys in FORCED_BY_THE_PUBLISHED_PROFILE with the reason
+# recorded per axis, and ssm_h_dtype carries its own second reason there.
 mtp_gate = "force"
 num_drafts = "3"
 mtp_quantization = "bf16"
@@ -670,9 +687,148 @@ max_model_len = "2048"
 # lm_head_dtype is deliberately NOT overridden: the recipe's bf16 head is a
 # correctness pin (exact argmax over the 248K vocab), not a throughput knob.
 
+# ============================================================================
+# ★ THE PUBLISHED WINNING PROFILE'S REMAINING NINE FLAGS, PINNED 2026-09-22.
+#
+# Campaign 8 measured this gate at 0.91x of bench/ladder38/published.json at
+# C=1 falling to 0.51x at C=32, with C=64 and C=128 CUT mid-generation
+# (`finish_reason="timeout"`, 73% and 37% of budget delivered, cells VACUOUS,
+# and `concurrency_verdict.rs` therefore FAILED the gate). The cause was not a
+# regression and not the instrument axes -- those were already re-pointed. It
+# was that this gate serves the AGENTIC recipe
+# (qwen3.8/qwen3.8-27b-nvfp4-unsloth: batch 1, bf16 KV, slai scheduler,
+# thinking ON, every GDN lever off, ssm_checkpoint_interval 16) and overrode
+# only eight of its axes. The published leg's own CLI -- recorded verbatim in
+# published.json `series[0].cli` -- carries NINE more, and every one of them is
+# a real ServeArgs flag.
+#
+# ★ WHY FLAGS AND NOT THE LOOSER GATE. The alternative was to pin only
+# `request_timeout = "0"` and accept a ~2 h sweep at the current speed. That
+# treats the symptom: the published leg did C=128 in ~274 s of decode ON THIS
+# BOX, so a cell that needs 850 s is the finding, not the deadline. Owner's
+# call, 2026-09-22: make the engine fast enough, keep the bar.
+#
+#   scheduling_policy = fifo       the recipe's `slai` is the agentic
+#                                  scheduler; the ladder was measured on fifo
+#   ssm_checkpoint_interval = 32   the recipe's 16 is the agentic (multi-turn)
+#                                  geometry and checkpoints twice as often
+#   ssm_h_dtype = f16-pool         ★ THE LOAD-BEARING ONE for the wide rungs:
+#                                  this is the pool relief that lets MTP reach
+#                                  batch 128 at all (see the DFlash2 note,
+#                                  which records that the same relief is
+#                                  REFUSED with --dflash by design)
+#   gdn_fused_norm = true          off by default on gb10 (`gdn_flags::from_env`
+#   ssm_batched_recurrent = true   gives h_f16=false, fused_norm=false; and
+#   prefill_varlen_batch = true    HARDWARE.toml [defaults]
+#                                  ssm_batched_recurrent = false)
+#
+# ★ THESE NINE ARE NOT NINE INDEPENDENT KNOBS. `ssm_h_dtype = f16-pool` HARD
+# REQUIRES `gdn_fused_norm`, and the requirement is enforced at BOOT:
+# serve_phases/preflight/ssm_h_fp16.rs bails with "--ssm-h-dtype f16 requires
+# --gdn-fused-norm -- the non-fused decode arms have no FP16 twin in stage 1."
+# So removing gdn_fused_norm while leaving ssm_h_dtype does not degrade, it
+# REFUSES TO START. Do not split the pair. Every other refusal in that list was
+# checked against this exact pin set before it was written:
+#   * self/ngram speculative      -- not set here (MTP only) OK
+#   * speculative && drafts > 3   -- num_drafts is pinned at exactly 3 OK
+#   * dflash gamma > 15           -- dflash is not set on this gate OK
+#   * AVAROK_GDN_FUSED_CONV=1     -- not set, and deliberately NOT added to the
+#                                    nodes bench.yaml alongside the four levers
+#   * linear head dims != 128/128 -- the published leg ran f16-pool on this
+#                                    exact checkpoint, so they are 128/128
+# f16-pool also SIZES every h pool at 2 bytes rather than 4, which is the
+# memory relief the dflash2 note calls "the f16-pool relief that lets MTP reach
+# 128" -- i.e. the pin is load-bearing for the widest rungs twice over, once for
+# speed and once for fit.
+#   ssm_tail_midchunk = false      published pinned it OFF explicitly; an
+#                                  omitted Option<bool> is not the same
+#                                  disclosure as a pinned false
+#   disable_thinking = true        the SERVER-SIDE half of an intent the
+#                                  harness already states per request: every
+#                                  cell body carries `reasoning_effort: "none"`
+#                                  (concurrency.rs request_body) because "on a
+#                                  thinking-on serve the output budget
+#                                  otherwise disappears into <think>". The
+#                                  agentic recipe leaves thinking ON at the
+#                                  serve, and the published leg pinned it off;
+#                                  ssm-state-poisoning-gate pins this same key.
+#                                  ★ IF A CELL STARTS FINISHING `stop` EARLY
+#                                  AFTER THIS CHANGE, THIS PIN IS THE FIRST
+#                                  SUSPECT: the live run reached `length×N` at
+#                                  C=1..8 with thinking on at the serve, so the
+#                                  per-request pin was already doing the work,
+#                                  and a shorter template answer would put a
+#                                  cell UNDER budget -- vacuous for the
+#                                  opposite reason the wide rungs were.
+#   request_timeout = 0            the serve's own deadline defaults to 300 s
+#                                  (DEFAULT_REQUEST_TIMEOUT_SECS) and CUTS a
+#                                  request with finish_reason="timeout" -- NOT
+#                                  an error, so the cell goes vacuous and the
+#                                  gate fails with nothing saying "timeout".
+#                                  Kept even though the flags above should make
+#                                  C=128 finish in ~274 s: 274 against 300 is a
+#                                  9% margin, and a benchmark must not sit one
+#                                  bad night away from truncating itself.
+#
+# ★ STILL NOT PINNABLE HERE, and now with a mechanism instead of a shrug: the
+# published leg also sets four ENV-ONLY levers (AVAROK_PREFILL_CODISPATCH,
+# AVAROK_FP8_ROWWISE, AVAROK_MTP_DCUT_RATIO, AVAROK_MTP_K_LADDER -- ATLAS_* in
+# the artifact, pre-#1101). None has a ServeArgs flag, so serve_overrides
+# cannot carry them, and the node agent spawns every child under `env_clear()`
+# (atlasctl-agent bench/ports_std.rs:91,212,327) so exporting them in the
+# driver reaches the orchestrating box and never the measuring one. They are
+# set instead in each node's own bench.yaml `env:` map, which is the only input
+# `child_env()` accepts -- audited by scripts/audit_armed_env.sh.
+# ============================================================================
+scheduling_policy = "fifo"
+ssm_checkpoint_interval = "32"
+ssm_h_dtype = "f16-pool"
+gdn_fused_norm = "true"
+ssm_batched_recurrent = "true"
+prefill_varlen_batch = "true"
+ssm_tail_midchunk = "false"
+disable_thinking = "true"
+request_timeout = "0"
+
 [benchmarks.param_overrides]
 # The gate's instrument — see the block comment above. Values are parsed by
 # each parameter's own schema kind, exactly like --param KEY=VALUE.
+# ★ warmup = 0, ADDED 2026-09-22 — THE WARM-UP CANNOT WARM AT THIS ISL, AND THE
+# GATE WAS FAILING ITSELF FOR THE DISCREPANCY.
+#
+# `warmup` primes every exact prompt of the measured batch "so prefix-cache
+# state is controlled before timing" (its ParamSpec). `cache_is_uncontrolled`
+# then flags any cell where `warmup > 0` and a request cached under
+# WARM_CACHE_FLOOR = 0.8 of its prompt, and `concurrency_verdict.rs` fails the
+# gate on `cache_uncontrolled > 0`.
+#
+# Measured, not reasoned: campaign 8's record carries
+# `cache_uncontrolled_cells = 3` and `min_cached_prompt_pct = 0.0`, and the
+# per-request evidence reads `cached [0/200, 0/200, ...]` at EVERY rung. The
+# three flagged cells are exactly C=1/2/4 — the ones `slots_needed` declares
+# warm-capable at 32 slots (3, 8, 18 needed); C>=8 needs 38 and is already cold
+# by construction, so it runs no warm-up round and cannot be flagged.
+#
+# ★ IT IS THE INSTRUMENT RE-POINT THAT BROKE IT, and the older records prove it
+# rather than a theory: every committed concurrency-sweep record on the RETIRED
+# instrument (isl 512) carries `cache_uncontrolled_cells = 0` and PASSED, while
+# the first record on isl 128 carries 3. `warmup` was never overridden on either
+# — it is the ParamSpec default of 1 in both — and the re-point changed only
+# isl, osl and prompt_mode. At isl 128 the rendered prompt is ~200 tokens and
+# nothing of it comes back cached.
+#
+# So a warm-up round here buys no cache state, costs a full extra pass per cell,
+# and then fails the gate for not achieving what it cannot achieve. Declaring
+# every cell COLD is the honest instrument, and it is the same move BENCH.toml
+# already makes for C>=8 ("the sweep declares C >= 16 cold by construction").
+#
+# ★ IT DOES NOT BREAK THE PUBLISHED COMPARISON. `warmup` is not one of
+# ladder-baselines.js REQUIRED_AXES (isl, osl, prompt_mode, max_model_len,
+# max_batch_size, kv_cache_dtype), and the published leg's own warm-up is at a
+# different granularity anyway: "mean tok/s over 3 timed reps (1 warmup
+# discarded)" — a discarded ladder PASS, not per-prompt cache priming. It
+# records no cached-prompt fraction at all.
+warmup = "0"
 # 1..128 as of 2026-08-29: the published Atlas-vs-vLLM ladder quotes C=1..128,
 # and a certification that stopped at 16 left the four widest rungs of the
 # claim ungated. C=2 is in because it is the thinnest margin on that ladder

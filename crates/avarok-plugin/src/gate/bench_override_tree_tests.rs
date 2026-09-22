@@ -91,6 +91,27 @@ fn every_committed_param_override_parses_against_its_gates_schema() {
                 "prompt_mode".into(),
                 "essay".into(),
             ),
+            // ★ warmup = 0 since 2026-09-22: at isl 128 the warm-up round
+            // achieves NOTHING and then fails the gate for it. Campaign 8's
+            // record carries `cache_uncontrolled_cells = 3` with
+            // `min_cached_prompt_pct = 0.0` and per-request evidence reading
+            // `cached [0/200, ...]` at every rung; the three flagged cells are
+            // exactly C=1/2/4, the ones `slots_needed` calls warm-capable at 32
+            // slots. Every record on the RETIRED isl 512 instrument carries
+            // `cache_uncontrolled_cells = 0`, and `warmup` was never overridden
+            // on either — so the re-point is what broke it, measured rather
+            // than argued. Declaring every cell cold is the honest instrument,
+            // it saves a full extra pass per cell, and `warmup` is not one of
+            // ladder-baselines.js REQUIRED_AXES so the published comparison is
+            // untouched (that leg's own warm-up is a discarded ladder PASS —
+            // "3 timed reps (1 warmup discarded)" — not per-prompt priming).
+            (
+                "gb10".into(),
+                "qwen3.8-27b".into(),
+                "concurrency-sweep".into(),
+                "warmup".into(),
+                "0".into(),
+            ),
             // The DFlash2 gate stops at 16 because a DFlash2 serve refuses to
             // start above a narrow batch (measured; see the BENCH.toml note),
             // and a rung above the batch cap would measure the cap rather than

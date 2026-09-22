@@ -151,6 +151,23 @@ fn the_trees_serve_pins_sit_on_the_gates_that_need_them() {
         // Pinned although the recipe already sets it: check_record demands every pin
         // on the record, so this turns an inherited default into a checked fact.
         ("speculative", "true"),
+        // ★ THE PUBLISHED WINNING PROFILE'S REMAINING NINE, 2026-09-22. Each is a
+        // real ServeArgs flag, which is what separates them from the four env-only
+        // perf levers the same leg carries: a flag renders to argv and survives the
+        // node agent's env_clear(), an env var does not. `ssm_h_dtype = f16-pool` is
+        // the pool relief that lets MTP reach batch 128 at all, and `request_timeout
+        // = 0` disables the serve's 300 s deadline, which CUT C=64/128 mid-generation
+        // (finish_reason="timeout" -- not an error, so the cells went vacuous and the
+        // gate failed with nothing in the summary saying "timeout").
+        ("scheduling_policy", "fifo"),
+        ("ssm_checkpoint_interval", "32"),
+        ("ssm_h_dtype", "f16-pool"),
+        ("gdn_fused_norm", "true"),
+        ("ssm_batched_recurrent", "true"),
+        ("prefill_varlen_batch", "true"),
+        ("ssm_tail_midchunk", "false"),
+        ("disable_thinking", "true"),
+        ("request_timeout", "0"),
     ] {
         assert_eq!(
             c.serve_overrides.get(key).map(String::as_str),
@@ -159,7 +176,7 @@ fn the_trees_serve_pins_sit_on_the_gates_that_need_them() {
             c.serve_overrides
         );
     }
-    assert_eq!(c.serve_overrides.len(), 8, "{:?}", c.serve_overrides);
+    assert_eq!(c.serve_overrides.len(), 17, "{:?}", c.serve_overrides);
     assert!(
         !c.serve_overrides.contains_key("lm_head_dtype"),
         "the bf16 head is a correctness pin the gate must not touch"
@@ -232,10 +249,37 @@ fn the_trees_serve_pins_sit_on_the_gates_that_need_them() {
     // own. Pinning them here would describe a serve that cannot boot.
     const FORCED_BY_THE_MTP_POLICY: [&str; 4] =
         ["mtp_gate", "num_drafts", "mtp_quantization", "speculative"];
+    // The published winning profile, forced apart 2026-09-22 for the SAME reason
+    // as max_model_len above and stated separately so the reason is recorded per
+    // axis rather than inferred. The plain gate now pins the nine remaining flags
+    // of bench/ladder38/published.json `series[0].cli` so its live record
+    // reproduces that leg. DFlash2 is not on the published ladder -- its bars were
+    // cut at ctx 4096 / ISL 512 / OSL 200 -- so following it here would buy a
+    // comparison nothing draws and cost every record this gate has, because
+    // `check_record` demands every pin and a new pin refuses the old records. It
+    // passes today ("5 cells, zero errors, zero vacuous"), and that is the thing
+    // not to spend.
+    //
+    // ssm_h_dtype has a SECOND and stronger reason, which is why it is listed even
+    // though the paragraph above would already cover it: the f16-pool relief is
+    // REJECTED with --dflash by design (the max_batch_size note above records the
+    // same fact from the other side). A serve carrying both would not start.
+    const FORCED_BY_THE_PUBLISHED_PROFILE: [&str; 9] = [
+        "scheduling_policy",
+        "ssm_checkpoint_interval",
+        "ssm_h_dtype",
+        "gdn_fused_norm",
+        "ssm_batched_recurrent",
+        "prefill_varlen_batch",
+        "ssm_tail_midchunk",
+        "disable_thinking",
+        "request_timeout",
+    ];
     for (key, want) in &c.serve_overrides {
         if FORCED_BY_THE_DRAFTER.contains(&key.as_str())
             || FORCED_BY_THE_REPOINT.contains(&key.as_str())
             || FORCED_BY_THE_MTP_POLICY.contains(&key.as_str())
+            || FORCED_BY_THE_PUBLISHED_PROFILE.contains(&key.as_str())
         {
             assert_ne!(
                 d.serve_overrides.get(key),
