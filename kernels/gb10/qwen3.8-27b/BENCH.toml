@@ -793,42 +793,6 @@ request_timeout = "0"
 [benchmarks.param_overrides]
 # The gate's instrument — see the block comment above. Values are parsed by
 # each parameter's own schema kind, exactly like --param KEY=VALUE.
-# ★ warmup = 0, ADDED 2026-09-22 — THE WARM-UP CANNOT WARM AT THIS ISL, AND THE
-# GATE WAS FAILING ITSELF FOR THE DISCREPANCY.
-#
-# `warmup` primes every exact prompt of the measured batch "so prefix-cache
-# state is controlled before timing" (its ParamSpec). `cache_is_uncontrolled`
-# then flags any cell where `warmup > 0` and a request cached under
-# WARM_CACHE_FLOOR = 0.8 of its prompt, and `concurrency_verdict.rs` fails the
-# gate on `cache_uncontrolled > 0`.
-#
-# Measured, not reasoned: campaign 8's record carries
-# `cache_uncontrolled_cells = 3` and `min_cached_prompt_pct = 0.0`, and the
-# per-request evidence reads `cached [0/200, 0/200, ...]` at EVERY rung. The
-# three flagged cells are exactly C=1/2/4 — the ones `slots_needed` declares
-# warm-capable at 32 slots (3, 8, 18 needed); C>=8 needs 38 and is already cold
-# by construction, so it runs no warm-up round and cannot be flagged.
-#
-# ★ IT IS THE INSTRUMENT RE-POINT THAT BROKE IT, and the older records prove it
-# rather than a theory: every committed concurrency-sweep record on the RETIRED
-# instrument (isl 512) carries `cache_uncontrolled_cells = 0` and PASSED, while
-# the first record on isl 128 carries 3. `warmup` was never overridden on either
-# — it is the ParamSpec default of 1 in both — and the re-point changed only
-# isl, osl and prompt_mode. At isl 128 the rendered prompt is ~200 tokens and
-# nothing of it comes back cached.
-#
-# So a warm-up round here buys no cache state, costs a full extra pass per cell,
-# and then fails the gate for not achieving what it cannot achieve. Declaring
-# every cell COLD is the honest instrument, and it is the same move BENCH.toml
-# already makes for C>=8 ("the sweep declares C >= 16 cold by construction").
-#
-# ★ IT DOES NOT BREAK THE PUBLISHED COMPARISON. `warmup` is not one of
-# ladder-baselines.js REQUIRED_AXES (isl, osl, prompt_mode, max_model_len,
-# max_batch_size, kv_cache_dtype), and the published leg's own warm-up is at a
-# different granularity anyway: "mean tok/s over 3 timed reps (1 warmup
-# discarded)" — a discarded ladder PASS, not per-prompt cache priming. It
-# records no cached-prompt fraction at all.
-warmup = "0"
 # 1..128 as of 2026-08-29: the published Atlas-vs-vLLM ladder quotes C=1..128,
 # and a certification that stopped at 16 left the four widest rungs of the
 # claim ungated. C=2 is in because it is the thinnest margin on that ladder
