@@ -139,6 +139,18 @@ fn the_trees_serve_pins_sit_on_the_gates_that_need_them() {
         // 1024 is ~1224 tokens with the template, so 2048 still holds the
         // gate's sequences with ~1.7x headroom.
         ("max_model_len", "2048"),
+        // ★ THE SPECULATION POLICY, pinned 2026-09-22. `serve_resolved` disclosed
+        // `speculative = true` and NOTHING for the MTP gate — the disclosure omits
+        // that key exactly when the flag was never given — so the scheduler decided
+        // and speculation tailed off as the ladder widened: 0.88x of the published
+        // ladder at C=1 falling to 0.57x at C=8, where the live leg loses to the vLLM
+        // leg this same manifest says it beats.
+        ("mtp_gate", "force"),
+        ("num_drafts", "3"),
+        ("mtp_quantization", "bf16"),
+        // Pinned although the recipe already sets it: check_record demands every pin
+        // on the record, so this turns an inherited default into a checked fact.
+        ("speculative", "true"),
     ] {
         assert_eq!(
             c.serve_overrides.get(key).map(String::as_str),
@@ -147,7 +159,7 @@ fn the_trees_serve_pins_sit_on_the_gates_that_need_them() {
             c.serve_overrides
         );
     }
-    assert_eq!(c.serve_overrides.len(), 4, "{:?}", c.serve_overrides);
+    assert_eq!(c.serve_overrides.len(), 8, "{:?}", c.serve_overrides);
     assert!(
         !c.serve_overrides.contains_key("lm_head_dtype"),
         "the bf16 head is a correctness pin the gate must not touch"
@@ -213,9 +225,17 @@ fn the_trees_serve_pins_sit_on_the_gates_that_need_them() {
     // being directly comparable at the same moment, which is stated in
     // bench_override_tree_tests and in both BENCH.toml entries.
     const FORCED_BY_THE_REPOINT: [&str; 1] = ["max_model_len"];
+    // The MTP speculation policy, forced apart 2026-09-22 by what DFlash2 IS,
+    // not by a choice. `--dflash` conflicts with `--speculative` at the CLI — the
+    // assertion above already pins that a serve carrying both would not start —
+    // and the other three configure the MTP drafter this gate replaces with its
+    // own. Pinning them here would describe a serve that cannot boot.
+    const FORCED_BY_THE_MTP_POLICY: [&str; 4] =
+        ["mtp_gate", "num_drafts", "mtp_quantization", "speculative"];
     for (key, want) in &c.serve_overrides {
         if FORCED_BY_THE_DRAFTER.contains(&key.as_str())
             || FORCED_BY_THE_REPOINT.contains(&key.as_str())
+            || FORCED_BY_THE_MTP_POLICY.contains(&key.as_str())
         {
             assert_ne!(
                 d.serve_overrides.get(key),

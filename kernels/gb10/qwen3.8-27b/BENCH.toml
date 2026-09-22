@@ -617,21 +617,26 @@ ssm_cache_slots = "32"
 # leg loses to vllm-mtp at C=2,4,8,16, which would have published Atlas as
 # slower than the baseline this same file says it beats on every rung.
 #
-# So the levers of the published Atlas leg's own `cli` are pinned here, keys
-# rendered by recipe::schema::argv_for (underscores become dashes; a
+# So the published leg's SPECULATION POLICY is pinned here -- and only that.
+# Keys render through recipe::schema::argv_for (underscores become dashes; a
 # presence-only flag takes "true"). `speculative` is pinned even though the
 # recipe already sets it: check_record demands every pin on the record, so
 # pinning it turns an inherited default into a checked fact.
+#
+# ★ SCOPED TO WHAT THE EVIDENCE NAMES. The published `cli` also carries
+# ssm_h_dtype, ssm_checkpoint_interval, gdn_fused_norm, ssm_batched_recurrent,
+# ssm_tail_midchunk and prefill_varlen_batch. Those are NOT pinned, for two
+# reasons. Nothing shows the recipe differs on them -- `serve_resolved`
+# discloses only the speculation pair, so they are unmeasured either way, and a
+# pin is a claim check_record then enforces on every record. And f16-pool in
+# particular is rejected with --dflash by design (see the dflash2 entry), so
+# pinning it here would force a third axis apart between the two ladders to buy
+# something unevidenced. If a deficit survives this campaign they are the next
+# place to look, with a measurement behind them.
 mtp_gate = "force"
 num_drafts = "3"
 mtp_quantization = "bf16"
 speculative = "true"
-ssm_checkpoint_interval = "32"
-ssm_h_dtype = "f16-pool"
-gdn_fused_norm = "true"
-ssm_batched_recurrent = "true"
-ssm_tail_midchunk = "false"
-prefill_varlen_batch = "true"
 # ★ ssm_cache_slots STAYS AT 32 and is NOT reverted to the published leg's 8.
 # That pin is a measured decision with its own justification above -- the
 # slots_needed rule, and the note that C=8's floor was cut cold on the 8-slot
