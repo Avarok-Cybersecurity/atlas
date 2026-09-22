@@ -76,5 +76,48 @@ impl FastSafetensorsLoader {
 }
 
 #[cfg(test)]
+mod activation_scale_tests {
+    use super::FastSafetensorsLoader;
+
+    fn loader() -> FastSafetensorsLoader {
+        let mut l = FastSafetensorsLoader::new();
+        l.skip_activation_scales = true;
+        l
+    }
+
+    /// 🔴 The BLAST RADIUS of the opt-in, pinned. The rule is a `.input_scale`
+    /// suffix and nothing else; every model added to the server's allow-list
+    /// depends on it never reaching `weight_scale` / `weight_scale_2`, which
+    /// ARE the w4a16 operands. A predicate widened to `contains("scale")` or
+    /// to `.starts_with` would pass every other test in this crate and quietly
+    /// unbind every quantised projection in the checkpoint.
+    #[test]
+    fn the_rule_reaches_only_activation_scales() {
+        let l = loader();
+        assert!(l.should_skip_tensor("model.layers.0.mlp.gate_proj.input_scale"));
+        assert!(l.should_skip_tensor("model.layers.0.mlp.experts.7.up_proj.input_scale"));
+
+        for keep in [
+            "model.layers.0.mlp.gate_proj.weight",
+            "model.layers.0.mlp.gate_proj.weight_scale",
+            "model.layers.0.mlp.gate_proj.weight_scale_2",
+            "model.layers.0.self_attn.k_proj.k_scale",
+            "model.layers.0.mlp.gate_proj.input_scale_inv",
+            "input_scale",
+        ] {
+            assert!(!l.should_skip_tensor(keep), "{keep} must still load");
+        }
+    }
+
+    /// OPT-IN: off by default, so a model that never asks keeps every scalar.
+    #[test]
+    fn nothing_is_skipped_unless_the_model_opted_in() {
+        let l = FastSafetensorsLoader::new();
+        assert!(!l.skip_activation_scales);
+        assert!(!l.should_skip_tensor("model.layers.0.mlp.gate_proj.input_scale"));
+    }
+}
+
+#[cfg(test)]
 #[path = "defer_tests.rs"]
 mod defer_tests;
