@@ -26,6 +26,8 @@ mod tests {
     fn bad_matvec_does_not_drop_the_weight_owner() {
         let live = vec![0xA11C_u64];
         let result = retain_weights_on_panic(AssertUnwindSafe(|| {
+            // 896 here is hidden/tp (7168/8), the sliced K from the bad down proj.
+            // It is not n_experts. The op still expects inn = 7168.
             let _ = matvec(&[0.0; 3_211_264], &[0.0; 896], 3584, 7168);
             Ok(())
         }));
