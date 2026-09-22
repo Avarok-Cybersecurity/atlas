@@ -11,15 +11,30 @@ use super::super::{WeightDtype, WeightTensor, evict_page_cache, f16_to_bf16_byte
 use super::{SafetensorsIndex, check_oom_guard, estimate_has_fp8, estimate_load_bytes};
 use crate::gpu::GpuBackend;
 
+/// The two predicates that decide a tensor's fate, carried as one value
+/// because they are always asked together and always in this order.
+///
+/// 🔴 `skip` first, `defer` second. A tensor this rank does not own must never
+/// be recorded as deferred: that would put a remote expert's on-disk location
+/// in the store and invite a binder to read weights EP gave to another rank.
+pub(super) struct TensorRules<'a> {
+    /// Not this rank's, or not this model's: dropped, no record kept.
+    pub skip: &'a dyn Fn(&str) -> bool,
+    /// The model's own loader will read it from disk: recorded, not uploaded.
+    /// See [`crate::weights::DeferHook`].
+    pub defer: &'a dyn Fn(&str, WeightDtype) -> bool,
+}
+
 pub(super) fn load_sharded(
     model_dir: &Path,
     index_path: &Path,
     gpu: &dyn GpuBackend,
     oom_reserve_bytes: usize,
-    skip_fn: &dyn Fn(&str) -> bool,
+    rules: &TensorRules<'_>,
     peak_multiplier_override: Option<f64>,
     deferred: &mut HashMap<String, crate::weights::DeferredTensor>,
 ) -> Result<HashMap<String, WeightTensor>> {
+    let (skip_fn, defer_fn) = (rules.skip, rules.defer);
     let index_json = std::fs::read_to_string(index_path)
         .with_context(|| format!("Failed to read {}", index_path.display()))?;
     let index: SafetensorsIndex = serde_json::from_str(&index_json)?;
@@ -38,11 +53,11 @@ pub(super) fn load_sharded(
     // Pre-flight: estimate bytes from index with model-building overhead.
     let shard_files: Vec<std::path::PathBuf> =
         shard_to_tensors.keys().map(|s| model_dir.join(s)).collect();
-    // The n-gram tables are deferred below, never uploaded, so they must not
-    // count toward the peak — see the note in `fast_weights`.
+    // Deferred tensors are never uploaded, so they must not count toward the
+    // peak — see the note in `fast_weights` and `weights::deferred`.
     let preflight_skip = |name: &str| skip_fn(name) || crate::weights::is_ngram_table(name);
-    let estimated = estimate_load_bytes(&shard_files, &preflight_skip)?;
-    let has_fp8 = estimate_has_fp8(&shard_files, &preflight_skip)?;
+    let estimated = estimate_load_bytes(&shard_files, &preflight_skip, defer_fn)?;
+    let has_fp8 = estimate_has_fp8(&shard_files, &preflight_skip, defer_fn)?;
     let overhead_multiplier: f64 =
         peak_multiplier_override.unwrap_or(if has_fp8 { 1.5 } else { 1.3 });
     let peak_estimated = (estimated as f64 * overhead_multiplier) as usize;
@@ -121,6 +136,24 @@ pub(super) fn load_sharded(
                 continue;
             }
             let view = tensors.tensor(name)?;
+            // Claimed by the MODEL's loader: record where it lives and move on.
+            // Checked AFTER `skip_fn`, so a remote expert this rank never owned
+            // never enters the map. `defers` refuses a dtype the store cannot
+            // hold as-is (F16), which is also how the pre-flight counted it.
+            if super::defers(name, view.dtype(), defer_fn) {
+                let off = view.data().as_ptr() as usize - mmap.as_ptr() as usize;
+                deferred.insert(
+                    name.to_string(),
+                    crate::weights::DeferredTensor {
+                        path: shard_path.clone(),
+                        offset: off as u64,
+                        shape: view.shape().to_vec(),
+                        dtype: WeightDtype::from_safetensors(view.dtype())?,
+                    },
+                );
+                skipped += 1;
+                continue;
+            }
             let shape: Vec<usize> = view.shape().to_vec();
             // F16 shards: convert bytes to BF16 before upload (same length,
             // different bit layout). WeightDtype stays closed to store dtypes.
@@ -198,8 +231,10 @@ pub(super) fn load_single(
     path: &Path,
     gpu: &dyn GpuBackend,
     oom_reserve_bytes: usize,
-    skip_fn: &dyn Fn(&str) -> bool,
+    rules: &TensorRules<'_>,
+    deferred: &mut HashMap<String, crate::weights::DeferredTensor>,
 ) -> Result<HashMap<String, WeightTensor>> {
+    let (skip_fn, defer_fn) = (rules.skip, rules.defer);
     let file = std::fs::File::open(path)?;
     let mmap = unsafe { memmap2::MmapOptions::new().map(&file)? };
     let tensors = safetensors::SafeTensors::deserialize(&mmap)?;
@@ -207,6 +242,21 @@ pub(super) fn load_single(
     let mut weights = HashMap::new();
     for (name, view) in tensors.tensors() {
         if skip_fn(&name) {
+            continue;
+        }
+        // Claimed by the MODEL's loader — see `load_sharded` for the rationale
+        // and for why the on-disk dtype is recorded rather than the store one.
+        if super::defers(&name, view.dtype(), defer_fn) {
+            let off = view.data().as_ptr() as usize - mmap.as_ptr() as usize;
+            deferred.insert(
+                name.clone(),
+                crate::weights::DeferredTensor {
+                    path: path.to_path_buf(),
+                    offset: off as u64,
+                    shape: view.shape().to_vec(),
+                    dtype: WeightDtype::from_safetensors(view.dtype())?,
+                },
+            );
             continue;
         }
         let shape: Vec<usize> = view.shape().to_vec();

@@ -14,9 +14,28 @@
 //! Rules 2 and 3 default OFF and are allow-listed per model, because
 //! withholding a tensor a loader DOES read is invisible until the output is
 //! subtly wrong. Rule 1 is structural and always active under EP.
+//!
+//! **DEFER is a fifth rule and a different kind.** A skipped tensor is gone; a
+//! deferred one is recorded with its on-disk location because the model's own
+//! loader will read it from the host. [`FastSafetensorsLoader::is_deferred`]
+//! lives here so the two questions are answered side by side, but it is asked
+//! AFTER `should_skip_tensor` — see [`crate::weights::deferred`].
 
 use super::FastSafetensorsLoader;
-use crate::weights::parse_expert_index;
+use crate::weights::{WeightDtype, parse_expert_index};
+
+impl FastSafetensorsLoader {
+    /// Does the model's loader claim this tensor? `false` when no hook is set,
+    /// which is every model but the ones that opt in.
+    ///
+    /// 🪤 Keyed on the STORE dtype — the width the tensor would have had in the
+    /// store, which for an F16 export is BF16. A predicate that says "BF16
+    /// routed expert" therefore also catches the F16 spelling of the same
+    /// export, which is the honest answer.
+    pub fn is_deferred(&self, name: &str, dtype: WeightDtype) -> bool {
+        self.defer.as_ref().is_some_and(|f| f(name, dtype))
+    }
+}
 
 impl FastSafetensorsLoader {
     pub(super) fn should_skip_tensor(&self, name: &str) -> bool {
@@ -55,3 +74,50 @@ impl FastSafetensorsLoader {
         }
     }
 }
+
+#[cfg(test)]
+mod activation_scale_tests {
+    use super::FastSafetensorsLoader;
+
+    fn loader() -> FastSafetensorsLoader {
+        let mut l = FastSafetensorsLoader::new();
+        l.skip_activation_scales = true;
+        l
+    }
+
+    /// 🔴 The BLAST RADIUS of the opt-in, pinned. The rule is a `.input_scale`
+    /// suffix and nothing else; every model added to the server's allow-list
+    /// depends on it never reaching `weight_scale` / `weight_scale_2`, which
+    /// ARE the w4a16 operands. A predicate widened to `contains("scale")` or
+    /// to `.starts_with` would pass every other test in this crate and quietly
+    /// unbind every quantised projection in the checkpoint.
+    #[test]
+    fn the_rule_reaches_only_activation_scales() {
+        let l = loader();
+        assert!(l.should_skip_tensor("model.layers.0.mlp.gate_proj.input_scale"));
+        assert!(l.should_skip_tensor("model.layers.0.mlp.experts.7.up_proj.input_scale"));
+
+        for keep in [
+            "model.layers.0.mlp.gate_proj.weight",
+            "model.layers.0.mlp.gate_proj.weight_scale",
+            "model.layers.0.mlp.gate_proj.weight_scale_2",
+            "model.layers.0.self_attn.k_proj.k_scale",
+            "model.layers.0.mlp.gate_proj.input_scale_inv",
+            "input_scale",
+        ] {
+            assert!(!l.should_skip_tensor(keep), "{keep} must still load");
+        }
+    }
+
+    /// OPT-IN: off by default, so a model that never asks keeps every scalar.
+    #[test]
+    fn nothing_is_skipped_unless_the_model_opted_in() {
+        let l = FastSafetensorsLoader::new();
+        assert!(!l.skip_activation_scales);
+        assert!(!l.should_skip_tensor("model.layers.0.mlp.gate_proj.input_scale"));
+    }
+}
+
+#[cfg(test)]
+#[path = "defer_tests.rs"]
+mod defer_tests;
