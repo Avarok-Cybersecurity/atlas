@@ -567,7 +567,7 @@ impl ModelWeightLoader for Glm5NextWeightLoader {
     ///
     /// `nvidia/GLM-5.3-Flash-NVFP4` ships `layers.{num_hidden_layers}.mlp.
     /// experts.E.{gate,up,down}_proj.weight` as BF16 `[2048, 4096]` against a
-    /// w4a16-only forward. [`bind_expert`] reads each one ONCE and replaces it
+    /// w4a16-only forward. `bind_expert` reads each one ONCE and replaces it
     /// with an NVFP4 triple ~3.6x smaller, so uploading the originals is pure
     /// transient — and on GB10's unified memory the transient is the problem:
     /// measured 2026-09-21 at EP=2, ~7.25 GB per rank resident from the fast
@@ -577,7 +577,7 @@ impl ModelWeightLoader for Glm5NextWeightLoader {
     /// 1200 MB floor), BEFORE the MTP bind could free anything.
     ///
     /// Deferring them makes the transient structurally impossible: the BF16
-    /// stays in the page cache and [`bind_expert`] reads it from there.
+    /// stays in the page cache and `bind_expert` reads it from there.
     ///
     /// 🪤 `None` would be wrong ONLY as a silent default — the predicate is
     /// dtype-keyed, so returning it on `LibertAIDAI/GLM-5.3-Flash-NVFP4`
