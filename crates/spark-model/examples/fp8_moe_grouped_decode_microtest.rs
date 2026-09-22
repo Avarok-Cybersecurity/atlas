@@ -6,7 +6,8 @@
 //!
 //! Both legs are fed the SAME routing (indices + weights), so the bar is
 //! exact: identical BF16 output bytes for every row, rows past M untouched,
-//! guard bands intact. The expert count is reduced to 32 so rows collide on
+//! guard bands intact. The compacted active-expert list the grouped kernels
+//! index is read back and compared with the host-computed distinct set. The expert count is reduced to 32 so rows collide on
 //! experts (the grouped kernels' whole point), including experts with more
 //! rows than one register pass (GROUP_ROWS=8) at M=32.
 //!
@@ -90,6 +91,7 @@ struct Handles {
     g_gate_up: KernelHandle,
     g_silu_down: KernelHandle,
     g_blend: KernelHandle,
+    g_compact: KernelHandle,
 }
 
 struct Experts {
@@ -204,6 +206,9 @@ fn run_grouped(
     let sorted_expert_ids = s.sort.offset(te * 4);
     let expert_offsets = s.sort.offset(te * 8);
     let token_to_perm = s.sort.offset(te * 8 + (E + 1) * 4);
+    let cap = ops::fp8_grouped_active_cap(m as u32, TOP_K as u32, E as u32);
+    let active_experts = token_to_perm.offset(te * 4);
+    let active_count = active_experts.offset(cap as usize * 4);
     ops::moe_sort_by_expert(
         gpu,
         h.sort,
@@ -215,6 +220,15 @@ fn run_grouped(
         te as u32,
         E as u32,
         TOP_K as u32,
+        0,
+    )?;
+    ops::moe_fp8_grouped_compact(
+        gpu,
+        h.g_compact,
+        expert_offsets,
+        active_experts,
+        active_count,
+        E as u32,
         0,
     )?;
     ops::moe_expert_gate_up_shared_fp8_grouped(
@@ -229,13 +243,15 @@ fn run_grouped(
         s.up_out,
         expert_offsets,
         sorted_token_ids,
+        active_experts,
+        active_count,
         &x.sh_gate,
         s.sh_gate_out,
         &x.sh_up,
         s.sh_up_out,
         INTER as u32,
         H as u32,
-        E as u32,
+        cap,
         m as u32,
         0,
     )?;
@@ -248,13 +264,15 @@ fn run_grouped(
         x.down_s,
         s.down_out,
         expert_offsets,
+        active_experts,
+        active_count,
         s.sh_gate_out,
         s.sh_up_out,
         &x.sh_down,
         s.sh_down_out,
         H as u32,
         INTER as u32,
-        E as u32,
+        cap,
         m as u32,
         0,
     )?;
@@ -274,6 +292,33 @@ fn run_grouped(
         m as u32,
         0,
     )
+}
+
+/// Reads back the compacted list the grouped kernels indexed: must be exactly
+/// the ascending set of experts with at least one row (host-computed).
+fn check_compaction(gpu: &dyn GpuBackend, s: &Scratch, idx: &[u32], m: usize) -> Result<()> {
+    let te = m * TOP_K;
+    let cap = ops::fp8_grouped_active_cap(m as u32, TOP_K as u32, E as u32) as usize;
+    let active_experts = s.sort.offset(te * 8 + (E + 1) * 4 + te * 4);
+    let mut buf = vec![0u8; (cap + 1) * 4];
+    gpu.copy_d2h(active_experts, &mut buf)?;
+    let words: Vec<i32> = buf
+        .chunks_exact(4)
+        .map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        .collect();
+    let count = words[cap] as usize;
+    let mut expect: Vec<i32> = idx[..te].iter().map(|&e| e as i32).collect();
+    expect.sort_unstable();
+    expect.dedup();
+    ensure!(
+        count == expect.len() && words[..count] == expect[..],
+        "compaction mismatch at M={m}: got {} {:?} want {} {:?}",
+        count,
+        &words[..count.min(cap)],
+        expect.len(),
+        expect
+    );
+    Ok(())
 }
 
 /// The oracle: live rows byte-equal and finite, everything else still sentinel.
@@ -336,6 +381,10 @@ fn main() -> Result<()> {
         g_blend: gpu.kernel(
             "moe_fp8_grouped_blend",
             "moe_weighted_sum_blend_fp8_grouped",
+        )?,
+        g_compact: gpu.kernel(
+            "moe_shared_expert_fused_fp8_grouped",
+            "moe_fp8_grouped_compact",
         )?,
     };
     let mut rng = Rng(0x6d6f_6520_6739_2026);
@@ -403,7 +452,7 @@ fn main() -> Result<()> {
         sh_gate_out: upload(&gpu, &vec![SENTINEL; MAX_M * INTER * 2])?,
         sh_up_out: upload(&gpu, &vec![SENTINEL; MAX_M * INTER * 2])?,
         sh_down_out: upload(&gpu, &vec![SENTINEL; MAX_M * H * 2])?,
-        sort: upload(&gpu, &vec![0u8; te * 12 + (E + 1) * 4])?,
+        sort: upload(&gpu, &vec![0u8; te * 12 + (E + 1) * 4 + (E + 1) * 4])?,
     };
     let sentinel = vec![SENTINEL; MAX_M * H * 2 + 2 * GUARD];
     let loop_base = upload(&gpu, &sentinel)?;
@@ -481,7 +530,9 @@ fn main() -> Result<()> {
                 .for_each(|&e| seen[e as usize] = true);
             seen.iter().filter(|&&s| s).count()
         };
-        match check(&observed, &baseline, &sentinel, m) {
+        match check(&observed, &baseline, &sentinel, m)
+            .and_then(|()| check_compaction(&gpu, &scratch, &idx, m))
+        {
             Ok(()) => println!(
                 "M={m:2} distinct_experts={distinct:2}/{} loop={us_loop:8.1}us grouped={us_grouped:8.1}us \
                  speedup={:.2}x  BIT-IDENTICAL",
