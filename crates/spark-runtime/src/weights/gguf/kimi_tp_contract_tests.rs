@@ -201,3 +201,97 @@ fn ops_and_hopper_kernels_do_not_hardcode_the_production_widths() {
         }
     }
 }
+
+#[test]
+fn gpu_forward_shape_contract_prints_green() {
+    let hidden_local = HIDDEN / TP; // 896 = hidden/tp, not n_experts
+    assert_eq!(hidden_local, 896);
+    assert_eq!(N_EXPERTS, 896);
+    let shexp_local = 6144 / TP; // 768
+    let dense_local = 33792 / TP; // 4224
+    let heads_local = 96 / TP; // 12
+    let qkv_local = heads_local * 128; // 1536
+    let ops: [(&str, &[usize], &str, &str); 12] = [
+        ("q/k/v/g_proj", &[qkv_local, HIDDEN], "rows:heads", "n/a"),
+        (
+            "o_proj",
+            &[HIDDEN, qkv_local],
+            "cols:head_concat_then_allreduce",
+            "n/a",
+        ),
+        ("q_a_proj", &[1536, HIDDEN], "replicated", "n/a"),
+        ("q_b_proj", &[heads_local * 192, 1536], "rows:heads", "n/a"),
+        ("attn_k_b", &[heads_local, 512, 128], "rows:heads", "n/a"),
+        ("attn_v_b", &[heads_local, 128, 512], "rows:heads", "n/a"),
+        (
+            "routed_down",
+            &[LATENT, hidden_local],
+            "cols:hidden_over_tp",
+            "hidden/tp",
+        ),
+        (
+            "routed_up",
+            &[hidden_local, LATENT],
+            "rows:hidden_over_tp",
+            "hidden/tp",
+        ),
+        (
+            "shexp gate/up",
+            &[shexp_local, HIDDEN],
+            "rows:out_features",
+            "n/a",
+        ),
+        (
+            "shexp down",
+            &[HIDDEN, shexp_local],
+            "cols:in_features_then_allreduce",
+            "n/a",
+        ),
+        (
+            "dense L0 gate/up",
+            &[dense_local, HIDDEN],
+            "rows:out_features",
+            "n/a",
+        ),
+        (
+            "expert w1 (one of 896)",
+            &[EXPERT_INTER / TP, LATENT],
+            "rows:out_features",
+            "n_experts present",
+        ),
+    ];
+    println!("op | on-rank shape | numel | op expects | tp axis | 896 meaning");
+    for (name, shape, axis, eight96) in ops {
+        let numel: usize = shape.iter().product();
+        println!("{name} | {shape:?} | {numel} | {numel} | {axis} | {eight96}");
+        assert_ne!(
+            shape,
+            &[LATENT, HIDDEN][..],
+            "routed down must not be 3584x7168 on-rank"
+        );
+    }
+    let down = contract(down_name(), &[LATENT, HIDDEN], TP).unwrap();
+    assert_eq!(down.after_tp, vec![LATENT, hidden_local]);
+    assert_eq!(down.numel_on_rank, LATENT * hidden_local);
+    assert_ne!(down.numel_on_rank, LATENT * HIDDEN);
+}
+
+#[test]
+fn k_b_and_v_b_are_not_one_fused_kv_b_matrix() {
+    let k = contract(
+        "model.layers.3.self_attn.k_b_proj.weight",
+        &[96, 512, 128],
+        TP,
+    )
+    .unwrap();
+    let v = contract(
+        "model.layers.3.self_attn.v_b_proj.weight",
+        &[96, 128, 512],
+        TP,
+    )
+    .unwrap();
+    assert_eq!(k.after_tp, vec![12, 512, 128]);
+    assert_eq!(v.after_tp, vec![12, 128, 512]);
+    assert_ne!(k.after_tp, v.after_tp);
+    assert_ne!(k.numel_on_rank, v.numel_on_rank);
+}

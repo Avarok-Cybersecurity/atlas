@@ -6,7 +6,6 @@
 use super::{DenseMlp, K3LayerCtx};
 use crate::kimi_k3::cpu_weights::MoeWeights;
 use crate::kimi_k3::latent_moe::{LatentMoeConfig, sigmoid_topk};
-use crate::kimi_k3::ops::matvec;
 use crate::kimi_k3::{attnres::rms_norm, cpu_forward::dense};
 use anyhow::{Result, ensure};
 
@@ -23,7 +22,7 @@ where
     let hidden = ctx.moe.hidden;
     let latent = ctx.moe.latent;
     ensure!(x.len() == hidden, "K3 MoE hidden {} vs {hidden}", x.len());
-    let mut logits = matvec(&w.router, x, ctx.moe.n_routed, hidden);
+    let mut logits = super::mixer::gemv(ctx, "router", &w.router, x, ctx.moe.n_routed, hidden)?;
     if let Some(e) = force {
         logits.fill(0.0);
         logits[e] = 8.0;
@@ -33,9 +32,13 @@ where
         .as_ref()
         .map(|s| shared_mlp(ctx, s, x))
         .transpose()?;
-    let down_k = w.down.len() / latent;
+    let down_k = if !w.down.is_empty() {
+        w.down.len() / latent
+    } else {
+        hidden / ctx.tp_world.max(1) // 896 at tp=8 is hidden/tp, not n_experts
+    };
     let x_down = hidden_shard(x, down_k, ctx.tp_rank, ctx.tp_world)?;
-    let mut lat = matvec(&w.down, x_down, latent, down_k);
+    let mut lat = super::mixer::gemv(ctx, "routed_down", &w.down, x_down, latent, down_k)?;
     // Row-parallel down: each rank saw hidden/tp. 896 here is 7168/8, not experts.
     if down_k != hidden {
         reduce(ctx, &mut lat)?;
@@ -47,8 +50,12 @@ where
     } else {
         mixed
     };
-    let up_n = w.up.len() / latent;
-    let routed = matvec(&w.up, &mixed, up_n, latent);
+    let up_n = if !w.up.is_empty() {
+        w.up.len() / latent
+    } else {
+        hidden / ctx.tp_world.max(1) // 896 at tp=8 is hidden/tp, not n_experts
+    };
+    let routed = super::mixer::gemv(ctx, "routed_up", &w.up, &mixed, up_n, latent)?;
     let mut out = scatter_hidden(routed, hidden, ctx.tp_rank, ctx.tp_world)?;
     if let Some(s) = shared {
         ensure!(s.len() == hidden, "K3 shared expert width");
@@ -63,8 +70,20 @@ where
 }
 
 fn shared_mlp(ctx: &K3LayerCtx<'_>, s: &DenseMlp, x: &[f32]) -> Result<Vec<f32>> {
-    let local_inter = s.gate.len() / x.len();
-    dense::run(ctx, s, x, local_inter)
+    let full = if ctx.shared_intermediate > 0 {
+        ctx.shared_intermediate
+    } else if !s.gate.is_empty() {
+        ensure!(
+            !x.is_empty() && s.gate.len().is_multiple_of(x.len()),
+            "K3 shared gate geometry"
+        );
+        s.gate.len() / x.len() * ctx.tp_world.max(1)
+    } else {
+        anyhow::bail!(
+            "K3 shared expert: set shared_intermediate or keep host gate weights (no silent 6144)"
+        );
+    };
+    dense::run(ctx, s, x, full)
 }
 
 fn reduce(ctx: &K3LayerCtx<'_>, v: &mut [f32]) -> Result<()> {
@@ -159,5 +178,40 @@ mod tests {
         let out = moe_mlp_with(&w, &x, &ctx, Some(0), &mut experts).unwrap();
         assert_eq!(out.len(), hidden);
         assert_eq!(w.down.len(), latent * local);
+    }
+
+    #[test]
+    fn empty_shared_expert_without_configured_inter_does_not_invent_6144() {
+        // Oracle: missing geometry must fail. Known-bad was a silent 6144 default.
+        let model = crate::kimi_k3::cpu_weights::K3CpuModel::synthetic_small();
+        let mut ctx = K3LayerCtx::from_model(&model);
+        ctx.shared_intermediate = 0;
+        let hidden = ctx.moe.hidden;
+        let latent = ctx.moe.latent;
+        let n_routed = ctx.moe.n_routed;
+        let w = MoeWeights {
+            down: vec![0.01; latent * hidden],
+            up: vec![0.01; hidden * latent],
+            norm: vec![1.0; latent],
+            router: vec![0.0; n_routed * hidden],
+            bias: vec![0.0; n_routed],
+            experts: vec![],
+            shared: Some(crate::kimi_k3::cpu_weights::DenseMlp {
+                gate: vec![],
+                up: vec![],
+                down: vec![],
+            }),
+        };
+        let x = vec![1.0; hidden];
+        let mut experts =
+            |_w: &MoeWeights, lat: &[f32], _i: &[usize], _mw: &[f32], _c: &LatentMoeConfig| {
+                Ok(vec![0.0; lat.len()])
+            };
+        let err = moe_mlp_with(&w, &x, &ctx, Some(0), &mut experts).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("shared_intermediate") || msg.contains("shared expert"),
+            "{msg}"
+        );
     }
 }

@@ -59,10 +59,20 @@ impl K3BoundLayer {
         let comm = ctx.comm;
         let do_reduce = |v: &mut [f32]| tp_allreduce(gpu, comm, hidden, h, tp, v, stream);
         let reduce_ref: HiddenReduce<'_> = &do_reduce;
-        let use_dense = match std::env::var("K3_CUDA_DENSE").as_deref() {
-            Ok("1") => true,
-            Ok("0") | Err(std::env::VarError::NotPresent) => false,
-            _ => anyhow::bail!("K3_CUDA_DENSE requires explicit 0 or 1"),
+        let default_gpu = !cfg!(test);
+        let parse_flag = |name: &str, default: bool| -> anyhow::Result<bool> {
+            match std::env::var(name).as_deref() {
+                Ok("0") => Ok(false),
+                Ok("1") => Ok(true),
+                Err(std::env::VarError::NotPresent) => Ok(default),
+                _ => anyhow::bail!("{name} requires explicit 0 or 1"),
+            }
+        };
+        let use_dense = parse_flag("K3_CUDA_DENSE", default_gpu)?;
+        let use_gpu_gemv = parse_flag("K3_CUDA_GEMV", default_gpu)?;
+        let use_iq2_gpu = parse_flag("K3_CUDA_IQ2", default_gpu)?;
+        let gpu_gemv_core = |op: &str, x: &[f32], n: usize, k: usize| {
+            super::gpu_gemv::launch(self, gpu, op, x, n, k, stream)
         };
         let dense_core = |_weights: &avarok_core::kimi_k3::cpu_weights::DenseMlp,
                           x: &[f32],
@@ -93,6 +103,12 @@ impl K3BoundLayer {
             rope_theta: ctx.config.rope_theta as f32,
             reduce_hidden: Some(reduce_ref),
             dense_mlp: if use_dense { Some(&dense_core) } else { None },
+            gpu_gemv: if use_gpu_gemv {
+                Some(&gpu_gemv_core)
+            } else {
+                None
+            },
+            shared_intermediate: ctx.config.shared_expert_intermediate_size,
             tp_rank: ctx.config.tp_rank,
             tp_world: ctx.config.tp_world_size.max(1),
         };
@@ -214,6 +230,21 @@ impl K3BoundLayer {
                                 ids,
                                 mix_w,
                                 cfg,
+                                stream,
+                            )?
+                        } else if super::iq2_cuda::layer_has_iq2(self) && use_iq2_gpu {
+                            super::iq2_cuda::mix_iq2_experts(
+                                self,
+                                gpu,
+                                latent,
+                                ids,
+                                mix_w,
+                                cfg.expert_hidden,
+                                cfg.latent,
+                                ctx.config.tp_rank,
+                                ctx.config.tp_world_size.max(1),
+                                cfg.situ_beta,
+                                cfg.situ_linear_beta,
                                 stream,
                             )?
                         } else if super::iq2_moe::layer_has_iq2(self) {
@@ -367,6 +398,19 @@ fn bind_layer(layer: &K3BoundLayer, gpu: &dyn GpuBackend) -> Result<K3CpuLayer> 
             meta.dtype,
             WeightDtype::Iq2Xs | WeightDtype::Q8_0 | WeightDtype::Iq3Xxs
         ) {
+            continue;
+        }
+        let gpu_linears = match std::env::var("K3_CUDA_GEMV").as_deref() {
+            Ok("0") => false,
+            Ok("1") => true,
+            Err(std::env::VarError::NotPresent) => !cfg!(test),
+            _ => anyhow::bail!("K3_CUDA_GEMV requires explicit 0 or 1"),
+        };
+        if gpu_linears
+            && meta.dtype == WeightDtype::BF16
+            && !super::gpu_gemv::host_keep_bf16(&meta.name)
+        {
+            got.insert(meta.name.clone(), Vec::new());
             continue;
         }
         got.insert(

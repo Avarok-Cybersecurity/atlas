@@ -273,9 +273,7 @@ pub(super) fn upload_expert_stack(
 }
 
 pub(super) fn estimate_resident_bytes(tp_world: usize) -> usize {
-    let tp = tp_world.max(1);
-    let disk = 802usize * 1024 * 1024 * 1024;
-    disk / tp + 12usize * 1024 * 1024 * 1024
+    super::kimi_gguf_preflight::estimate_resident_bytes(tp_world)
 }
 
 #[cfg(test)]
@@ -308,5 +306,13 @@ mod tests {
         );
         assert!(kimi_cols("model.layers.0.mlp.down_proj.weight"));
         assert!(kimi_rows("model.layers.0.mlp.up_proj.weight"));
+    }
+
+    #[test]
+    fn estimate_is_not_the_disk_over_tp_lie() {
+        // Oracle: nvidia-smi ~130.3 GB/rank. Known-bad: 802 GiB/tp + 12 GiB = 112.25 GiB.
+        let old_lie = 802usize * (1 << 30) / 8 + 12 * (1 << 30);
+        assert_ne!(estimate_resident_bytes(8), old_lie);
+        assert!(!include_str!("kimi_gguf_load.rs").contains("kimi_mla_kv"));
     }
 }

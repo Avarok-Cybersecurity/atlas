@@ -125,7 +125,6 @@ pub fn kimi_k3_expert_name(layer: usize, proj: &str, e: usize) -> String {
     format!("{HF}.layers.{layer}.block_sparse_moe.experts.{e}.{w}.weight")
 }
 
-
 /// Stacked expert tensors stay on disk (DeferredTensor). Non-experts stay
 /// keep-packed on GPU. 896 x 92 x 3 experts will not fit as BF16.
 pub fn kimi_k3_deferred_name(gguf_name: &str) -> Option<String> {
@@ -141,4 +140,39 @@ pub fn kimi_k3_deferred_name(gguf_name: &str) -> Option<String> {
     Some(format!(
         "model.layers.{layer}.block_sparse_moe.experts._stack.{proj}"
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{GgufName, translate_kimi_k3};
+
+    fn direct_suffix(name: &str) -> String {
+        match translate_kimi_k3(name) {
+            Some(GgufName::Direct(n)) => n,
+            other => panic!("{name} -> {other:?}"),
+        }
+    }
+
+    #[test]
+    fn attn_k_b_and_v_b_stay_split() {
+        // Oracle: GGUF stems map to the stored split tensors. Known-bad is a fused kv_b.
+        let k = direct_suffix("blk.3.attn_k_b.weight");
+        let v = direct_suffix("blk.3.attn_v_b.weight");
+        assert!(k.ends_with("self_attn.k_b_proj.weight"), "{k}");
+        assert!(v.ends_with("self_attn.v_b_proj.weight"), "{v}");
+        assert_ne!(k, v);
+        assert!(translate_kimi_k3("blk.3.attn_kv_b.weight").is_none());
+        assert!(translate_kimi_k3("blk.3.attn_kv_b_proj.weight").is_none());
+    }
+
+    #[test]
+    fn routed_down_gguf_name_is_not_expert_stack() {
+        match translate_kimi_k3("blk.1.ffn_routed_down.weight") {
+            Some(GgufName::Direct(n)) => {
+                assert!(n.contains("routed_expert_down_proj"), "{n}");
+                assert!(!n.contains("experts."));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
 }

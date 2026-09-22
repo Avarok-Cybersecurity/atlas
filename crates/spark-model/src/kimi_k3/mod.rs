@@ -36,7 +36,9 @@ pub use tp::{supports_tp, tensor_plan};
 
 pub mod bound;
 mod forward_panic;
+mod gpu_gemv;
 mod host_decode;
+mod iq2_cuda;
 mod iq2_moe;
 pub mod state;
 pub use avarok_core::kimi_k3::{Ablation, K3CpuModel, K3LayerSpec, greedy_decode};

@@ -11,15 +11,24 @@ pub(super) fn run(
     configured_inter: usize,
 ) -> Result<Vec<f32>> {
     let hidden = ctx.hidden;
-    ensure!(
-        hidden > 0 && x.len() == hidden && w.gate.len().is_multiple_of(hidden),
-        "K3 dense geometry"
-    );
-    let inter = w.gate.len() / hidden;
-    ensure!(
-        inter > 0 && w.up.len() == w.gate.len() && w.down.len() == w.gate.len(),
-        "K3 dense weight geometry"
-    );
+    ensure!(hidden > 0 && x.len() == hidden, "K3 dense geometry");
+    let inter = if !w.gate.is_empty() && w.gate.len().is_multiple_of(hidden) {
+        w.gate.len() / hidden
+    } else {
+        let full = configured_inter.max(1);
+        if ctx.tp_world > 1 && full.is_multiple_of(ctx.tp_world) {
+            full / ctx.tp_world
+        } else {
+            full
+        }
+    };
+    ensure!(inter > 0, "K3 dense local inter");
+    if !w.gate.is_empty() {
+        ensure!(
+            w.up.len() == w.gate.len() && w.down.len() == w.gate.len(),
+            "K3 dense weight geometry"
+        );
+    }
     if let Some(core) = ctx.dense_mlp {
         let out = core(w, x, hidden, inter, ctx.situ_beta, ctx.situ_linear_beta)?;
         ensure!(

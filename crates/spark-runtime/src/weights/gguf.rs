@@ -37,6 +37,7 @@ mod expert_prefetch;
 mod expert_reads;
 pub mod expert_stream;
 mod kimi_gguf_load;
+mod kimi_gguf_preflight;
 mod kimi_tp_contract;
 mod kimi_tp_slice;
 mod names;
@@ -360,7 +361,7 @@ impl super::WeightLoader for GgufLoader {
         let est = if matches!(arch.as_str(), "kimi-k3" | "kimi_k3" | "kimik3") {
             let n = kimi_gguf_load::estimate_resident_bytes(self.tp_world_size);
             tracing::info!(
-                "K3 GGUF keep-packed preflight: ~{:.2} GiB/rank packed experts+attn (tp={})",
+                "K3 GGUF post-BF16+packed IQ2+F32+KV preflight: ~{:.2} GiB/rank (tp={}; not disk/tp)",
                 n as f64 / (1024.0 * 1024.0 * 1024.0),
                 self.tp_world_size.max(1)
             );
