@@ -144,6 +144,35 @@ extern "C" __global__ __launch_bounds__(128, 2) void CONCAT(KERNEL_NAME, _64)(co
     );
 }
 
+/// An instantiation macro declares the kernels its INVOCATIONS name, never
+/// its own parameter. Scanned raw, `#define ENTRY(NAME) ... void NAME(` read as
+/// a kernel literally called `NAME`, so the first gb10 file to use that
+/// parameter (w4a16_gemv_tc.cu) "re-declared" hopper's `NAME` and failed
+/// inherited_overrides.
+#[test]
+fn an_instantiation_macro_declares_its_invocations_not_its_parameter() {
+    let dir = std::env::temp_dir().join(format!(
+        "avarok-shadow-detector-{}-{}",
+        std::process::id(),
+        line!()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("entry.cu");
+    std::fs::write(
+        &file,
+        "#define ENTRY(NAME, T) \\\n    extern \"C\" __global__ void NAME(T* x) { \\\n    }\n\
+         ENTRY(k_a, float)\nENTRY(k_b, int)\n",
+    )
+    .unwrap();
+    let found = entry_points(&file);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(
+        found,
+        BTreeSet::from(["k_a".to_string(), "k_b".to_string()]),
+        "a macro parameter was reported as an entry point"
+    );
+}
+
 /// No `common/` source may resolve to zero entry points. A file that declares
 /// nothing is not necessarily wrong, but it is indistinguishable from a file
 /// the resolver failed to understand — and "resolved nothing" is what made the

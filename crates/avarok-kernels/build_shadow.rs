@@ -178,6 +178,11 @@ fn walk(
 
     let mut includes = Vec::new();
     let mut fn_macros: BTreeMap<String, FnMacro> = BTreeMap::new();
+    // The text declarations are scanned in: everything EXCEPT the bodies of
+    // kernel-declaring function-like macros. Those are expanded per invocation
+    // below; scanned raw, their `void NAME(` declares a kernel literally
+    // called `NAME`, and two files using one parameter name collide.
+    let mut decl_text = String::with_capacity(text.len());
     let mut logical = String::new();
     for line in text.lines() {
         // Join `\`-continued lines into one logical directive before parsing:
@@ -190,11 +195,16 @@ fn walk(
         let directive = std::mem::take(&mut logical);
         let trimmed = directive.trim_start();
         let Some(rest) = trimmed.strip_prefix('#') else {
+            decl_text.push_str(&directive);
+            decl_text.push('\n');
             continue;
         };
         let rest = rest.trim_start();
         if let Some(body) = rest.strip_prefix("define") {
-            record_define(body, dialect, &mut scan.defines, &mut fn_macros);
+            if !record_define(body, dialect, &mut scan.defines, &mut fn_macros) {
+                decl_text.push_str(&directive);
+                decl_text.push('\n');
+            }
         } else if let Some(body) = rest.strip_prefix("include")
             && let Some(rel) = quoted_include(body)
         {
@@ -202,7 +212,7 @@ fn walk(
         }
     }
 
-    collect_decls(&text, dialect, &mut scan.decls);
+    collect_decls(&decl_text, dialect, &mut scan.decls);
     collect_instantiations(&text, dialect, &fn_macros, &mut scan.decls);
 
     for inc in includes {
@@ -296,28 +306,30 @@ fn is_ident_char(b: u8) -> bool {
 
 /// Record one `#define`. Object-like defines become name bindings;
 /// function-like ones are kept only when their body declares a kernel, which is
-/// the instantiation-macro case `collect_instantiations` expands.
+/// the instantiation-macro case `collect_instantiations` expands. Returns
+/// whether it was that case — the caller then keeps the body out of the
+/// declaration scan.
 fn record_define(
     body: &str,
     dialect: Dialect,
     defines: &mut BTreeMap<String, String>,
     fn_macros: &mut BTreeMap<String, FnMacro>,
-) {
+) -> bool {
     let body = body.strip_prefix([' ', '\t']).unwrap_or(body);
     let name_len = body
         .find(|c: char| !(c.is_alphanumeric() || c == '_'))
         .unwrap_or(body.len());
     if name_len == 0 {
-        return;
+        return false;
     }
     let (name, rest) = body.split_at(name_len);
     if rest.starts_with('(') {
         let Some(close) = balanced_end(rest, 0) else {
-            return;
+            return false;
         };
         let macro_body = rest[close..].to_string();
         if !macro_body.contains(dialect.keyword()) {
-            return;
+            return false;
         }
         let params = rest[1..close - 1]
             .split(',')
@@ -331,10 +343,11 @@ fn record_define(
                 body: macro_body,
             },
         );
-        return;
+        return true;
     }
     let value = rest.trim().to_string();
     defines.entry(name.to_string()).or_insert(value);
+    false
 }
 
 /// The path out of `#include "foo/bar.cuh"`. Angle-bracket includes are system

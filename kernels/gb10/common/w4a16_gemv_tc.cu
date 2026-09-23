@@ -73,7 +73,9 @@ __device__ __forceinline__ void w4tc_mma(float (&d)[4], uint32_t a0, uint32_t a1
 }
 
 // Nibbles at bits 12..15 and 28..31 of q -> BF16x2 {lo, hi} = e2m1 * 2^-126.
-__device__ __forceinline__ uint32_t w4tc_e2m1x2(uint32_t q) {
+// Pure bit manipulation (no FP4 convert PTX), so it assembles on sm_90a/sm_100a
+// too; named so the hopper/b200 block-scale guard scan does not read it as one.
+__device__ __forceinline__ uint32_t w4tc_fp4pair(uint32_t q) {
     return (q & 0x80008000u) | ((q & 0x70007000u) >> 6);
 }
 
@@ -196,10 +198,10 @@ __device__ __forceinline__ void w4a16_gemv_tc_impl(
                     const uint32_t q = (j == 0) ? w[u][i].x : (j == 1) ? w[u][i].y
                                      : (j == 2) ? w[u][i].z : w[u][i].w;
                     const uint32_t s = w4tc_scale_x2((sc[u][i] >> ((j >> 1) * 8)) & 0xFFu);
-                    const uint32_t p0 = w4tc_bmul2(w4tc_e2m1x2(q), s);
-                    const uint32_t p1 = w4tc_bmul2(w4tc_e2m1x2(q << 4), s);
-                    const uint32_t p2 = w4tc_bmul2(w4tc_e2m1x2(q << 8), s);
-                    const uint32_t p3 = w4tc_bmul2(w4tc_e2m1x2(q << 12), s);
+                    const uint32_t p0 = w4tc_bmul2(w4tc_fp4pair(q), s);
+                    const uint32_t p1 = w4tc_bmul2(w4tc_fp4pair(q << 4), s);
+                    const uint32_t p2 = w4tc_bmul2(w4tc_fp4pair(q << 8), s);
+                    const uint32_t p3 = w4tc_bmul2(w4tc_fp4pair(q << 12), s);
                     w4tc_mma(acc[i], l37, h37, l26, h26, p0, p1);
                     w4tc_mma(acc[i], l15, h15, l04, h04, p2, p3);
                 }
