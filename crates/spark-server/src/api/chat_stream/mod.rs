@@ -256,7 +256,10 @@ pub(crate) async fn run_chat_stream(
         );
     }
 
-    let token_stream = ReceiverStream::new(token_rx).flat_map(move |event| {
+    // `terminated`: a stream the scheduler drops without Done/Error still
+    // ends in an error frame, never in silence (stream_terminal.rs).
+    let events = super::stream_terminal::terminated(ReceiverStream::new(token_rx));
+    let token_stream = events.flat_map(move |event| {
         use futures::StreamExt;
         // The handlers emit provider-neutral deltas (`ir::StreamDelta`);
         // they never touch the wire format. Encoding happens in the

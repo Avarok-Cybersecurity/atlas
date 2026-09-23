@@ -59,6 +59,8 @@ mod prefill_a_step;
 mod prefill_a_step_params;
 mod prefill_b_step;
 #[cfg(test)]
+mod prefill_error_delivery_tests;
+#[cfg(test)]
 mod prefill_fifo_tests;
 #[cfg(test)]
 mod prefill_timing_tests;

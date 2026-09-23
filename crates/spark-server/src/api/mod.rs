@@ -52,6 +52,7 @@ pub mod sanitizer;
 pub mod scrub;
 pub mod stored;
 pub mod stream_guards;
+pub(crate) mod stream_terminal;
 pub mod strip;
 pub mod stubs;
 

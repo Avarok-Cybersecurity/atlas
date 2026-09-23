@@ -398,7 +398,9 @@ pub(super) async fn completions_stream(
     let mut content_decoded = String::new();
     let mut detok_prefix_offset: usize = 0;
     let mut detok_read_offset: usize = 0;
-    let token_stream = ReceiverStream::new(token_rx).flat_map(move |event| {
+    // `terminated`: see chat_stream — never a silent end (stream_terminal.rs).
+    let events = super::stream_terminal::terminated(ReceiverStream::new(token_rx));
+    let token_stream = events.flat_map(move |event| {
         let events: Vec<Result<Event, std::convert::Infallible>> = match event {
             // Echo + logprobs: prompt text and its logprobs, before any
             // generated token (the scheduler emits this exactly once).
