@@ -553,14 +553,42 @@ fn dense(store: &WeightStore, name: &str) -> Result<DenseWeight> {
 }
 
 impl ModelWeightLoader for Glm5NextWeightLoader {
-    /// Text-only port. `weight_loader/glm5_next.rs` classifies `model.visual.*`
-    /// as `TensorRole::Vision` and excludes it from `is_required()`; nothing in
-    /// this loader binds it. Saying so here keeps the tower off the GPU in the
-    /// first place — on the LibertAIDAI NVFP4 checkpoint that is 1.05 GiB per
-    /// rank, sitting between `--speculative --num-drafts 2` and a serve that
-    /// fits (measured 2026-08-29: K=3 at 32 K needs 13.58 GiB against 12.07 free).
+    /// This loader binds the tower when — and only when — the operator asked
+    /// for it with `AVAROK_GLM_VISION=1`.
+    ///
+    /// It used to answer a flat `false`, which kept 1.05 GiB/rank of
+    /// `model.visual.*` off the GPU entirely. That was not free: measured
+    /// 2026-08-29, K=3 at 32 K needs 13.58 GiB against 12.07 GiB free, so the
+    /// tower is exactly the difference between `--speculative --num-drafts 2`
+    /// and a serve that fits. Binding it is a real memory decision, not a
+    /// correctness cleanup, and a GLM serve that wants the old headroom back
+    /// has to be given it deliberately.
+    ///
+    /// 🪤 This method takes no `ModelConfig`, so it cannot answer per
+    /// checkpoint — `binds_vision(config)` in the server resolves the loader
+    /// from the config and then asks the loader alone. That is why the gate is
+    /// an ENV read rather than a config field: it is the one input both this
+    /// method and `parse_glm5_next` can see, so the withhold decision and the
+    /// `config.vision` decision cannot disagree. Threading the config through
+    /// the trait would let the gate become a config field; it is a wider
+    /// change than this one.
+    ///
+    /// The `true` arm is a real bind (`glm5_next_vision.rs`), not a
+    /// load-then-free: `factory::build`'s reclaim is keyed off whether a tower
+    /// came back, so it stops firing for this model on its own.
     fn binds_vision_encoder(&self) -> bool {
-        false
+        avarok_core::config::glm_vision_enabled()
+    }
+
+    /// Bind the 347-tensor `model.visual.*` tower. See
+    /// [`crate::weight_loader::glm5_next_vision`].
+    fn load_vision_encoder(
+        &self,
+        store: &WeightStore,
+        config: &ModelConfig,
+        gpu: &dyn GpuBackend,
+    ) -> Result<Option<crate::layers::VisionTower>> {
+        crate::weight_loader::glm5_next_vision::load_glm5_next_vision(store, config, gpu)
     }
 
     /// Keep the MTP block's full-width routed experts off the device.
@@ -1017,15 +1045,27 @@ mod vision_capability_tests {
     use super::Glm5NextWeightLoader;
     use crate::weight_loader::ModelWeightLoader;
 
+    /// The default is the pre-port behaviour: the tower is withheld, so a
+    /// certified text serve keeps the footprint it was certified with.
+    ///
+    /// This asserts against the UNSET environment, which is what CI and every
+    /// text serve run with. `glm_vision_enabled_from` carries the both-states
+    /// coverage, because setting the variable here would race the rest of the
+    /// binary.
     #[test]
-    fn glm5_next_declares_itself_text_only() {
-        // Mutation gate: flipping this to `true` re-loads 1.05 GiB/rank of
-        // vision tower that nothing binds, and K=3 stops fitting at 32 K.
-        assert!(
-            !Glm5NextWeightLoader.binds_vision_encoder(),
-            "GLM-5.3's port binds no vision encoder; saying otherwise makes the \
-             weight loader read the tower into unified memory for nothing"
+    fn the_vision_tower_is_off_unless_the_operator_asks() {
+        assert_eq!(
+            Glm5NextWeightLoader.binds_vision_encoder(),
+            avarok_core::config::glm_vision_enabled(),
+            "the loader's withhold decision must be the SAME gate the config \
+             parser reads, or the two disagree and the loader asks for tensors \
+             that were never uploaded"
         );
+        assert!(
+            !avarok_core::config::glm_vision_enabled_from(None),
+            "unset must mean off: binding the tower costs 1.05 GiB/rank"
+        );
+        assert!(avarok_core::config::glm_vision_enabled_from(Some("1")));
     }
 
     #[test]

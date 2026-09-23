@@ -76,6 +76,9 @@ impl Model for TransformerModel {
     ) -> Result<Vec<(usize, usize, usize, usize)>> {
         self.prepare_vision_embed_batched_dispatch(per_request)
     }
+    fn ep_sync_vision_embeds(&self, tokens: &[u32]) -> Result<()> {
+        TransformerModel::ep_sync_vision_embeds(self, tokens)
+    }
     fn set_vision_slice_base(&self, row_base: usize, grid_base: usize, owned_images: usize) {
         *self.vision_row_base.lock() = row_base;
         *self.vision_grid_base.lock() = grid_base;

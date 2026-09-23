@@ -109,9 +109,17 @@ pub(super) fn render_template(
 
     // Expand image pads when needed.
     let prompt_tokens = if image_pad_counts.iter().any(|&c| c > 1) {
+        // The checkpoint's own placeholder ids, not a guess from a literal:
+        // GLM-5.3 calls this token `<|image|>` where Qwen calls it
+        // `<|image_pad|>`, and a failed probe expands nothing at all.
+        let declared = state
+            .vision_config
+            .as_ref()
+            .map(|v| (v.image_pad_token_id, v.video_pad_token_id))
+            .unwrap_or((0, 0));
         state
             .tokenizer
-            .expand_vision_pads(prompt_tokens, image_pad_counts)
+            .expand_vision_pads(prompt_tokens, image_pad_counts, declared)
     } else {
         prompt_tokens
     };

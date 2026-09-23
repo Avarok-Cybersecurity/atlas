@@ -13,7 +13,7 @@
 //! - `utils`       — `gpu_copy_bf16`, `maybe_dump_buf`
 
 mod forward;
-mod init;
+pub(crate) mod init;
 mod merger;
 mod patch_embed;
 mod pos_embed;

@@ -372,16 +372,23 @@ pub(crate) fn load_model(
     // kernel target (qwen3.5-27b) ships no `vision_encoder` PTX module. Drop the
     // vision tower to text-only; image inputs are unsupported until the target
     // is rebuilt with vision.
+    //
+    // Two module names because Atlas has two towers: the Qwen3-VL-shaped
+    // `vision_encoder` and GLM-5.3's `glm_vit`. A target that ships EITHER can
+    // serve the checkpoint that wants it, and a target that ships neither
+    // serves text-only. Checking only the first name would have dropped GLM's
+    // tower at load with a message naming a module it never had.
+    const VISION_MODULES: [&str; 2] = ["vision_encoder", "glm_vit"];
     if config.vision.is_some()
         && !ptx_set
             .modules
             .iter()
-            .any(|(name, _)| *name == "vision_encoder")
+            .any(|(name, _)| VISION_MODULES.contains(name))
     {
         tracing::warn!(
-            "Checkpoint declares a vision tower but kernel target {} ships no \
-             vision_encoder module — serving TEXT-ONLY (image inputs ignored). \
-             Rebuild the target with vision to enable images.",
+            "Checkpoint declares a vision tower but kernel target {} ships neither a \
+             vision_encoder nor a glm_vit module — serving TEXT-ONLY (image inputs \
+             ignored). Rebuild the target with vision to enable images.",
             ptx_set.target,
         );
         config.vision = None;

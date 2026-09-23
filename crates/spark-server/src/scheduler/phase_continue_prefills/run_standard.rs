@@ -253,6 +253,14 @@ pub(super) fn run_standard_chunk_loop(
         model.ep_broadcast_cmd(p.chunk_offset as u32)?;
         model.ep_broadcast_cmd(p.prompt_tokens.len() as u32)?;
         model.ep_broadcast_tokens(&p.prompt_tokens)?;
+        // 🔴 The FIFTH copy of this preamble, and the one that makes the
+        // duplication dangerous: the worker reads the vision word for EVERY
+        // `0xFFFFFFF0`, so a send site that omits it does not degrade — it
+        // leaves the worker blocked in a collective the head never enters.
+        // A vision prompt is single-chunk-fit upstream, so this continuation
+        // path sends a zero count in practice; it is sent regardless, because
+        // the pairing is what matters, not the payload.
+        model.ep_sync_vision_embeds(&p.prompt_tokens)?;
         Ok(())
     })();
     if let Err(e) = ep_ok {

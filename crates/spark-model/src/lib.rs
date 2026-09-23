@@ -40,6 +40,7 @@ pub mod video_decode_ffmpeg;
 pub mod video_preprocess;
 pub mod vision_item;
 pub mod vision_preprocess;
+pub mod vision_preprocess_glm;
 /// Marconi snapshot-restore threshold: the shipped default, and the setter
 /// `spark serve` uses to pin it from `--marconi-min-tokens` before anything
 /// reads it. Re-exported rather than making `model::mtp_carry` public — the
