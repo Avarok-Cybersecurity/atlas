@@ -61,7 +61,7 @@ fn a_server_is_reused_only_when_every_digest_matches() {
     // The rendering differs: a hermetic kat server is not an open bfcl one.
     let hermetic = Expected {
         argv_sha256: "d".repeat(64),
-        ..want()
+        ..want.clone()
     };
     assert!(
         mismatch(&lease(), &reported(), &hermetic, "Qwen/Qwen3.8-27B")

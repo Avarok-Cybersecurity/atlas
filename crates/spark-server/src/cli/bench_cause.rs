@@ -31,10 +31,9 @@ pub(crate) const CAUSE_CAP: usize = 4096;
 /// than quoting something that is not an error.
 pub(crate) fn final_error_block(text: &str) -> Option<String> {
     let start = text
-        .match_indices("Error:")
-        .filter(|(i, _)| *i == 0 || text.as_bytes()[i - 1] == b'\n')
+        .rmatch_indices("Error:")
         .map(|(i, _)| i)
-        .next_back()?;
+        .find(|&i| i == 0 || text.as_bytes()[i - 1] == b'\n')?;
     let block = text[start..].trim();
     if block.len() <= CAUSE_CAP {
         return Some(block.to_string());
