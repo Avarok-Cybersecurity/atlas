@@ -124,7 +124,7 @@ toml = "1.1"
 # (`fleet_parity_scalar_and_structured_tool_args`,
 # `divergence_null_arg_value_official_renders_null_not_none`). Raising this
 # needs those pins re-cut against the official template, not a version edit.
-minijinja = { version = "=2.21.0", features = ["builtins", "adjacent_loop_items", "json", "loop_controls", "preserve_order"] }
+minijinja = { version = "=2.24.0", features = ["builtins", "adjacent_loop_items", "json", "loop_controls", "preserve_order"] }
 # Pure-Rust grammar-constrained decoding (W7: was the C++-backed
 # `xgrammar-rs = "0.1"` patched to `vendor/xgrammar-rs`; now the
 # from-scratch Rust port at `crates/xgrammar`). The crate's lib is
