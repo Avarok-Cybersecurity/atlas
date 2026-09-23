@@ -455,7 +455,7 @@ impl TransformerModel {
             max_seq_len,
             kv_cache.num_blocks(),
             &levers,
-        );
+        )?;
 
         if self_speculative {
             let num_ssm = config.num_ssm_layers();
