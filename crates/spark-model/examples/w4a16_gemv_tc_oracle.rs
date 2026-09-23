@@ -6,8 +6,12 @@
 //! at every row count and every real 27B projection shape, the routed result
 //! is as accurate as the CUDA-core tier it replaces. This decides it:
 //!
-//!   1. ARMED: `gemv_tc::tc_kernel` resolves for every (M, N, K) — otherwise
-//!      the production call below would silently measure the old kernel.
+//!   1. ARMED: `gemv_tc::tc_kernel` resolves for every (M, N, K), and the
+//!      dispatch-site handle (`W4a16BatchmTiers::kernel`, which every NVFP4
+//!      verify arm asks) exists for every M — 9..=16 only with the row-edge
+//!      widening opted in (`AVAROK_W4A16_TC_WIDE=1`; its legs and the FIXED-M
+//!      legs are skipped otherwise). Otherwise the production
+//!      call below would silently measure the old kernel or a fallback.
 //!   2. vs CPU f64 (64 sampled output rows + first/last, every M row): the
 //!      routed max error must not exceed max(1.25 x the tier's own error,
 //!      one BF16 half-ulp of the output range).
@@ -17,7 +21,9 @@
 //!      the tensor-core reduction order differs from the fmaf chain, the same
 //!      class of difference as the tile GEMMs above 8 rows.
 //!   4. Rows >= M of the output are never written (sentinel row M).
-//!   5. LEVER MOVED: some element differs bitwise from the tier, i.e. the
+//!   5. FIXED-M: ops::w4a16_gemv_batch2/3 and dual_batch2/3 (the C=2/C=3
+//!      arms) meet check 3 and differ bitwise from the tier (tc armed).
+//!   6. LEVER MOVED: some element differs bitwise from the tier, i.e. the
 //!      routed launch really ran the tensor-core kernel.
 //!
 //! KNOWN-BAD CONTROLS (the gate must FAIL each, or it proves nothing):
@@ -47,7 +53,7 @@ const SHAPES: [(&str, u32, u32); 7] = [
     ("ffn down ", 5120, 17408),
     ("lm_head  ", 248077, 5120), // the loaded vocab: odd N, partial tile
 ];
-const MS: [u32; 8] = [1, 2, 3, 4, 5, 8, 12, 16];
+const MS: [u32; 10] = [1, 2, 3, 4, 5, 8, 9, 12, 15, 16];
 const E2M1: [f64; 16] = [
     0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0,
 ];
@@ -171,6 +177,15 @@ fn main() -> Result<()> {
             b16
         }
     };
+    let sites = spark_model::layers::w4a16_gemv_tiers::W4a16BatchmTiers::resolve(g);
+    let fixed_k = |m: u32| {
+        g.kernel("w4a16_gemv", &format!("w4a16_gemv_batch{m}"))
+            .expect("batch2/3")
+    };
+    let dual_k = |m: u32| {
+        g.kernel("w4a16_gemv", &format!("w4a16_gemv_dual_batch{m}"))
+            .expect("dual2/3")
+    };
 
     let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
     let a_host: Vec<u16> = (0..16 * 17408)
@@ -182,7 +197,7 @@ fn main() -> Result<()> {
     let a_bytes: Vec<u8> = a_host.iter().flat_map(|v| v.to_le_bytes()).collect();
     let a = g.alloc(a_bytes.len())?;
     g.copy_h2d(&a_bytes, a)?;
-    let c = g.alloc(17 * 248320 * 2)?;
+    let c = g.alloc(2 * 17 * 248320 * 2 + 4096)?;
 
     let mut failures = 0usize;
     let mut controls_ok = true;
@@ -218,14 +233,27 @@ fn main() -> Result<()> {
             .chain([0, nu - 1])
             .collect();
         for m in MS {
+            if m > ops::gemv_tc::narrow_gemv_max_rows() {
+                println!(
+                    "{label} M={m:2}  skipped: 9..16-row edge is opt-in (AVAROK_W4A16_TC_WIDE)"
+                );
+                continue;
+            }
             if ops::gemv_tc::tc_kernel(g, m, n, k).is_none() {
                 eprintln!("NOT ARMED: tensor-core kernel did not resolve at m={m} n={n} k={k}");
+                std::process::exit(2);
+            }
+            // The handle a dispatch site gets (W4a16BatchmTiers — every NVFP4
+            // verify arm asks it); 9..=16 rows exist only with the widening on.
+            let site = sites.kernel(m);
+            if site.0 == 0 {
+                eprintln!("NOT ARMED: no dispatch-site handle at m={m}");
                 std::process::exit(2);
             }
             let kh = tier_for(m);
             let mu = m as usize;
             let tv = case.tier(kh, m)?;
-            let tc = case.routed(kh, m, m, &case.w)?;
+            let tc = case.routed(site, m, m, &case.w)?;
             let (mut e_tier, mut e_tc, mut range) = (0f64, 0f64, 0f64);
             for r in 0..mu {
                 for &row in &rows {
@@ -258,6 +286,52 @@ fn main() -> Result<()> {
             println!(
                 "{label} N={n:6} K={k:5} M={m:2}  cpu_err tier={e_tier:.3e} tc={e_tc:.3e} (range {range:.1})  \
                  elems_out_of_tol={bad} bits_differ={differ}  {}",
+                if ok { "PASS" } else { "FAIL" }
+            );
+        }
+
+        // FIXED-M launchers (C=2/C=3 decode, K=1/K=2 verify): the production
+        // ops::w4a16_gemv_batch2/3 and dual_batch2/3 route to the tensor-core
+        // kernel under the widening switch; same budget vs the batchm tier.
+        let fixed_ms: &[u32] = if ops::gemv_tc::wide_rows_enabled() {
+            &[2, 3]
+        } else {
+            &[]
+        };
+        for &m in fixed_ms {
+            let tv = case.tier(tier_for(m), m)?;
+            let (fixed, dual) = (fixed_k(m), dual_k(m));
+            let one = case.run(m, |c| {
+                if m == 2 {
+                    ops::w4a16_gemv_batch2(g, fixed, a, &case.w, c, n, k, 0)
+                } else {
+                    ops::w4a16_gemv_batch3(g, fixed, a, &case.w, c, n, k, 0)
+                }
+            })?;
+            // dual: same weight twice; output1 lands in the sentinel-checked
+            // buffer, output0 in a scratch region past it.
+            let scratch = c.offset(((m as usize + 1) * nu * 2).next_multiple_of(256));
+            let two = case.run(m, |c1| {
+                if m == 2 {
+                    ops::w4a16_gemv_dual_batch2(g, dual, a, &case.w, scratch, &case.w, c1, n, k, 0)
+                } else {
+                    ops::w4a16_gemv_dual_batch3(g, dual, a, &case.w, scratch, &case.w, c1, n, k, 0)
+                }
+            })?;
+            let (bad1, bad2) = (
+                compare(&one, &tv, m as usize, nu),
+                compare(&two, &tv, m as usize, nu),
+            );
+            let differ = one[..m as usize * nu]
+                .iter()
+                .zip(&tv[..m as usize * nu])
+                .filter(|(x, y)| x != y)
+                .count();
+            let ok = bad1 == 0 && bad2 == 0 && differ > 0;
+            failures += usize::from(!ok);
+            println!(
+                "{label} FIXED M={m}  batch{m} out_of_tol={bad1}  dual_batch{m} out_of_tol={bad2}  \
+                 bits_differ={differ} (0 = tc not armed)  {}",
                 if ok { "PASS" } else { "FAIL" }
             );
         }

@@ -81,6 +81,17 @@ pub(crate) fn publish_kernel_flags(args: &cli::ServeArgs) {
     // on first touch, exactly as the varlen twin does. Publishing a clap
     // default here would seal the cell on every boot and make the documented
     // variable inert -- the failure this module's header exists to describe.
+    // `--w4a4-downcast`: always published (no environment fallback exists),
+    // before the model is built — `W4a16BatchmTiers::resolve` reads it to
+    // decide whether to allocate the W4A4 activation scratch.
+    let w4a4 = spark_model::layers::ops::w4a4_proj::set_w4a4_downcast_from_cli(args.w4a4_downcast);
+    if w4a4 != args.w4a4_downcast {
+        tracing::warn!(
+            "w4a4-downcast was already resolved ({w4a4}); the command line's \
+             ({}) did NOT take effect",
+            args.w4a4_downcast
+        );
+    }
     if let Some(on) = args.prefill_codispatch {
         let in_force = spark_model::layers::ops::set_prefill_codispatch_from_cli(on);
         if in_force != on {

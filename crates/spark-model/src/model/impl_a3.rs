@@ -310,7 +310,7 @@ impl TransformerModel {
                     stream,
                 )?;
             }
-        } else if (3..=8).contains(&num_tokens)
+        } else if (3..=ops::gemv_tc::narrow_gemv_max_rows()).contains(&num_tokens)
             && self.w4a16_batchm.kernel(num_tokens).0 != 0
             && let Some(ref nvfp4) = self.lm_head_nvfp4
         {

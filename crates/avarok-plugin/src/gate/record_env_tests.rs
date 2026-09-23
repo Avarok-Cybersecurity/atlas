@@ -93,13 +93,11 @@ fn the_record_discloses_the_applied_serve_env_and_reads_perf_env_through_it() {
 /// verbatim, never a normalised on/off.
 #[test]
 fn a_set_tc_kill_switch_is_disclosed_verbatim() {
-    for v in ["1", "0"] {
-        let resolved =
-            super::resolve_perf_env(|k| (k == "AVAROK_NO_W4A16_TC").then(|| v.to_string()));
-        assert_eq!(
-            resolved.get("AVAROK_NO_W4A16_TC").map(String::as_str),
-            Some(v)
-        );
+    for var in ["AVAROK_NO_W4A16_TC", "AVAROK_W4A16_TC_WIDE"] {
+        for v in ["1", "0"] {
+            let resolved = super::resolve_perf_env(|k| (k == var).then(|| v.to_string()));
+            assert_eq!(resolved.get(var).map(String::as_str), Some(v));
+        }
     }
 }
 
@@ -121,12 +119,19 @@ fn tc_kill_switch_default_matches_the_lever() {
         "the tc kill-switch rule changed; the record's \"unset\" default assumes unset or \
          empty means the tensor-core path ran: {body}"
     );
-    assert_eq!(
-        super::resolve_perf_env(|_| None)
-            .get("AVAROK_NO_W4A16_TC")
-            .map(String::as_str),
-        Some("unset")
+    let at = src
+        .find("pub fn wide_rows_enabled()")
+        .expect("the row-edge widening lever is gone; PERF_CONTROLS discloses a dead variable");
+    let body: String = src[at..].chars().take(260).collect();
+    assert!(
+        body.contains("std::env::var_os(\"AVAROK_W4A16_TC_WIDE\").is_some_and(|v| !v.is_empty())"),
+        "the widening opt-in rule changed; the record's \"unset\" default assumes unset or \
+         empty means the widening did NOT run: {body}"
     );
+    let resolved = super::resolve_perf_env(|_| None);
+    for var in ["AVAROK_NO_W4A16_TC", "AVAROK_W4A16_TC_WIDE"] {
+        assert_eq!(resolved.get(var).map(String::as_str), Some("unset"));
+    }
 }
 
 /// `AVAROK_NO_MTP_TC` is a PRESENCE kill switch like `AVAROK_NO_W4A16_TC`.

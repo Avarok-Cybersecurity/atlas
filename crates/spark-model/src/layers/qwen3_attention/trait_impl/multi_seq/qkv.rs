@@ -618,7 +618,9 @@ impl Qwen3AttentionLayer {
         // M=8, so the DFlash wide verify (M=17) keeps the GEMM.
         let batchm = self.w4a16_batchm.kernel(m);
         if batchm.0 != 0 {
-            return ops::w4a16_gemv_batchm(gpu, batchm, input, w_base, output, m, n, k, stream);
+            return ops::w4a4_proj::nvfp4_proj_small_m(
+                gpu, batchm, input, w_base, output, m, n, k, stream,
+            );
         }
         if let Some(wt) = w_t {
             // Small-M routing (w4a16_m17_bench): at M<=64 the M64-tile

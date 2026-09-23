@@ -34,17 +34,23 @@ use super::record::GateRecord;
 /// `AVAROK_NO_W4A16_TC` is a PRESENCE kill switch (any non-empty value, `0`
 /// included, turns the tensor-core small-M NVFP4 GEMV off), so its default is
 /// the literal `unset`, the one value under which the tensor-core path ran.
-/// `perf_env_defaults_match_the_scheduler` pins that rule against
-/// `layers/ops/gemv_tc.rs`.
+/// `AVAROK_W4A16_TC_WIDE` is the opposite polarity: an OPT-IN (any non-empty
+/// value) that widens the tensor-core row edge from 8 to 16, so `unset` means
+/// it did NOT run. `record_env_tests` pins both rules against
+/// `layers/ops/gemv_tc.rs`. The W4A4 activation downcast is NOT here: it is
+/// the `--w4a4-downcast` flag, disclosed in `serve_resolved`
+/// (`record_serve::W4A4_DOWNCAST`).
 ///
-/// `AVAROK_NO_MTP_TC` is the same kind of PRESENCE kill switch, for the MTP
-/// drafter's tensor-core BF16 GEMV: default `unset` (the path ran), any set
-/// value disclosed verbatim. `tc_mtp_switch_default_matches_the_lever` pins
-/// that rule against `layers/ops/dense_gemv_tc.rs`.
-const PERF_CONTROLS: [(&str, &str); 4] = [
+/// `AVAROK_NO_MTP_TC` is the same kind of PRESENCE kill switch as
+/// `AVAROK_NO_W4A16_TC`, for the MTP drafter's tensor-core BF16 GEMV: default
+/// `unset` (the path ran), any set value disclosed verbatim.
+/// `tc_mtp_switch_default_matches_the_lever` pins that rule against
+/// `layers/ops/dense_gemv_tc.rs`.
+const PERF_CONTROLS: [(&str, &str); 5] = [
     ("AVAROK_PREFILL_CODISPATCH_WINDOW_MS", "100"),
     ("AVAROK_PREFILL_CODISPATCH_SETTLE_MS", "10"),
     ("AVAROK_NO_W4A16_TC", "unset"),
+    ("AVAROK_W4A16_TC_WIDE", "unset"),
     ("AVAROK_NO_MTP_TC", "unset"),
 ];
 

@@ -142,7 +142,10 @@ impl Qwen3AttentionLayer {
                 (2 * h) as u32,
                 stream,
             )?;
-        } else if (4..=8).contains(&n) && !force_seq_ffn && self.ffn.can_forward_km(n as u32) {
+        } else if (4..=ops::w4a4_proj::proj_max_rows() as usize).contains(&n)
+            && !force_seq_ffn
+            && self.ffn.can_forward_km(n as u32)
+        {
             // MISSING K=4 ARM (2026-07-24): the ladder jumped from n==2/3
             // straight to the dense `forward_prefill` GEMM below, so K=4
             // verify ran the 16 attention layers' FFN through the MMQ/tile

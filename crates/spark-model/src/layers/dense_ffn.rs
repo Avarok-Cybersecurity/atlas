@@ -1635,6 +1635,11 @@ impl DenseFfnLayer {
         {
             return self.forward_prefill(input, 2, ctx, stream);
         }
+        // `--w4a4-downcast`: the fixed-M CUDA-core kernels below are W4A16;
+        // the batched arm routes every projection through the W4A4 launcher.
+        if crate::layers::ops::w4a4_proj::w4a4_downcast_enabled() && self.can_forward_km(2) {
+            return self.forward_km(input, 2, ctx, stream);
+        }
 
         let h = ctx.config.hidden_size as u32;
         let inter = ctx.config.intermediate_size as u32;
@@ -1691,6 +1696,11 @@ impl DenseFfnLayer {
         if native_small_batch_uses_prefill(self.bf16_weights.is_some(), self.fp8_weights.is_some())
         {
             return self.forward_prefill(input, 3, ctx, stream);
+        }
+        // `--w4a4-downcast`: the fixed-M CUDA-core kernels below are W4A16;
+        // the batched arm routes every projection through the W4A4 launcher.
+        if crate::layers::ops::w4a4_proj::w4a4_downcast_enabled() && self.can_forward_km(3) {
+            return self.forward_km(input, 3, ctx, stream);
         }
 
         let h = ctx.config.hidden_size as u32;
@@ -1791,7 +1801,7 @@ impl DenseFfnLayer {
         let gate_out = ctx.buffers.expert_gate_out();
         let up_out = ctx.buffers.expert_up_out();
 
-        ops::w4a16_gemv_batchm(
+        ops::w4a4_proj::nvfp4_proj_small_m(
             ctx.gpu,
             kh,
             input,
@@ -1802,7 +1812,7 @@ impl DenseFfnLayer {
             h,
             stream,
         )?;
-        ops::w4a16_gemv_batchm(
+        ops::w4a4_proj::nvfp4_proj_small_m(
             ctx.gpu,
             kh,
             input,
@@ -1824,7 +1834,7 @@ impl DenseFfnLayer {
             stream,
         )?;
         let output = ctx.buffers.moe_output();
-        ops::w4a16_gemv_batchm(
+        ops::w4a4_proj::nvfp4_proj_small_m(
             ctx.gpu,
             kh,
             gate_out,

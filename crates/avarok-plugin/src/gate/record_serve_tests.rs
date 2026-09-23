@@ -2,7 +2,7 @@
 
 use super::super::tests::{SHA, bfcl_baseline, hw, run_record};
 use super::super::{GateRecord, check_record, read_record, records_newest_first};
-use super::{MTP_GATE, PREFILL_CODISPATCH, SPECULATIVE, disclosure};
+use super::{MTP_GATE, PREFILL_CODISPATCH, SPECULATIVE, W4A4_DOWNCAST, disclosure};
 use crate::result::Verdict;
 use std::collections::BTreeMap;
 
@@ -13,29 +13,35 @@ fn keys(m: &BTreeMap<String, String>) -> Vec<(&str, &str)> {
 #[test]
 fn disclosure_spells_the_regime_and_omits_what_was_not_resolved() {
     assert_eq!(
-        keys(&disclosure(Some(true), true, None)),
+        keys(&disclosure(Some(true), true, None, false)),
         vec![(MTP_GATE, "force"), (SPECULATIVE, "true")]
     );
     assert_eq!(
-        keys(&disclosure(Some(false), true, None)),
+        keys(&disclosure(Some(false), true, None, false)),
         vec![(MTP_GATE, "auto"), (SPECULATIVE, "true")]
     );
     // No `--mtp-gate` on the rendered command: the SERVER's environment
     // decides, which this process cannot see for a leased server. Absent,
     // not "auto" — "the recipe pinned nothing" is the finding.
     assert_eq!(
-        keys(&disclosure(None, false, None)),
+        keys(&disclosure(None, false, None, false)),
         vec![(SPECULATIVE, "false")]
     );
     // G22: `--prefill-codispatch` as rendered, both ways; absent when the
     // flag was, exactly like `mtp_gate`.
     assert_eq!(
-        keys(&disclosure(None, true, Some(true))),
+        keys(&disclosure(None, true, Some(true), false)),
         vec![(PREFILL_CODISPATCH, "true"), (SPECULATIVE, "true")]
     );
     assert_eq!(
-        keys(&disclosure(None, true, Some(false))),
+        keys(&disclosure(None, true, Some(false), false)),
         vec![(PREFILL_CODISPATCH, "false"), (SPECULATIVE, "true")]
+    );
+    // `--w4a4-downcast`: disclosed when on; absent is exactly the default
+    // (false, no environment fallback).
+    assert_eq!(
+        keys(&disclosure(None, true, None, true)),
+        vec![(SPECULATIVE, "true"), (W4A4_DOWNCAST, "true")]
     );
 }
 
@@ -54,7 +60,7 @@ fn passing_record() -> GateRecord {
 
 #[test]
 fn serve_resolved_round_trips_and_older_records_simply_lack_it() {
-    let record = passing_record().with_serve_resolved(disclosure(Some(true), true, None));
+    let record = passing_record().with_serve_resolved(disclosure(Some(true), true, None, false));
     let json = serde_json::to_value(&record).unwrap();
     assert_eq!(json["serve_resolved"][MTP_GATE], "force");
     assert_eq!(json["serve_resolved"][SPECULATIVE], "true");
@@ -97,7 +103,7 @@ fn serve_resolved_round_trips_and_older_records_simply_lack_it() {
 fn serve_resolved_never_reaches_check_record() {
     let baseline = bfcl_baseline();
     let without = passing_record();
-    let with = passing_record().with_serve_resolved(disclosure(Some(false), true, None));
+    let with = passing_record().with_serve_resolved(disclosure(Some(false), true, None, false));
     assert_eq!(check_record(&with, &baseline), None);
     assert_eq!(
         check_record(&with, &baseline),
@@ -111,7 +117,7 @@ fn serve_resolved_never_reaches_check_record() {
     let failing_with =
         failing_without
             .clone()
-            .with_serve_resolved(disclosure(Some(true), true, None));
+            .with_serve_resolved(disclosure(Some(true), true, None, false));
     let verdict = check_record(&failing_with, &baseline);
     assert!(
         verdict.is_some(),

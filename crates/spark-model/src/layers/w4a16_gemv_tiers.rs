@@ -114,6 +114,14 @@ pub fn select_tier(
 pub struct W4a16BatchmTiers {
     /// Parallel to [`W4A16_BATCHM_WIDTHS`].
     handles: [KernelHandle; W4A16_BATCHM_WIDTHS.len()],
+    /// `w4a16_gemv_batch16`, handed out for 9..=16 rows ONLY while
+    /// `gemv_tc::wide_rows_enabled()`: `ops::w4a16_gemv_batchm` then routes
+    /// the launch to the tensor-core `tc16` entry (batch16 is only the
+    /// fallback if that entry is missing).
+    wide: KernelHandle,
+    /// `w4a16_gemv_batch32`, handed out for 17..=32 rows ONLY under
+    /// `--w4a4-downcast` (the W4A4 path serves them; this is its fallback).
+    wide32: KernelHandle,
 }
 
 /// `KernelHandle` has no `Default`, so the "no NVFP4 kernels" state is spelled
@@ -122,6 +130,8 @@ impl Default for W4a16BatchmTiers {
     fn default() -> Self {
         Self {
             handles: [KernelHandle(0); W4A16_BATCHM_WIDTHS.len()],
+            wide: KernelHandle(0),
+            wide32: KernelHandle(0),
         }
     }
 }
@@ -144,7 +154,24 @@ impl W4a16BatchmTiers {
                 super::try_kernel(gpu, "w4a16_gemv", &format!("w4a16_gemv_batch{w}"))
             };
         }
-        Self { handles }
+        let wide = super::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_batch16");
+        // Model build is the one place the opt-in W4A4 projection path may
+        // allocate its activation scratch (never inside a graph capture).
+        if let Err(e) = crate::layers::ops::w4a4_proj::prepare(gpu) {
+            tracing::warn!(
+                "--w4a4-downcast: scratch/kernels unavailable, projections stay W4A16: {e:#}"
+            );
+        }
+        let wide32 = if crate::layers::ops::w4a4_proj::w4a4_downcast_enabled() {
+            super::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_batch32")
+        } else {
+            KernelHandle(0)
+        };
+        Self {
+            handles,
+            wide,
+            wide32,
+        }
     }
 
     /// Which tiers this target resolved — the `present` argument of
@@ -156,6 +183,10 @@ impl W4a16BatchmTiers {
     /// Narrowest resolved tier covering `m` rows, or `KernelHandle(0)` when
     /// this family cannot serve `m`.
     pub fn kernel(&self, m: u32) -> KernelHandle {
+        let edge = crate::layers::ops::w4a4_proj::proj_max_rows();
+        if m > W4A16_BATCHM_WIDTHS[W4A16_BATCHM_WIDTHS.len() - 1] && m <= edge {
+            return if m <= 16 { self.wide } else { self.wide32 };
+        }
         select_tier(m, self.present(), exact_m_tiers_enabled())
             .map_or(KernelHandle(0), |i| self.handles[i])
     }

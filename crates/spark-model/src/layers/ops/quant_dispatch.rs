@@ -141,6 +141,9 @@ pub fn w4a16_gemv_batch2(
     k: u32,
     stream: u64,
 ) -> Result<()> {
+    if super::gemv_tc::tc_fixed_m(gpu, input, weight, output, 2, n, k, stream)? {
+        return Ok(());
+    }
     KernelLaunch::new(gpu, kernel)
         .grid([div_ceil(n, 4), 1, 1])
         .block([256, 1, 1])
@@ -171,6 +174,9 @@ pub fn w4a16_gemv_batch3(
     k: u32,
     stream: u64,
 ) -> Result<()> {
+    if super::gemv_tc::tc_fixed_m(gpu, input, weight, output, 3, n, k, stream)? {
+        return Ok(());
+    }
     KernelLaunch::new(gpu, kernel)
         .grid([div_ceil(n, 4), 1, 1])
         .block([256, 1, 1])
@@ -204,10 +210,10 @@ pub fn w4a16_gemv_batchm(
     k: u32,
     stream: u64,
 ) -> Result<()> {
-    // Largest template is w4a16_gemv_batch16 (MAX_M=16). Above that the
-    // kernel SILENTLY truncates: rows 0..15 computed, rows 16.. never
-    // written — garbage output, not a crash.
-    debug_assert!(m <= 16, "w4a16_gemv_batchm caps at M=16 (m={m})");
+    // The handle's template caps the rows: batch16 SILENTLY truncates above 16
+    // (rows 16.. never written). batch32 (MAX_M=32) is handed out only for
+    // 17..=32 rows under `--w4a4-downcast`, as the W4A4 path's fallback.
+    debug_assert!(m <= 32, "w4a16_gemv_batchm caps at M=32 (batch32; m={m})");
     // Tensor-core sibling first (same arguments, its own geometry): the
     // CUDA-core tiers below cost 50-60% more GPU-rail energy per launch at
     // M>=2 for the same weight stream. See `gemv_tc`.
@@ -396,6 +402,12 @@ pub fn w4a16_gemv_dual_batch3(
     k: u32,
     stream: u64,
 ) -> Result<()> {
+    // Two tensor-core launches, one per projection; both or neither (the
+    // routing decision depends only on (m, n, k), identical for the pair).
+    if super::gemv_tc::tc_fixed_m(gpu, input, weight0, output0, 3, n, k, stream)? {
+        super::gemv_tc::tc_fixed_m(gpu, input, weight1, output1, 3, n, k, stream)?;
+        return Ok(());
+    }
     KernelLaunch::new(gpu, kernel)
         .grid([div_ceil(n, 4), 1, 2])
         .block([256, 1, 1])
@@ -434,6 +446,12 @@ pub fn w4a16_gemv_dual_batch2(
     k: u32,
     stream: u64,
 ) -> Result<()> {
+    // Two tensor-core launches, one per projection; both or neither (the
+    // routing decision depends only on (m, n, k), identical for the pair).
+    if super::gemv_tc::tc_fixed_m(gpu, input, weight0, output0, 2, n, k, stream)? {
+        super::gemv_tc::tc_fixed_m(gpu, input, weight1, output1, 2, n, k, stream)?;
+        return Ok(());
+    }
     KernelLaunch::new(gpu, kernel)
         .grid([div_ceil(n, 4), 1, 2])
         .block([256, 1, 1])
