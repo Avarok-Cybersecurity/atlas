@@ -26,6 +26,7 @@ fn two_variant_baseline() -> GateBaseline {
         metrics: BTreeMap::from([("overall_accuracy".to_string(), bound(min))]),
         serve_overrides: BTreeMap::new(),
         param_overrides: BTreeMap::new(),
+        serve_env: BTreeMap::new(),
     };
     let mut models = BTreeMap::new();
     models.insert(MODEL.to_string(), entry("qwen3.6/moe", 84.0));

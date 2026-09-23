@@ -123,7 +123,7 @@ pub(crate) fn read_sm_count(kernels_root: &std::path::Path, hw: &str) -> u32 {
     let Ok(text) = std::fs::read_to_string(&path) else {
         return BASELINE_SM_COUNT;
     };
-    let Ok(toml) = text.parse::<toml::Value>() else {
+    let Ok(toml) = toml::from_str::<toml::Value>(&text) else {
         return BASELINE_SM_COUNT;
     };
     parse_sm_count(hw, &toml)
@@ -267,7 +267,7 @@ pub(crate) fn read_defaults(kernels_root: &std::path::Path, hw: &str) -> Default
     let Ok(text) = std::fs::read_to_string(&path) else {
         return baseline(hw);
     };
-    let Ok(toml) = text.parse::<toml::Value>() else {
+    let Ok(toml) = toml::from_str::<toml::Value>(&text) else {
         return baseline(hw);
     };
     parse_defaults(hw, &toml)

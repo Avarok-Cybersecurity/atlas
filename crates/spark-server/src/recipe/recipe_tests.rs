@@ -326,3 +326,70 @@ fn every_recipe_can_be_served_hermetically() {
             .unwrap_or_else(|e| panic!("{} cannot be served hermetically: {e:#}", r.id));
     }
 }
+
+/// #1242: a recipe's `env:` block is the lever set it is measured under, read
+/// verbatim — absent and `{}` both mean none, and a non-scalar entry is a
+/// parse error rather than a silently dropped lever.
+#[test]
+fn the_env_block_is_read_verbatim_and_absent_means_none() {
+    let head = "recipe_version: \"2\"\nmodel: org/m\ncontainer: c\nruntime: atlas\n\
+                defaults:\n  port: 8888\n";
+    assert!(Recipe::parse("f/s", head).unwrap().env.is_empty());
+    assert!(
+        Recipe::parse("f/s", &format!("{head}env: {{}}\n"))
+            .unwrap()
+            .env
+            .is_empty()
+    );
+    let declared = Recipe::parse(
+        "f/s",
+        &format!(
+            "{head}env:\n  AVAROK_FP8_ROWWISE: \"1\"\n  AVAROK_MTP_K_LADDER: 1:3,2:1,4:2,8:2,16:1\n"
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        declared.env.iter().collect::<Vec<_>>(),
+        [
+            (&"AVAROK_FP8_ROWWISE".to_string(), &"1".to_string()),
+            (
+                &"AVAROK_MTP_K_LADDER".to_string(),
+                &"1:3,2:1,4:2,8:2,16:1".to_string()
+            ),
+        ]
+    );
+    // The vendored corpus, read the same way: the three DeepSeek-V4.1 Flash
+    // recipes declare the four expert-streaming levers under the legacy
+    // prefix (which `serve_env::declared` renames onto AVAROK_*), and every
+    // other recipe — including the two diffusion-gemma files whose `env:`
+    // holds only comments — declares none. Asserted per recipe so a new
+    // fixture that grows a block is reviewed here rather than inherited.
+    let ds41: BTreeMap<String, String> = [
+        ("ATLAS_DS41_EXPERT_CACHE_GIB", "88"),
+        ("ATLAS_DS41_MAX_SEQ", "4096"),
+        ("ATLAS_DS41_MAX_TOKENS", "512"),
+        ("ATLAS_DS41_READER_THREADS", "8"),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .collect();
+    for r in all() {
+        if r.id
+            .starts_with("deepseek-v4.1/deepseek-v4.1-flash-q2k-b200")
+        {
+            assert_eq!(r.env, ds41, "{}", r.id);
+            avarok_plugin::serve_env::declared(&r.id, &r.env)
+                .unwrap_or_else(|e| panic!("{} declares a block the gate refuses: {e:#}", r.id));
+        } else {
+            assert!(r.env.is_empty(), "{} declares {:?}", r.id, r.env);
+        }
+    }
+    let e = Recipe::parse("f/s", &format!("{head}env:\n  AVAROK_X:\n    nested: 1\n"))
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("env.AVAROK_X is not a scalar"), "{e}");
+    let e = Recipe::parse("f/s", &format!("{head}env: 1\n"))
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("`env:` must be a mapping"), "{e}");
+}

@@ -154,13 +154,13 @@ const DFLASH2_SUMMARY: &str = "Latency/throughput curve across concurrency 1 →
 /// scored against its own history, and the site's instrument fingerprint
 /// refuses a cross-instrument pair by name.
 ///
-/// Registered as a PROMOTION CANDIDATE (`gate::coverage`), not REQUIRED,
-/// until its first measured floors land: `sweep_verdict` says PASS only when
-/// a floor is populated, `check_record` demands PASS, and `baseline_for`
-/// drops an unmeasured entry — so a REQUIRED entry with no floors would block
-/// every PR while refusing to run under `--pull-request-gate`. The promotion
-/// is the PR that commits the floors; the BENCH.toml entry says what that
-/// takes.
+/// REQUIRED (`gate::coverage`) since 2026-09-23, when its first hand-measured
+/// floors landed. It was a PROMOTION CANDIDATE from 2026-09-20 until then,
+/// because `sweep_verdict` says PASS only when a floor is populated,
+/// `check_record` demands PASS, and `baseline_for` drops an unmeasured entry
+/// — so a REQUIRED entry with no floors would have blocked every PR while
+/// refusing to run under `--pull-request-gate`. The BENCH.toml entry records
+/// the bootstrap that met that precondition.
 pub const MOE_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     id: "concurrency-sweep-moe",
     name: "Concurrency Sweep (MoE)",

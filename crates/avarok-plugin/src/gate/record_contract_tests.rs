@@ -259,12 +259,12 @@ fn perf_env_defaults_match_the_scheduler() {
     };
     assert!(
         resolution("AVAROK_PREFILL_CODISPATCH_WINDOW_MS").contains("unwrap_or(100)"),
-        "the scheduler's co-dispatch WINDOW default moved; PERF_CONTROLS in record.rs still \
+        "the scheduler's co-dispatch WINDOW default moved; PERF_CONTROLS in record_env.rs still \
          says 100 and every record would disclose a value the server never used"
     );
     assert!(
         resolution("AVAROK_PREFILL_CODISPATCH_SETTLE_MS").contains("unwrap_or(10)"),
-        "the scheduler's co-dispatch SETTLE default moved; PERF_CONTROLS in record.rs still \
+        "the scheduler's co-dispatch SETTLE default moved; PERF_CONTROLS in record_env.rs still \
          says 10"
     );
     // ★ THE ENABLE READ MOVED, 2026-09-22, and this assertion followed it to the

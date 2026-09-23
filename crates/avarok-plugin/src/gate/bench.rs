@@ -90,6 +90,16 @@ pub struct BenchEntry {
     /// default cannot read green against a pinned-instrument threshold.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub param_overrides: BTreeMap<String, String>,
+    /// `AVAROK_*` serve levers the gate pins for this entry, applied to the
+    /// serve on top of the recipe's own `env:` block — `serve_overrides`'
+    /// sibling for what is not a flag (#1242). Empty (and omitted) is the
+    /// normal case. Non-empty is a gate-local pin the SHARED recipe must not
+    /// carry: the concurrency gate is measured under FP8 row-wise twins and
+    /// the MTP ladder, which the agentic gate on the same recipe cannot even
+    /// boot with at 0.85 util. Validated at parse by `serve_env::declared`;
+    /// disclosed on the record (`GateRecord::serve_env`), not demanded by it.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub serve_env: BTreeMap<String, String>,
     /// Thresholds. Absent for `unmeasured` — see the module docs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metrics: Option<BTreeMap<String, super::record::Bound>>,
@@ -180,6 +190,18 @@ pub fn load_all(root: &Path) -> Result<Vec<(taxon::Target, BenchEntry)>> {
                     );
                 }
             }
+            // A lever pin is validated here, in milliseconds, for the reason
+            // the hermetic pins are: a table naming a harness variable or a
+            // legacy spelling would otherwise be found by the serve, after
+            // the campaign's first model load.
+            crate::serve_env::declared(
+                &format!(
+                    "{} / {} [benchmarks.serve_env]",
+                    entry.gate, entry.checkpoint
+                ),
+                &entry.serve_env,
+            )
+            .with_context(|| path.display().to_string())?;
             validate_noise(&path, &entry)?;
             out.push((
                 taxon::Target {
@@ -282,6 +304,7 @@ pub fn baseline_for(root: &Path, benchmark_id: &str) -> Result<GateBaseline> {
                     metrics,
                     serve_overrides: entry.serve_overrides.clone(),
                     param_overrides: entry.param_overrides.clone(),
+                    serve_env: entry.serve_env.clone(),
                 },
             )
             .is_some()

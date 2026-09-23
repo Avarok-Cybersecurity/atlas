@@ -91,6 +91,7 @@ fn blank(model: &str) -> Recipe {
         kv_dtype: String::new(),
         updated: String::new(),
         defaults: std::collections::BTreeMap::new(),
+        env: std::collections::BTreeMap::new(),
         starting_point: Some("no donor — the server's own defaults".into()),
     }
 }

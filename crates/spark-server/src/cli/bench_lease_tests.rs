@@ -9,6 +9,7 @@ fn lease() -> Lease {
         recipe_id: "qwen/qwen3.8-27b".into(),
         argv_sha256: "a".repeat(64),
         binary_sha256: "b".repeat(64),
+        env_sha256: "e".repeat(64),
         owner_pid: 1,
         started_at: 0,
     }
@@ -18,8 +19,16 @@ fn reported() -> ServeIdentity {
     ServeIdentity {
         argv_sha256: "a".repeat(64),
         binary_sha256: "b".repeat(64),
-        engine_env_sha256: "e".repeat(64),
+        env_sha256: "e".repeat(64),
         pid: 4242,
+    }
+}
+
+fn want() -> Expected {
+    Expected {
+        argv_sha256: "a".repeat(64),
+        binary_sha256: "b".repeat(64),
+        env_sha256: "e".repeat(64),
     }
 }
 
@@ -27,7 +36,7 @@ fn reported() -> ServeIdentity {
 /// and each NEGATIVE CONTROL flips exactly one and is refused by name.
 #[test]
 fn a_server_is_reused_only_when_every_digest_matches() {
-    let want = ("a".repeat(64), "b".repeat(64), "e".repeat(64));
+    let want = want();
     assert_eq!(
         mismatch(&lease(), &reported(), &want, "Qwen/Qwen3.8-27B"),
         None
@@ -50,7 +59,10 @@ fn a_server_is_reused_only_when_every_digest_matches() {
     );
 
     // The rendering differs: a hermetic kat server is not an open bfcl one.
-    let hermetic = ("d".repeat(64), "b".repeat(64), "e".repeat(64));
+    let hermetic = Expected {
+        argv_sha256: "d".repeat(64),
+        ..want.clone()
+    };
     assert!(
         mismatch(&lease(), &reported(), &hermetic, "Qwen/Qwen3.8-27B")
             .unwrap()
@@ -67,18 +79,24 @@ fn a_server_is_reused_only_when_every_digest_matches() {
 /// ★ THE ENVIRONMENT HALF, owner 2026-09-22: "we only allow server re-use IF
 /// the recipes the bench uses are the SAME." The recipe is enforced by the
 /// rendering digest above — a recipe becomes flags. These are the cases that
-/// digest CANNOT see, because a lever like `AVAROK_PREFILL_CODISPATCH` never
-/// reaches argv: argv and binary match exactly and the server is still wrong.
+/// digest CANNOT see, because a lever like `AVAROK_FP8_ROWWISE` never reaches
+/// argv: argv and binary match exactly and the server is still wrong.
+///
+/// #1242's case, verbatim: a node whose bench.yaml exported
+/// `AVAROK_FP8_ROWWISE=1` for the concurrency gate, now asked to serve bfcl.
+/// The SERVER's own digest is what is compared, never the lease's copy, and
+/// the digest a run expects is the recipe's declared set (`serve_env`).
 #[test]
-fn a_server_under_another_engine_environment_is_refused() {
-    let want = ("a".repeat(64), "b".repeat(64), "e".repeat(64));
+fn a_server_under_another_serve_environment_is_refused() {
+    let want = want();
 
     // Same argv, same binary, same model, DIFFERENT levers. Before the env
     // digest this returned None and the run measured an undeclared config.
     let mut r = reported();
-    r.engine_env_sha256 = "f".repeat(64);
+    r.env_sha256 = "f".repeat(64);
     let why = mismatch(&lease(), &r, &want, "Qwen/Qwen3.8-27B").expect("refused");
-    assert!(why.contains("engine environment"), "{why}");
+    assert!(why.contains("another AVAROK_* serve environment"), "{why}");
+    assert!(why.contains("qwen/qwen3.8-27b"), "names the recipe: {why}");
     assert!(
         why.contains("env-only"),
         "the message must say argv and binary matched, so a reader is not sent \
@@ -86,56 +104,24 @@ fn a_server_under_another_engine_environment_is_refused() {
     );
 
     // A server predating the digest reports "", which must read as UNKNOWN and
-    // be refused — "cannot tell" is not "matches".
+    // be refused — "cannot tell" is not "matches". Its message differs from
+    // the mismatch one so a reader knows to restart, not to hunt a lever.
     let mut r = reported();
-    r.engine_env_sha256 = String::new();
+    r.env_sha256 = String::new();
     let why = mismatch(&lease(), &r, &want, "Qwen/Qwen3.8-27B").expect("refused");
     assert!(
-        why.contains("does not report its engine environment"),
+        why.contains("does not report its AVAROK_* serve environment"),
         "{why}"
     );
-}
+    assert!(!why.contains("env-only"), "{why}");
 
-/// The digest itself: what it separates, and what it deliberately ignores.
-#[test]
-fn the_engine_env_digest_covers_avarok_vars_only_and_cannot_collide() {
-    let f = |v: &[(&str, &str)]| {
-        avarok_plugin::serve_identity::engine_env_fingerprint(
-            v.iter().map(|(k, x)| ((*k).to_string(), (*x).to_string())),
-        )
-    };
-    // The lever that motivated this: 1 and 0 must differ.
-    assert_ne!(
-        f(&[("AVAROK_PREFILL_CODISPATCH", "1")]),
-        f(&[("AVAROK_PREFILL_CODISPATCH", "0")])
-    );
-    // ...and so must the three levers PERF_CONTROLS does NOT disclose, which is
-    // why this digest is not built from that list.
-    for k in [
-        "AVAROK_FP8_ROWWISE",
-        "AVAROK_MTP_DCUT_RATIO",
-        "AVAROK_MTP_K_LADDER",
-    ] {
-        assert_ne!(f(&[(k, "1")]), f(&[(k, "2")]), "{k} must be covered");
-    }
-    // Set-but-empty is not unset: an operator who exports a lever to "" has
-    // configured something different from one who never exported it.
-    assert_ne!(f(&[("AVAROK_X", "")]), f(&[]));
-    // Order of enumeration must not matter — `std::env::vars()` gives no order.
+    // And the lease's own copy is never what decides: a stale lease digest
+    // beside a server whose statement matches is still reused.
+    let mut stale = lease();
+    stale.env_sha256 = "0".repeat(64);
     assert_eq!(
-        f(&[("AVAROK_A", "1"), ("AVAROK_B", "2")]),
-        f(&[("AVAROK_B", "2"), ("AVAROK_A", "1")])
-    );
-    // NUL separation: these must not collide on concatenation.
-    assert_ne!(
-        f(&[("AVAROK_A", "1"), ("AVAROK_B", "")]),
-        f(&[("AVAROK_A", "1B")])
-    );
-    // Non-engine variables are ignored: PATH churn between two runs on one box
-    // is not a config change, and refusing on it would make reuse never happen.
-    assert_eq!(
-        f(&[("AVAROK_A", "1"), ("PATH", "/x")]),
-        f(&[("AVAROK_A", "1")])
+        mismatch(&stale, &reported(), &want, "Qwen/Qwen3.8-27B"),
+        None
     );
 }
 
@@ -179,4 +165,48 @@ fn an_orphaned_lease_is_released_and_a_live_one_kept() {
     assert_eq!(release_if_orphaned(&store).unwrap(), Some(orphan));
     assert!(!lease_path(&store).exists());
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A lease written before `env_sha256` existed still reads (its server is
+/// then replaced by `mismatch`, never trusted), and a fresh one round-trips
+/// the digest.
+#[test]
+fn an_older_lease_file_reads_with_an_empty_env_digest() {
+    let old: Lease = serde_json::from_str(
+        r#"{"pid":1,"port":2,"model":"m","recipe_id":"r","argv_sha256":"a","binary_sha256":"b","owner_pid":3,"started_at":4}"#,
+    )
+    .unwrap();
+    assert_eq!(old.env_sha256, "");
+    let back: Lease = serde_json::from_str(&serde_json::to_string(&lease()).unwrap()).unwrap();
+    assert_eq!(back.env_sha256, "e".repeat(64));
+}
+
+/// The error a dead leased serve raises carries the serve's OWN final
+/// `Error:` / `Caused by:` block — the text that reaches the certify
+/// orchestrator's refusal — and says so honestly when the log has none.
+#[test]
+fn a_serve_that_dies_at_boot_reports_its_own_cause() {
+    let tail = "native FP8 dense residency: weights 23.42 GB ...\n\
+Error: Failed to build model\n\n\
+Caused by:\n    No memory left for KV cache: total GPU = 121.7 GB, \
+--gpu-memory-utilization 70% → budget 85.2 GB, but 69.9 GB already consumed + \
+23.7 GB inference reserve = 93.7 GB committed.\n";
+    let msg = exited_before_serving("exit status: 1", "unsloth/Qwen3.8-27B-NVFP4", tail);
+    assert!(
+        msg.starts_with("the leased server exited (exit status: 1) before it began serving"),
+        "{msg}"
+    );
+    assert!(msg.contains("No memory left for KV cache"), "{msg}");
+    assert!(
+        msg.contains("    Error: Failed to build model"),
+        "the block is indented: {msg}"
+    );
+    assert!(
+        !msg.contains("native FP8 dense residency"),
+        "only the error block: {msg}"
+    );
+    // NEGATIVE CONTROL: a tail with no error block is not quoted as one.
+    let msg = exited_before_serving("signal: 9", "m", "loading shard 3/17\n");
+    assert!(msg.contains("carries no `Error:` block"), "{msg}");
+    assert!(!msg.contains("loading shard"), "{msg}");
 }

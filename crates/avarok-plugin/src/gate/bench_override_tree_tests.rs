@@ -201,7 +201,7 @@ fn every_committed_param_override_parses_against_its_gates_schema() {
 /// `site/src/lib/ladder-baselines.js` fingerprints and can be judged against
 /// that one-shot axis by axis instead of being refused as "undeclared".
 #[test]
-fn the_moe_concurrency_entry_is_the_published_instrument_and_still_unmeasured() {
+fn the_moe_concurrency_entry_is_the_published_instrument_with_its_bootstrap_floors() {
     use std::collections::BTreeMap;
     let root = repo_root();
     let all = load_all(&root).expect("tree loads");
@@ -226,11 +226,46 @@ fn the_moe_concurrency_entry_is_the_published_instrument_and_still_unmeasured() 
         entry.default,
         "the only checkpoint on this gate must declare itself its subject"
     );
-    assert_eq!(entry.status, "unmeasured");
+    // ★ MEASURED 2026-09-23. Until then this asserted `unmeasured` and no
+    // metrics table, per its own instruction to replace that with the first
+    // floors' values. These are the bootstrap floors: three hand-driven reps
+    // on dgx1 at e8a212247c, each rung mean - max(3*sigma, 5%) cut together
+    // (5% was the wider band everywhere), the peak at the C=16 bar, the
+    // observed minimum completion, and zero vacuous cells. A re-cut edits
+    // these lines, which is the review a floor deserves.
+    assert_eq!(entry.status, "measured");
+    let floors: BTreeMap<String, (Option<f64>, Option<f64>)> = entry
+        .metrics
+        .as_ref()
+        .expect("the MoE ladder carries its bootstrap floors")
+        .iter()
+        .map(|(k, b)| (k.clone(), (b.min, b.max)))
+        .collect();
+    assert_eq!(
+        floors,
+        [
+            ("c1_aggregate_tok_s", (Some(69.47), None)),
+            ("c2_aggregate_tok_s", (Some(80.88), None)),
+            ("c4_aggregate_tok_s", (Some(92.72), None)),
+            ("c8_aggregate_tok_s", (Some(101.71), None)),
+            ("c16_aggregate_tok_s", (Some(102.63), None)),
+            ("peak_aggregate_tok_s", (Some(102.63), None)),
+            ("min_completion_tokens", (Some(914.0), None)),
+            ("vacuous_cells", (None, Some(0.0))),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect::<BTreeMap<_, _>>()
+    );
     assert!(
-        entry.metrics.is_none(),
-        "the MoE ladder has no committed measurement; a threshold here would be a guess. \
-         When the first floors land, replace this assertion with their values."
+        entry
+            .metrics
+            .as_ref()
+            .unwrap()
+            .values()
+            .all(|b| b.noise.is_none()),
+        "no noise allowance: the 5% band is already in each bar, and the entry has no \
+         run-to-run history to size one from"
     );
     assert_eq!(
         entry.recipe.as_deref(),
@@ -265,6 +300,6 @@ fn the_moe_concurrency_entry_is_the_published_instrument_and_still_unmeasured() 
     );
     assert!(
         !entry.serve_overrides.contains_key("lm_head_dtype"),
-        "the bf16 head is the recipe's correctness pin, not a throughput knob"
+        "the head dtype is the nvfp4head recipe's own precision choice, not a gate pin"
     );
 }

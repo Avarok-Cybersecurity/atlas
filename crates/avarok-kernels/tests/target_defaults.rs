@@ -297,7 +297,7 @@ fn every_target_declares_the_sm_count_of_its_own_part() {
 #[test]
 #[should_panic(expected = "sm_count = 0 is not a positive u32")]
 fn a_zero_sm_count_fails_the_build() {
-    let toml: toml::Value = "[hardware]\nsm_count = 0\n".parse().unwrap();
+    let toml: toml::Value = toml::from_str("[hardware]\nsm_count = 0\n").unwrap();
     let _ = build_defaults::parse_sm_count("fictional", &toml);
 }
 
@@ -320,7 +320,7 @@ fn the_sm_count_literal_is_a_compilable_const() {
 /// target that had not been updated yet.
 #[test]
 fn absent_keys_fall_through_to_the_baseline() {
-    let toml: toml::Value = "[defaults]\nlm_head_batchm_max = 16\n".parse().unwrap();
+    let toml: toml::Value = toml::from_str("[defaults]\nlm_head_batchm_max = 16\n").unwrap();
     let d = parse_defaults("fictional", &toml);
     assert_eq!(d.lm_head_batchm_max, 16);
     assert_eq!(
@@ -341,9 +341,8 @@ fn absent_keys_fall_through_to_the_baseline() {
 #[test]
 #[should_panic(expected = "has no key `ssm_batched_recurrent_misspelt`")]
 fn an_unknown_lever_name_fails_the_build() {
-    let toml: toml::Value = "[defaults]\nssm_batched_recurrent_misspelt = true\n"
-        .parse()
-        .unwrap();
+    let toml: toml::Value =
+        toml::from_str("[defaults]\nssm_batched_recurrent_misspelt = true\n").unwrap();
     let _ = parse_defaults("fictional", &toml);
 }
 
@@ -351,9 +350,8 @@ fn an_unknown_lever_name_fails_the_build() {
 #[test]
 #[should_panic(expected = "[defaults] ssm_batched_recurrent must be a bool")]
 fn a_mistyped_value_fails_the_build_naming_the_key() {
-    let toml: toml::Value = "[defaults]\nssm_batched_recurrent = \"yes\"\n"
-        .parse()
-        .unwrap();
+    let toml: toml::Value =
+        toml::from_str("[defaults]\nssm_batched_recurrent = \"yes\"\n").unwrap();
     let _ = parse_defaults("fictional", &toml);
 }
 

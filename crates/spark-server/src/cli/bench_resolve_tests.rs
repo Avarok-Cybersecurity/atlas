@@ -28,6 +28,7 @@ pub(super) fn baseline(entries: &[(&str, &str, Option<&str>)]) -> GateBaseline {
                 metrics: BTreeMap::new(),
                 serve_overrides: BTreeMap::new(),
                 param_overrides: BTreeMap::new(),
+                serve_env: BTreeMap::new(),
             },
         );
     }
@@ -164,6 +165,7 @@ fn two_variant_baseline() -> GateBaseline {
             metrics: BTreeMap::from([("sum_wall_s".to_string(), max_bound(1000.0))]),
             serve_overrides: BTreeMap::new(),
             param_overrides: BTreeMap::new(),
+            serve_env: BTreeMap::new(),
         },
     );
     models.insert(
@@ -175,6 +177,7 @@ fn two_variant_baseline() -> GateBaseline {
             metrics: BTreeMap::from([("sum_wall_s".to_string(), max_bound(2500.0))]),
             serve_overrides: BTreeMap::new(),
             param_overrides: BTreeMap::new(),
+            serve_env: BTreeMap::new(),
         },
     );
     GateBaseline {

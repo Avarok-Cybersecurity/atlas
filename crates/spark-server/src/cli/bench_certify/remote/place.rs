@@ -67,7 +67,24 @@ pub fn sort_files(
         }
     }
     let Some(record) = record else {
-        bail!("the node returned no record for {unit_id}");
+        // No record means the child never measured, and the child's log is
+        // the only thing that says why. Until #1242 this line was the whole
+        // of what the orchestrator printed while "No memory left for KV
+        // cache" sat in a log on another box; the child's final `Error:`
+        // block travels with the refusal now.
+        let cause = log
+            .as_ref()
+            .and_then(|l| {
+                crate::cli::bench_cause::tail_of_file(&l.path, crate::cli::bench_cause::TAIL_BYTES)
+                    .ok()
+            })
+            .and_then(|tail| crate::cli::bench_cause::final_error_block(&tail));
+        match cause {
+            Some(block) => bail!(
+                "the node returned no record for {unit_id} — the child's log ends with:\n{block}"
+            ),
+            None => bail!("the node returned no record for {unit_id}"),
+        }
     };
     let Some(sig) = sig else {
         bail!("the node returned no signature for {unit_id}");
