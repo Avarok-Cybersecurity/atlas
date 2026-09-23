@@ -68,6 +68,11 @@ pub(super) fn build_gdn_prefill_buffers(
 /// Returns `None` when speculative decoding is off, when no MTP weights
 /// are available, or when no NVFP4 draft head is available.
 ///
+/// A head that EXISTS but fails to build is an error, not `None`: serving
+/// `--speculative` with speculation silently off is how #1247 read as "zero
+/// accepted drafts" (a dense-FFN head under `--mtp-quantization nvfp4`
+/// bailed, the serve warned and decoded MTP-off at roughly half speed).
+///
 /// `lm_head_nvfp4` here is the resolved *draft* head: the main NVFP4 head
 /// (NVFP4-main default) or a separate draft-only NVFP4 head built when the
 /// main head is kept BF16 (`skip_lm_head_quantization()`). The MTP head's
@@ -93,7 +98,7 @@ pub(super) fn build_mtp_proposer(
     max_seq_len: usize,
     main_kv_blocks: usize,
     levers: &crate::layers::ops::ModelLevers,
-) -> Option<Arc<dyn DraftProposer>> {
+) -> Result<Option<Arc<dyn DraftProposer>>> {
     if !use_speculative {
         if !mtp_weights.is_empty() {
             tracing::info!(
@@ -101,10 +106,10 @@ pub(super) fn build_mtp_proposer(
                 mtp_weights.len()
             );
         }
-        return None;
+        return Ok(None);
     }
     if mtp_weights.is_empty() {
-        return None;
+        return Ok(None);
     }
     let lm_nvfp4 = match lm_head_nvfp4 {
         Some(w) => w,
@@ -112,7 +117,7 @@ pub(super) fn build_mtp_proposer(
             tracing::warn!(
                 "MTP weights found but no NVFP4 LM head — speculative decoding disabled."
             );
-            return None;
+            return Ok(None);
         }
     };
     let build_head = |mtp_wts: MtpWeights| {
@@ -134,12 +139,12 @@ pub(super) fn build_mtp_proposer(
         match build_head(mtp_weights.into_iter().next().unwrap()) {
             Ok(head) => {
                 tracing::info!("MTP speculative decoding: ENABLED (single-module)");
-                Some(Arc::new(head) as Arc<dyn DraftProposer>)
+                Ok(Some(Arc::new(head) as Arc<dyn DraftProposer>))
             }
-            Err(e) => {
-                tracing::warn!("Failed to build MTP head: {e}. Speculative decoding disabled.");
-                None
-            }
+            Err(e) => Err(e.context(
+                "--speculative is set but the MTP head failed to build; refusing to serve \
+                 with speculation silently off (change --mtp-quantization, or drop --speculative)",
+            )),
         }
     } else {
         let count = mtp_weights.len();
@@ -147,14 +152,12 @@ pub(super) fn build_mtp_proposer(
         match heads.and_then(crate::layers::mtp_multi::MultiModuleMtpHead::new) {
             Ok(multi) => {
                 tracing::info!("MTP speculative decoding: ENABLED (multi-module, {count} heads)");
-                Some(Arc::new(multi) as Arc<dyn DraftProposer>)
+                Ok(Some(Arc::new(multi) as Arc<dyn DraftProposer>))
             }
-            Err(e) => {
-                tracing::warn!(
-                    "Failed to build multi-module MTP: {e}. Speculative decoding disabled."
-                );
-                None
-            }
+            Err(e) => Err(e.context(
+                "--speculative is set but the multi-module MTP head failed to build; refusing \
+                 to serve with speculation silently off",
+            )),
         }
     }
 }
