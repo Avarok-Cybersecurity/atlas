@@ -151,6 +151,17 @@ async fn chat_stream_inner(target: &TargetEndpoint, body: &Value) -> Result<Chat
             // with whatever body arrived, rather than returning an empty
             // success.
             reader.finish()?;
+            // A 200 stream that ends with neither `[DONE]` nor a chunk
+            // carrying a finish_reason was cut off, not completed: counting it
+            // as a (possibly 0-token) success is how a poisoned serve read as
+            // 1000 clean requests (G25).
+            if out.finish_reason.is_none() {
+                bail!(
+                    "stream ended without a terminal frame (no [DONE], no finish_reason) after \
+                     {} token(s): truncated, not completed",
+                    out.completion_tokens
+                );
+            }
             break;
         }
         let arrived = Instant::now();
@@ -168,6 +179,11 @@ async fn chat_stream_inner(target: &TargetEndpoint, body: &Value) -> Result<Chat
             let Ok(chunk) = serde_json::from_str::<Value>(data) else {
                 continue;
             };
+            // An in-band error frame is the server saying this request FAILED
+            // under an HTTP 200 it had already sent: never a 0-token success.
+            if let Some(msg) = stream_error(&chunk) {
+                bail!("server reported an error mid-stream: {msg}");
+            }
             if apply_chunk(&chunk, &mut out) {
                 first_delta.get_or_insert_with(Instant::now);
                 carried = true;
@@ -199,6 +215,26 @@ async fn chat_stream_inner(target: &TargetEndpoint, body: &Value) -> Result<Chat
         )
     });
     Ok(out)
+}
+
+/// The message of an in-band SSE error frame, if `chunk` is one. Both wire
+/// shapes Atlas publishes are accepted: chat's OpenAI envelope
+/// `{"error":{"message":"…","type":"server_error",…}}` and legacy
+/// `/v1/completions`' `{"error":"…"}` (a published contract, pinned in
+/// spark-server's `api/tests/error_frames.rs`).
+pub(crate) fn stream_error(chunk: &Value) -> Option<String> {
+    let err = chunk.get("error")?;
+    if err.is_null() {
+        return None;
+    }
+    Some(match err {
+        Value::String(m) => m.clone(),
+        Value::Object(o) => o
+            .get("message")
+            .and_then(Value::as_str)
+            .map_or_else(|| err.to_string(), str::to_string),
+        other => other.to_string(),
+    })
 }
 
 /// Fold one SSE chunk into the outcome. Returns true when it carried a token.

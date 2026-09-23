@@ -193,6 +193,23 @@ def percentile(data, p):
     return s[f] + (k - f) * (s[c] - s[f])
 
 
+def sse_error(ev):
+    """The message of an in-band SSE error frame, or None.
+
+    Accepts both shapes Atlas publishes -- chat's OpenAI envelope
+    {"error": {"message": ...}} and legacy /v1/completions' {"error": "..."}.
+    A server that fails a request AFTER sending HTTP 200 can only say so here;
+    skipping the frame turned a poisoned serve's every request into a counted
+    0-token success (G25).
+    """
+    err = ev.get("error") if isinstance(ev, dict) else None
+    if err is None:
+        return None
+    if isinstance(err, dict):
+        return str(err.get("message") or err)
+    return str(err)
+
+
 async def one_request(session, url, model, prompt, osl):
     payload = {
         "model": model,
@@ -224,6 +241,7 @@ async def one_request(session, url, model, prompt, osl):
     prompt_tokens = 0
     deltas = 0
     finish_reason = None
+    saw_done = False
     try:
         async with session.post(url, json=payload,
                                 timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_S)) as resp:
@@ -239,11 +257,15 @@ async def one_request(session, url, model, prompt, osl):
                         continue
                     data = line[6:]
                     if data == "[DONE]":
+                        saw_done = True
                         break
                     try:
                         ev = json.loads(data)
                     except json.JSONDecodeError:
                         continue
+                    msg = sse_error(ev)
+                    if msg is not None:
+                        return {"error": f"server error mid-stream: {msg[:300]}"}
                     for ch in ev.get("choices") or []:
                         content = (ch.get("delta") or {}).get("content")
                         if content:
@@ -260,6 +282,9 @@ async def one_request(session, url, model, prompt, osl):
                         prompt_tokens = usage.get("prompt_tokens", prompt_tokens)
     except Exception as e:  # transport / timeout
         return {"error": f"{type(e).__name__}: {str(e)[:200]}"}
+    # Neither [DONE] nor a finish_reason: the stream was cut off, not completed.
+    if not saw_done and finish_reason is None:
+        return {"error": f"stream ended without a terminal frame after {deltas} delta(s): truncated"}
 
     t_end = time.perf_counter()
     e2e = t_end - t0

@@ -454,3 +454,6 @@ async fn blocking_client_reports_the_decoded_openai_error() {
 
 #[path = "http_itl_tests.rs"]
 mod itl;
+
+#[path = "http_stream_end_tests.rs"]
+mod stream_end;

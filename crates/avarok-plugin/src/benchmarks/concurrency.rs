@@ -688,8 +688,10 @@ impl ConcurrencySweep {
         body
     }
 
-    /// One request. Returns `Err` only for transport failures — a completed
-    /// request with zero tokens is a data point, not an error.
+    /// One request. Returns `Err` for transport failures AND for a stream the
+    /// server failed (an in-band error frame, or no terminal frame) — see
+    /// `http::chat_stream`. A COMPLETED request with zero tokens is a data
+    /// point, not an error.
     async fn one(&self, isl: usize, prefix_tag: String) -> Result<http::ChatOutcome> {
         let handle = self.handle()?;
         let target = handle.target();
