@@ -237,10 +237,16 @@ __device__ __forceinline__ void dense_gemv_bf16_tc_impl(
 
 // Production entries, one per token-tile count (M <= 8 / 16 / 32). Each
 // covers every M up to its cap: a token tile past M is skipped whole.
-DTC_ENTRY(dense_gemv_bf16_tc8, 1, 1, 4)
-DTC_ENTRY(dense_gemv_bf16_tc16, 2, 1, 4)
-DTC_ENTRY(dense_gemv_bf16_tc32, 4, 1, 2)
-// Geometry alternatives for the GB10 microbench (`examples/dense_gemv_bf16_tc_oracle
-// --bench`): 32 weight rows per CTA, half the grid. Not dispatched.
-DTC_ENTRY(dense_gemv_bf16_tc8_nt2, 1, 2, 2)
-DTC_ENTRY(dense_gemv_bf16_tc16_nt2, 2, 2, 2)
+//
+// Geometry measured on GB10 (dgx1, one full 27B draft position = 849 MB of
+// cold BF16 weights, 2026-09-23). What moves the time is weight bytes in
+// flight per thread, not occupancy: KU=8 (512 B/thread, 1 CTA/SM) beat KU=4
+// (2 CTAs/SM) by 3.5-4.4%, while KU=2 at 4 CTAs/SM and KU=3/4 at 3 CTAs/SM
+// were slower than KU=4, 32 weight rows per CTA (NT=2) was slower than KU=8,
+// and an L2::256B prefetch hint changed nothing. Against the CUDA-core
+// `dense_gemv_bf16_batchm` at M=2/4/8: 3554/3583/3583 us vs 3487/3564/3631 us,
+// at 97/117/134 mJ vs 149/168/264 mJ per position. tc16 at KU=8: 3602 us
+// (KU=4: 3737). tc32 at KU=4: 3803 us (KU=2: 3885; KU=8 does not fit).
+DTC_ENTRY(dense_gemv_bf16_tc8, 1, 1, 8)
+DTC_ENTRY(dense_gemv_bf16_tc16, 2, 1, 8)
+DTC_ENTRY(dense_gemv_bf16_tc32, 4, 1, 4)
