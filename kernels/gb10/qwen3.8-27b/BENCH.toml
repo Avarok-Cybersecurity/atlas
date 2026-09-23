@@ -274,12 +274,9 @@ without it reports INCONCLUSIVE by name, which is correct — a floor \
 measured without proof of speculative engagement is the 2026-08-15 decode \
 flip-flop all over again."""
 
-[benchmarks.serve_overrides]
-# `--w4a4-downcast`: the owner decision of 2026-09-23 (TEP) puts this recipe on
-# W4A4 small-M projections + FFN (FP4 block-scale MMA, per-row NVFP4
-# activations). The bfcl recipe (bfcl-subset, kat-equality-gate) stays
-# W4A16 as the accuracy reference.
-w4a4_downcast = "true"
+# `--w4a4-downcast` stays at the engine default (false) here: w4a4 changes
+# decode text below the 750 vacuity floor and costs ~3 ms TPOT at C=1; gate
+# measured at the engine default (TEP, 2026-09-23: dgx3 + dgx1, run 2 = 658).
 
 
 [benchmarks.metrics.server_decode_tok_s]
@@ -678,11 +675,13 @@ w4a4_downcast = "true"
 # so the records measured under the bench.yaml export stand).
 AVAROK_FP8_ROWWISE = "1"
 AVAROK_MTP_DCUT_RATIO = "1.0"
-# C=2 runs 2 drafts (was 1) since the TEP energy sweep, 2026-09-23 dgx3,
-# with the tensor-core small-M GEMV. There, 2:2 measured 46.31/46.32 tok/s
-# at 1.187/1.183 J/token, against 42.3 tok/s and 1.235 for 2:1 (faster AND
-# cheaper). 2:3 (1.300) and every C=4/C=8 alternative cost energy.
-AVAROK_MTP_K_LADDER = "1:3,2:2,4:2,8:2,16:1"
+# TEP energy ladder, 2026-09-23. C=2 runs 2 drafts: on dgx3 with the
+# tensor-core small-M GEMV, 2:2 measured 46.31/46.32 tok/s at 1.187/1.183
+# J/token against 42.3 tok/s and 1.235 for 2:1 (faster AND cheaper). C=4 and
+# C=8 run 1 draft: with --w4a4-downcast the dgx2 lever sweep measured -3..4%
+# J/token at C=4 and -6..7% at C=8 for about -4% tok/s, with min_completion
+# 1024 at every rung and Atlas still 1.10-1.14x vLLM's speed. 16:2 costs +14%.
+AVAROK_MTP_K_LADDER = "1:3,2:2,4:1,8:1,16:1"
 
 [benchmarks.param_overrides]
 # The gate's instrument — see the block comment above. Values are parsed by
@@ -1863,12 +1862,9 @@ subset runs (measured: PASS 5/5, 4 skipped)."""
 # (13 >= 13), and nobody hears about it. Count metrics are the easy half of
 # threshold ratcheting and should never be left behind the instrument.
 
-[benchmarks.serve_overrides]
-# `--w4a4-downcast`: the owner decision of 2026-09-23 (TEP) puts this recipe on
-# W4A4 small-M projections + FFN (FP4 block-scale MMA, per-row NVFP4
-# activations). The bfcl recipe (bfcl-subset, kat-equality-gate) stays
-# W4A16 as the accuracy reference.
-w4a4_downcast = "true"
+# `--w4a4-downcast` stays at the engine default (false) here: w4a4 worsens the
+# known video-before-image edge leg (3 -> 1 colours); left at default (TEP,
+# 2026-09-23, dgx1 flag on/off reruns).
 
 [benchmarks.metrics.legs_passed]
 min = 14.0
