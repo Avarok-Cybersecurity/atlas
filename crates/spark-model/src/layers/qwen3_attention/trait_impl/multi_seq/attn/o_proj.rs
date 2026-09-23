@@ -341,6 +341,7 @@ impl Qwen3AttentionLayer {
                 n as u32,
                 h as u32,
                 nq * hd,
+                false,
             )?;
         } else {
             for i in 0..n {

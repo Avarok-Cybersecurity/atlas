@@ -1812,7 +1812,8 @@ impl DenseFfnLayer {
             h,
             stream,
         )?;
-        ops::w4a4_proj::nvfp4_proj_small_m(
+        // Same `input` as gate: the W4A4 path reuses gate's quantisation.
+        ops::w4a4_proj::nvfp4_proj_small_m_same_input(
             ctx.gpu,
             kh,
             input,
