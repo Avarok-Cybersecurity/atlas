@@ -2,7 +2,7 @@
 
 ## The problem, precisely
 
-The PR Benchmark Certifications check requires committed records proving the ten mandatory
+The PR Benchmark Certifications check requires committed records proving the twelve mandatory
 benchmarks ran against the tree under test. Records are sha-anchored and are
 invalidated by any performance-path change they did not cover — including
 changes that arrive from *underneath*, when the merge queue composes the PR
@@ -17,7 +17,7 @@ This is not a gate bug. Two independently-measured campaigns do not compose:
 the combined tree's interactions are unmeasured, and "measure-then-declare"
 is the repo's core benchmark doctrine. The gate refusing to stitch records
 together is the doctrine working. What *was* missing is (a) a name for the
-failure — ten bare `NONE`s read as a broken PR, not a queue-composition
+failure — twelve bare `NONE`s read as a broken PR, not a queue-composition
 condition — and (b) a documented landing protocol. CI now emits a
 `Queue-composition failure` annotation on `merge_group` gate failures, and the
 protocol is below.
@@ -27,7 +27,7 @@ protocol is below.
 1. **Freeze**: update the branch to *current* `main` (merge, don't rebase —
    rebasing orphans the record shas' ancestry) and push. Any later `main`
    movement restarts the protocol.
-2. **Campaign**: run all ten gates against exactly the frozen sha, on a box
+2. **Campaign**: run all twelve gates against exactly the frozen sha, on a box
    with an exclusive GPU. Commit the records, push, wait for green.
 3. **Queue alone**: enter the merge queue with **no other record-bearing PR
    ahead of you**, and do not let one enter until you have landed.
