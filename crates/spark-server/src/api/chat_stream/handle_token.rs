@@ -22,7 +22,28 @@ use super::state::StreamState;
 /// legitimately repetitive structured output).
 fn simhash_loop_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("AVAROK_SIMHASH_LOOP").as_deref() != Ok("0"))
+    *ON.get_or_init(|| {
+        simhash_loop_enabled_from(std::env::var("AVAROK_SIMHASH_LOOP").ok().as_deref())
+    })
+}
+
+/// Strict parse of `AVAROK_SIMHASH_LOOP` (#1204). Unset stays ON: this is an
+/// *enable* switch, the opposite polarity of `AVAROK_DISABLE_WATCHDOGS`. Only
+/// `0`/`false` disarm; an unrecognised value is refused and leaves the guard ON,
+/// so a typo can never silently disarm it.
+fn simhash_loop_enabled_from(raw: Option<&str>) -> bool {
+    match raw.map(str::trim) {
+        None => true,
+        Some(v) if v == "1" || v.eq_ignore_ascii_case("true") => true,
+        Some(v) if v == "0" || v.eq_ignore_ascii_case("false") => false,
+        Some(other) => {
+            tracing::error!(
+                "AVAROK_SIMHASH_LOOP={other:?} is not a recognised value (expected 0/false or \
+                 1/true) — refusing it and leaving the SimHash loop guard ON"
+            );
+            true
+        }
+    }
 }
 
 /// `AVAROK_DISABLE_WATCHDOGS=1` covers the token loop watchdog too (#1135).
@@ -672,7 +693,8 @@ fn process_detector_content(
     // #699 verdict fix most of its fires were masking genuinely degenerate
     // output; with generation clean, the remaining fires skew
     // false-positive (observed 2026-08-21: fired on a healthy TUI session).
-    let semantic_trip = if simhash_loop_enabled() && !state.loop_watchdog_triggered {
+    let simhash_armed = !watchdogs_disabled() && simhash_loop_enabled();
+    let semantic_trip = if simhash_armed && !state.loop_watchdog_triggered {
         state.simhash_pending.push_str(sanitized);
         let mut dup = false;
         if crate::loop_simhash::ends_at_sentence_boundary(&state.simhash_pending).is_some()
@@ -1123,6 +1145,36 @@ mod role_literal_strip_tests {
             let mut d = "the tool ran".to_string();
             strip_bare_role_literal(&mut d, inside);
             assert_eq!(d, "the tool ran");
+        }
+    }
+}
+
+#[cfg(test)]
+mod simhash_lever_tests {
+    use super::simhash_loop_enabled_from;
+
+    /// Defect (#1204): `=false` read as ON under the old `!= "0"` rule.
+    #[test]
+    fn false_disarms() {
+        assert!(!simhash_loop_enabled_from(Some("false")));
+        assert!(!simhash_loop_enabled_from(Some(" FALSE ")));
+        assert!(!simhash_loop_enabled_from(Some("0")));
+    }
+
+    /// Control: an enable switch that defaults ON must stay ON when unset —
+    /// the assertion a naive port of `parse_disable_watchdogs` fails.
+    #[test]
+    fn unset_stays_on() {
+        assert!(simhash_loop_enabled_from(None));
+        assert!(simhash_loop_enabled_from(Some("1")));
+        assert!(simhash_loop_enabled_from(Some("true")));
+    }
+
+    /// A typo must not disarm the guard.
+    #[test]
+    fn unrecognised_is_refused_and_stays_on() {
+        for v in ["off", "no", "banana", ""] {
+            assert!(simhash_loop_enabled_from(Some(v)), "{v:?}");
         }
     }
 }
