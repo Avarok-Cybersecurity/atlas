@@ -141,6 +141,8 @@ mod moe_prefill;
 #[path = "ops/norm.rs"]
 mod norm;
 // The gated-RMS-norm launch-count pin (#927): 48 per step, not 768.
+#[path = "ops/gemv_tc.rs"]
+pub mod gemv_tc;
 #[cfg(test)]
 #[path = "ops/kquant_fold_tests.rs"]
 mod kquant_fold_tests;

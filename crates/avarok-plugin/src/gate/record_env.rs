@@ -30,9 +30,16 @@ use super::record::GateRecord;
 /// `avarok-plugin` does not depend on `spark-server`. That is a real duplication
 /// and `perf_env_defaults_match_the_scheduler` pins it: if a default moves in
 /// `scheduler::mod_helpers`, that test is what fails.
-const PERF_CONTROLS: [(&str, &str); 2] = [
+///
+/// `AVAROK_NO_W4A16_TC` is a PRESENCE kill switch (any non-empty value, `0`
+/// included, turns the tensor-core small-M NVFP4 GEMV off), so its default is
+/// the literal `unset`, the one value under which the tensor-core path ran.
+/// `perf_env_defaults_match_the_scheduler` pins that rule against
+/// `layers/ops/gemv_tc.rs`.
+const PERF_CONTROLS: [(&str, &str); 3] = [
     ("AVAROK_PREFILL_CODISPATCH_WINDOW_MS", "100"),
     ("AVAROK_PREFILL_CODISPATCH_SETTLE_MS", "10"),
+    ("AVAROK_NO_W4A16_TC", "unset"),
 ];
 
 /// Resolve the `PERF_CONTROLS` table through `lookup`, substituting each

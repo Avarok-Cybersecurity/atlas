@@ -208,9 +208,16 @@ pub fn w4a16_gemv_batchm(
     // kernel SILENTLY truncates: rows 0..15 computed, rows 16.. never
     // written — garbage output, not a crash.
     debug_assert!(m <= 16, "w4a16_gemv_batchm caps at M=16 (m={m})");
+    // Tensor-core sibling first (same arguments, its own geometry): the
+    // CUDA-core tiers below cost 50-60% more GPU-rail energy per launch at
+    // M>=2 for the same weight stream. See `gemv_tc`.
+    let (kernel, grid_x, block_x) = match super::gemv_tc::tc_kernel(gpu, m, n, k) {
+        Some((tc, grid_x)) => (tc, grid_x, super::gemv_tc::TC_BLOCK),
+        None => (kernel, div_ceil(n, 4), 256),
+    };
     KernelLaunch::new(gpu, kernel)
-        .grid([div_ceil(n, 4), 1, 1])
-        .block([256, 1, 1])
+        .grid([grid_x, 1, 1])
+        .block([block_x, 1, 1])
         .arg_ptr(input)
         .arg_ptr(weight.weight)
         .arg_ptr(weight.weight_scale)
