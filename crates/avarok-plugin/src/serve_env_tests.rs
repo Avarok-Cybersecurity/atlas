@@ -180,10 +180,17 @@ fn an_undeclared_lever_in_the_harness_is_refused_by_name() {
         .unwrap_err()
         .to_string();
     assert!(e.contains("1 serve lever(s)"), "{e}");
-    assert!(e.contains("AVAROK_PREFILL_CODISPATCH=1"), "{e}");
-    assert!(
-        !e.contains("AVAROK_FP8_ROWWISE"),
-        "the declared one is not blamed: {e}"
+    // The BLAMED list is what is asserted, not the whole message: its fixed
+    // prose cites AVAROK_FP8_ROWWISE=1 as the #1242 example whatever was
+    // refused, so a whole-message `!contains` would fail on the example.
+    let blamed = e
+        .split("does not declare: ")
+        .nth(1)
+        .and_then(|rest| rest.split(". A lever").next())
+        .unwrap_or_else(|| panic!("the refusal names what it refuses: {e}"));
+    assert_eq!(
+        blamed, "AVAROK_PREFILL_CODISPATCH=1",
+        "only the undeclared lever is blamed, never the declared one: {e}"
     );
 }
 

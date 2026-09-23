@@ -218,6 +218,14 @@ const GATE_MACHINERY_FILES: &[&str] = &[
     // `serve_resolved_never_reaches_check_record` pins that — so no edit here
     // can move a verdict.
     "crates/avarok-plugin/src/gate/record_serve.rs",
+    // `record_env.rs` names what a record DISCLOSES about its server's
+    // environment (`perf_env`, and since #1242 the whole applied `serve_env`
+    // lever set); `record_summary.rs` is the record's one-line summary and
+    // its clock. Both are exact piecewise moves out of `record.rs` at the
+    // 500-line cap, classified as their parent is: `check_record` demands
+    // neither field, so no edit here can move a verdict.
+    "crates/avarok-plugin/src/gate/record_env.rs",
+    "crates/avarok-plugin/src/gate/record_summary.rs",
     // Rendering and reporting only.
     "crates/avarok-plugin/src/gate/card.rs",
     "crates/avarok-plugin/src/gate/check_fmt.rs",
