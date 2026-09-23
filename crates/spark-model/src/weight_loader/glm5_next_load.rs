@@ -670,6 +670,38 @@ impl ModelWeightLoader for Glm5NextWeightLoader {
             gpu, &kda_cfg, verify_k,
         )?);
 
+        // 🔴 ONE MLP scratch for the whole stack, allocated HERE — at load, before the layer
+        // loop and long before the KV pool is sized (A59: a pool allocated after KV sizing is a
+        // pool the KV sizing did not know about). The KDA workspace above has been shared since
+        // it was written; the MLP one was private per layer, and at a wide prefill sub-chunk
+        // that is what dominated the LOAD-time host-memory dip in ANOMALIES A124/A127 —
+        // `mlp_ws_per_layer_bytes * 45`, ≈2.1 GB at 256 rows and ≈9.5 GB at 1024.
+        // Correctness: the scratch never carries state between calls (see the field doc on
+        // `Glm5NextLayer::mlp_ws`), and the whole stack runs on one stream.
+        let mlp_ws_bytes =
+            crate::layers::glm5next_mlp::forward::mlp_ws_total_bytes(&mlp_cfg, verify_k);
+        let shared_mlp_ws = if crate::layers::glm5next_mlp::forward::mlp_ws_shared() {
+            tracing::info!(
+                "GLM MLP workspace: SHARED, 1 x {:.1} MB for {} layers at {verify_k} rows \
+                 (per-layer would be {:.1} MB)",
+                mlp_ws_bytes as f64 / 1e6,
+                skeleton.layers.len(),
+                (mlp_ws_bytes * skeleton.layers.len()) as f64 / 1e6,
+            );
+            Some(std::sync::Arc::new(
+                crate::layers::glm5next_mlp::forward::Glm5NextMlpWorkspace::new(
+                    gpu, &mlp_cfg, verify_k,
+                )?,
+            ))
+        } else {
+            tracing::warn!(
+                "GLM MLP workspace: PER-LAYER, {} x {:.1} MB at {verify_k} rows",
+                skeleton.layers.len(),
+                mlp_ws_bytes as f64 / 1e6,
+            );
+            None
+        };
+
         let dsa_plan = crate::layers::glm5next_dsa::tp::DsaTpPlan::new(
             config.tp_rank,
             config.tp_world_size.max(1),
@@ -795,9 +827,14 @@ impl ModelWeightLoader for Glm5NextWeightLoader {
                 mlp,
                 mlp_cfg,
                 mlp_kernels,
-                mlp_ws: crate::layers::glm5next_mlp::forward::Glm5NextMlpWorkspace::new(
-                    gpu, &mlp_cfg, verify_k,
-                )?,
+                mlp_ws: match &shared_mlp_ws {
+                    Some(ws) => ws.clone(),
+                    None => std::sync::Arc::new(
+                        crate::layers::glm5next_mlp::forward::Glm5NextMlpWorkspace::new(
+                            gpu, &mlp_cfg, verify_k,
+                        )?,
+                    ),
+                },
                 mhc,
                 input_norm: upload_f32_as_bf16(gpu, &src.f32("input_layernorm.weight")?)?,
                 post_attn_norm: upload_f32_as_bf16(

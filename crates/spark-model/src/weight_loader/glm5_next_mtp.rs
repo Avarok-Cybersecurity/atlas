@@ -116,9 +116,12 @@ pub fn load_glm5next_mtp_module(
             mlp,
             mlp_cfg,
             mlp_kernels,
-            mlp_ws: crate::layers::glm5next_mlp::forward::Glm5NextMlpWorkspace::new(
-                gpu, &mlp_cfg, 1,
-            )?,
+            // 🪤 Its OWN workspace, never the text stack's shared one: this block runs a single
+            // row, and the stack's scratch is sized for a whole prefill sub-chunk. Sharing would
+            // be correct but would tie a 1-row module to a 46 MB allocation.
+            mlp_ws: std::sync::Arc::new(
+                crate::layers::glm5next_mlp::forward::Glm5NextMlpWorkspace::new(gpu, &mlp_cfg, 1)?,
+            ),
             // 🔴 The one GLM-5.3 block with no hyper-connection. The checkpoint carries zero
             // `hc_*` tensors here, and `forward_one` takes its plain residual path.
             mhc: None,

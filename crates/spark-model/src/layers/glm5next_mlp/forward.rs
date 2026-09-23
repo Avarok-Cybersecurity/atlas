@@ -226,6 +226,68 @@ pub struct Glm5NextMlpWorkspace {
     max_total_expanded: usize,
 }
 
+/// Per-buffer device byte sizes of one [`Glm5NextMlpWorkspace`], in allocation order.
+///
+/// 🔴 Split out of `new` so the sizing can be unit-tested and LOGGED without a GPU. The load
+/// path prints the total per workspace and the stack total: the whole point of the shared
+/// workspace is a number that used to be multiplied by 45, and a number nobody can read is a
+/// number nobody checks. Every term here must stay in lockstep with `new` — the test
+/// `ws_sizing_matches_new` walks both.
+pub fn mlp_ws_bytes(cfg: &Glm5NextMlpConfig, max_rows: usize) -> [usize; 14] {
+    let rows = max_rows.max(1);
+    let max_inter = cfg
+        .local_dense_intermediate
+        .max(cfg.moe_intermediate)
+        .max(cfg.local_shared_intermediate)
+        .max(1);
+    let act_elems = (rows * max_inter)
+        .max(rows * cfg.top_k * cfg.moe_intermediate)
+        .max(1);
+    [
+        act_elems * 2,                     // a_gate
+        act_elems * 2,                     // a_up
+        act_elems * 2,                     // a_act
+        rows * cfg.num_experts * 4,        // logits
+        rows * cfg.top_k * 4,              // ids
+        rows * cfg.top_k * 4,              // wts
+        rows * cfg.top_k * cfg.hidden * 2, // expert_out
+        rows * cfg.hidden * 2,             // shared_out
+        rows * cfg.top_k * 4,              // u_eid
+        rows * cfg.top_k * rows * 4,       // u_slot — 🔴 QUADRATIC in rows
+        rows * cfg.top_k * 4,              // sorted_token_ids
+        rows * cfg.top_k * 4,              // sorted_expert_ids
+        (cfg.num_experts + 1) * 4,         // expert_offsets
+        rows * cfg.top_k * 4,              // token_to_perm
+    ]
+}
+
+/// Total device bytes one MLP workspace of `max_rows` costs.
+pub fn mlp_ws_total_bytes(cfg: &Glm5NextMlpConfig, max_rows: usize) -> usize {
+    mlp_ws_bytes(cfg, max_rows).iter().sum()
+}
+
+/// ONE MLP scratch for the whole layer stack; `AVAROK_GLM_MLP_WS_SHARED=0` restores one per layer.
+///
+/// 🔴 Default ON. The scratch is per-call — every buffer is fully written before it is read
+/// inside a single `mlp_forward`, and the whole stack runs on ONE stream (there is no side
+/// stream on this path), so a later layer can never observe an earlier layer's bytes. What 45
+/// private copies DID buy was ≈2.1 GB of unified memory at `AVAROK_GLM_PREFILL_ROWS=256` and
+/// ≈9.5 GB at 1024, allocated during weight LOAD — the measured cause of the host-memory-guard
+/// kills in ANOMALIES A124/A127. The `=0` arm exists so the saving can be measured in ONE image.
+pub fn mlp_ws_shared() -> bool {
+    static S: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *S.get_or_init(|| {
+        let shared = std::env::var("AVAROK_GLM_MLP_WS_SHARED").as_deref() != Ok("0");
+        if !shared {
+            tracing::warn!(
+                "GLM MLP workspace: PER-LAYER (AVAROK_GLM_MLP_WS_SHARED=0) — the pre-P2 \
+                 allocation, one scratch per layer"
+            );
+        }
+        shared
+    })
+}
+
 impl Glm5NextMlpWorkspace {
     pub fn new(gpu: &dyn GpuBackend, cfg: &Glm5NextMlpConfig, max_rows: usize) -> Result<Self> {
         let rows = max_rows.max(1);
@@ -1201,5 +1263,94 @@ mod tests {
         assert_eq!(moe_row_groups(16, 8), vec![(0, 8), (8, 8)]);
         assert_eq!(moe_row_groups(8, 8), vec![(0, 8)]);
         assert_eq!(moe_row_groups(9, 8), vec![(0, 5), (5, 4)]);
+    }
+
+    mod ws_sizing {
+        use crate::layers::glm5next_mlp::Glm5NextMlpConfig;
+        use crate::layers::glm5next_mlp::forward::{mlp_ws_bytes, mlp_ws_total_bytes};
+
+        /// The campaign shape: GLM-5.3-Flash at TP=2/EP=2, the topology every WS1 number is on.
+        fn cfg() -> Glm5NextMlpConfig {
+            Glm5NextMlpConfig {
+                hidden: 4096,
+                local_dense_intermediate: 12288 / 2,
+                moe_intermediate: 2048,
+                local_shared_intermediate: 2048 / 2,
+                num_experts: 288,
+                local_experts: 144,
+                ep_rank: 0,
+                top_k: 8,
+                routed_scale: 2.5,
+                renormalize: true,
+                swiglu_limit: 10.0,
+                router_bf16_ladder: false,
+                tp_world_size: 2,
+                ep_world_size: 2,
+            }
+        }
+
+        /// 🔴 The number the shared workspace exists to stop multiplying by 45. Hand-checked
+        /// term by term against `Glm5NextMlpWorkspace::new`, so a future edit to `new` that
+        /// forgets `mlp_ws_bytes` (or vice versa) fails here instead of silently under-reporting
+        /// the load-time footprint the host-memory guard is measured against (A124/A127).
+        #[test]
+        fn matches_the_hand_computed_campaign_footprint() {
+            let c = cfg();
+            // act_elems = max(rows*6144, rows*8*2048) = rows*16384 at every row count.
+            for rows in [16usize, 64, 128, 256, 512, 1024] {
+                let b = mlp_ws_bytes(&c, rows);
+                assert_eq!(b[0], rows * 16384 * 2, "a_gate at {rows}");
+                assert_eq!(b[1], b[0], "a_up at {rows}");
+                assert_eq!(b[2], b[0], "a_act at {rows}");
+                assert_eq!(b[3], rows * 288 * 4, "logits at {rows}");
+                assert_eq!(b[6], rows * 8 * 4096 * 2, "expert_out at {rows}");
+                assert_eq!(b[7], rows * 4096 * 2, "shared_out at {rows}");
+                // 🔴 QUADRATIC. At 1024 rows u_slot alone is 33.5 MB — a third of the growth
+                // between 512 and 1024, and the term a linear mental model misses.
+                assert_eq!(b[9], rows * 8 * rows * 4, "u_slot at {rows}");
+                assert_eq!(b[12], 289 * 4, "expert_offsets is row-independent");
+                // Linear part + quadratic part, derived once and checked at every width.
+                assert_eq!(
+                    mlp_ws_total_bytes(&c, rows),
+                    rows * 173_376 + 32 * rows * rows + 1156
+                );
+            }
+        }
+
+        /// The saving the ticket is about, stated as a number rather than an adjective.
+        #[test]
+        fn sharing_one_workspace_saves_44_of_45_copies() {
+            let c = cfg();
+            // 🪤 DECIMAL MB/GB, the same unit the load-path log prints — so a figure read off a
+            // rank-0 log can be checked against this test without a silent MiB/MB conversion.
+            let mb = |n: usize| n as f64 / 1e6;
+            // 45 layers is GLM-5.3-Flash's `num_hidden_layers`.
+            for (rows, per_layer_mb, stack_gb) in [
+                (256usize, 46.48, 2.092),
+                (512, 97.16, 4.372),
+                (1024, 211.09, 9.499),
+            ] {
+                let one = mlp_ws_total_bytes(&c, rows);
+                assert!(
+                    (mb(one) - per_layer_mb).abs() < 0.05,
+                    "rows={rows}: {:.2} MB per workspace, expected ≈{per_layer_mb}",
+                    mb(one)
+                );
+                assert!(
+                    (mb(one * 45) / 1000.0 - stack_gb).abs() < 0.01,
+                    "rows={rows}: {:.3} GB for 45 private copies, expected ≈{stack_gb}",
+                    mb(one * 45) / 1000.0
+                );
+            }
+        }
+
+        /// A zero row count must not produce a zero-byte pool: `new` clamps to 1, and a pool of
+        /// nothing is a pool that faults the first time anything touches it.
+        #[test]
+        fn zero_rows_clamps_to_one() {
+            let c = cfg();
+            assert_eq!(mlp_ws_total_bytes(&c, 0), mlp_ws_total_bytes(&c, 1));
+            assert!(mlp_ws_bytes(&c, 0).iter().all(|&b| b > 0));
+        }
     }
 }
