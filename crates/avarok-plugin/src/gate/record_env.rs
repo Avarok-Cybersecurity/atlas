@@ -37,16 +37,15 @@ use super::record::GateRecord;
 /// `perf_env_defaults_match_the_scheduler` pins that rule against
 /// `layers/ops/gemv_tc.rs`.
 ///
-/// `AVAROK_MTP_TC` is the OPPOSITE polarity: an opt-in that arms the MTP
-/// drafter's tensor-core BF16 GEMV only for exactly `1`. Unset or empty is
-/// OFF, disclosed as `0`; any other value is disclosed verbatim (and is OFF
-/// unless it is `1`). `tc_mtp_switch_default_matches_the_lever` pins that
-/// rule against `layers/ops/dense_gemv_tc.rs`.
+/// `AVAROK_NO_MTP_TC` is the same kind of PRESENCE kill switch, for the MTP
+/// drafter's tensor-core BF16 GEMV: default `unset` (the path ran), any set
+/// value disclosed verbatim. `tc_mtp_switch_default_matches_the_lever` pins
+/// that rule against `layers/ops/dense_gemv_tc.rs`.
 const PERF_CONTROLS: [(&str, &str); 4] = [
     ("AVAROK_PREFILL_CODISPATCH_WINDOW_MS", "100"),
     ("AVAROK_PREFILL_CODISPATCH_SETTLE_MS", "10"),
     ("AVAROK_NO_W4A16_TC", "unset"),
-    ("AVAROK_MTP_TC", "0"),
+    ("AVAROK_NO_MTP_TC", "unset"),
 ];
 
 /// Resolve the `PERF_CONTROLS` table through `lookup`, substituting each

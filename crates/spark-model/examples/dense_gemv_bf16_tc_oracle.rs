@@ -2,7 +2,7 @@
 //! ORACLE (and microbench) for the MTP drafter's tensor-core BF16 GEMV
 //! (`dense_gemv_bf16_tc.cu`, routed by `ops::dense_gemv_tc`).
 //!
-//! `AVAROK_MTP_TC=1` sends every BF16 drafter projection at M = 2..=32 to the
+//! The drafter tensor-core path sends every BF16 projection at M = 2..=32 to the
 //! tensor-core entries. That is sound only if, on every real 27B drafter
 //! shape and every row count, the routed result is as accurate as the
 //! CUDA-core kernel it replaces. This decides it:
@@ -31,25 +31,24 @@
 //!
 //! `--bench`: per M, one full draft position (the 8 projections, 849 MB of
 //! cold BF16 weights) looped for ~4 s on (a) the CUDA-core dispatch the
-//! drafter runs today, (b) the routed tensor-core entry, (c) the NT=2
-//! geometry alternative. Prints `PHASE` lines with unix-ms edges so an
-//! nvidia-smi power trace can be joined to each window.
+//! drafter runs without this path and (b) the routed tensor-core entry.
+//! Prints `PHASE` lines with unix-ms edges so an nvidia-smi power trace can
+//! be joined to each window.
 //!
 //! Exit: 0 pass, 1 any leg or control misbehaved, 2 not armed / kernels absent.
 //!
 //! Run (GB10):
-//!   AVAROK_MTP_TC=1 cargo run -p spark-model --release --features cuda,gpu-examples \
+//!   cargo run -p spark-model --release --features cuda,gpu-examples \
 //!     --example dense_gemv_bf16_tc_oracle [-- --bench]
 
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 use spark_model::layers::ops;
-use spark_model::layers::ops::dense_gemv_tc::{self, ROWS_PER_CTA};
+use spark_model::layers::ops::dense_gemv_tc;
 use spark_model::weight_map::DenseWeight;
 use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
-use spark_runtime::kernel_args::div_ceil;
 
 /// One 27B drafter draft position, forward order: (label, N, K).
 const SHAPES: [(&str, u32, u32); 8] = [
@@ -197,7 +196,7 @@ fn main() -> Result<()> {
         std::process::exit(2);
     };
     if !dense_gemv_tc::mtp_tc_enabled() {
-        eprintln!("NOT ARMED: run with AVAROK_MTP_TC=1");
+        eprintln!("NOT ARMED: unset AVAROK_NO_MTP_TC");
         std::process::exit(2);
     }
     if std::env::args().any(|a| a == "--bench") {
@@ -325,13 +324,7 @@ fn main() -> Result<()> {
 
 /// One draft position's 8 projections per iteration, per variant, ~4 s each.
 fn bench(g: &dyn GpuBackend, bm: KernelHandle) -> Result<()> {
-    let m1 = g.kernel("gemv", "dense_gemv_bf16")?;
     let pipe = g.kernel("gemm", "dense_gemm_bf16_pipelined")?;
-    let alt = |name: &str| g.kernel("dense_gemv_bf16_tc", name).ok();
-    let (alt8, alt16) = (
-        alt("dense_gemv_bf16_tc8_nt2"),
-        alt("dense_gemv_bf16_tc16_nt2"),
-    );
     let mut rng = Rng(7);
     let mut ws = Vec::new();
     for (_, n, k) in SHAPES {
@@ -346,12 +339,11 @@ fn bench(g: &dyn GpuBackend, bm: KernelHandle) -> Result<()> {
     let c = g.alloc(32 * 17408 * 2)?;
 
     // The CUDA-core dispatch the drafter runs today (row_dispatch.rs):
-    // M=1 dense_gemv, 2..=8 batchm, above 8 the pipelined mma.sync GEMM.
+    // 2..=8 batchm, above 8 the pipelined mma.sync GEMM (M=1 never routes).
     let current = |m: u32| -> Result<()> {
         for (w, n, k) in &ws {
             match m {
-                1 => ops::dense_gemv(g, m1, a, w, c, *n, *k, 0)?,
-                2..=8 => ops::dense_gemv_batchm(g, bm, a, w, c, m, *n, *k, *n, 0)?,
+                ..=8 => ops::dense_gemv_batchm(g, bm, a, w, c, m, *n, *k, *n, 0)?,
                 _ => ops::dense_gemm_bf16_pipelined(g, pipe, a, w, c, m, *n, *k, 0)?,
             }
         }
@@ -365,21 +357,9 @@ fn bench(g: &dyn GpuBackend, bm: KernelHandle) -> Result<()> {
         }
         Ok(())
     };
-    let nt2 = |m: u32| -> Result<()> {
-        let kh = if m <= 8 { alt8 } else { alt16 };
-        let kh = kh.ok_or_else(|| anyhow::anyhow!("nt2 entry absent"))?;
-        for (w, n, k) in &ws {
-            let grid = div_ceil(*n, 2 * ROWS_PER_CTA);
-            dense_gemv_tc::launch(g, kh, grid, a, w, c, m, *n, *k, *n, 0)?;
-        }
-        Ok(())
-    };
     for m in [2u32, 4, 8, 12, 16, 24, 32] {
-        let mut variants: Vec<(&str, &dyn Fn(u32) -> Result<()>)> =
-            vec![("current", &current), ("tc", &routed)];
-        if m <= 16 {
-            variants.push(("tc_nt2", &nt2));
-        }
+        let variants: [(&str, &dyn Fn(u32) -> Result<()>); 2] =
+            [("current", &current), ("tc", &routed)];
         for (name, f) in variants {
             for _ in 0..3 {
                 f(m)?;

@@ -211,8 +211,11 @@ fn an_unset_control_is_recorded_as_the_default_the_scheduler_would_apply() {
         resolved.get("AVAROK_NO_W4A16_TC").map(String::as_str),
         Some("unset")
     );
-    // The opt-in drafter tensor-core GEMV: unset means the CUDA-core drafter ran.
-    assert_eq!(resolved.get("AVAROK_MTP_TC").map(String::as_str), Some("0"));
+    // The drafter tensor-core GEMV kill switch: unset means the tc path ran.
+    assert_eq!(
+        resolved.get("AVAROK_NO_MTP_TC").map(String::as_str),
+        Some("unset")
+    );
 }
 
 #[test]

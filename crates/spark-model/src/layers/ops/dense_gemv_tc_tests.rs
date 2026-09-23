@@ -19,16 +19,19 @@ const DRAFTER_27B: [(u32, u32); 8] = [
 const ALL: [bool; 3] = [true, true, true];
 
 #[test]
-fn switch_is_opt_in_and_only_exactly_one_arms_it() {
-    assert!(!mtp_tc_from(None), "unset is OFF");
-    assert!(!mtp_tc_from(Some("")), "exported-empty is OFF");
-    assert!(!mtp_tc_from(Some("0")), "0 is OFF");
-    assert!(!mtp_tc_from(Some("true")), "only the literal 1 arms it");
+fn ships_on_and_any_non_empty_kill_value_turns_it_off() {
+    use std::ffi::OsStr;
+    assert!(mtp_tc_from(None), "unset is ON");
+    assert!(mtp_tc_from(Some(OsStr::new(""))), "exported-empty is ON");
+    assert!(!mtp_tc_from(Some(OsStr::new("1"))), "1 kills");
     assert!(
-        !mtp_tc_from(Some(" 1")),
-        "no trimming: the record discloses verbatim"
+        !mtp_tc_from(Some(OsStr::new("0"))),
+        "0 kills too (presence rule)"
     );
-    assert!(mtp_tc_from(Some("1")), "1 is ON");
+    assert!(
+        !mtp_tc_from(Some(OsStr::new("true"))),
+        "any non-empty value kills"
+    );
 }
 
 #[test]

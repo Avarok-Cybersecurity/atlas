@@ -27,10 +27,13 @@
 //!
 //! # Switch
 //!
-//! `AVAROK_MTP_TC=1` opts in (exactly `1`; unset, empty or any other value
-//! is OFF, and the drafter keeps its CUDA-core kernels bit-for-bit). Read
-//! once. Gate records disclose it in `perf_env` (`avarok-plugin`
-//! `PERF_CONTROLS`, default `0`).
+//! ON by default. `AVAROK_NO_MTP_TC=1` (any non-empty value, `0` included,
+//! read once) is the kill switch: the drafter then keeps its CUDA-core
+//! kernels bit-for-bit. Same rule as `AVAROK_NO_W4A16_TC`, and gate records
+//! disclose it the same way (`avarok-plugin` `PERF_CONTROLS`, default
+//! `unset`). It does not lower precision (1 bf16 ulp from the CUDA-core path,
+//! the same error vs an f64 reference) and it only moves DRAFT logits; the
+//! greedy verify decides every emitted token.
 
 use std::sync::{Mutex, OnceLock};
 
@@ -102,16 +105,18 @@ pub fn route(m: u32, n: u32, k: u32, enabled: bool, have: [bool; 3]) -> Option<D
     .map(|((_, kind), _)| kind)
 }
 
-/// The `AVAROK_MTP_TC` rule over a looked-up value: ON only for exactly `1`.
-pub fn mtp_tc_from(value: Option<&str>) -> bool {
-    value == Some("1")
+/// The `AVAROK_NO_MTP_TC` rule over the looked-up kill switch: the
+/// tensor-core path is ON unless it is set to a non-empty value.
+pub fn mtp_tc_from(kill: Option<&std::ffi::OsStr>) -> bool {
+    kill.is_none_or(|v| v.is_empty())
 }
 
-/// `AVAROK_MTP_TC=1`? Read once: the predicate sits on the per-draft-position
-/// path and every launch in a process must see one choice.
+/// Tensor-core drafter path on (`AVAROK_NO_MTP_TC` unset or empty)? Read
+/// once: the predicate sits on the per-draft-position path and every launch
+/// in a process must see one choice.
 pub fn mtp_tc_enabled() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| mtp_tc_from(std::env::var("AVAROK_MTP_TC").ok().as_deref()))
+    *ON.get_or_init(|| mtp_tc_from(std::env::var_os("AVAROK_NO_MTP_TC").as_deref()))
 }
 
 /// Resolved handles `[tc8, tc16, tc32]`, cached per backend (a
@@ -130,7 +135,7 @@ fn handles(gpu: &dyn GpuBackend) -> [KernelHandle; 3] {
     h
 }
 
-/// The tensor-core kernel and grid-x for this launch when `AVAROK_MTP_TC=1`
+/// The tensor-core kernel and grid-x for this launch when the path is on
 /// and an entry resolves, else `None`.
 pub fn kernel_for(gpu: &dyn GpuBackend, m: u32, n: u32, k: u32) -> Option<(KernelHandle, u32)> {
     if !mtp_tc_enabled() {
@@ -175,7 +180,7 @@ pub fn launch(
         .launch(stream)
 }
 
-/// Run `C[t] = A[t] @ W^T` on the tensor-core entry if `AVAROK_MTP_TC=1` and
+/// Run `C[t] = A[t] @ W^T` on the tensor-core entry if the path is on and
 /// it routes. `Ok(false)` means nothing was launched and the caller must run
 /// its own kernel.
 #[allow(clippy::too_many_arguments)]

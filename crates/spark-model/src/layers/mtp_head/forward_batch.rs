@@ -77,9 +77,10 @@ impl MtpHead {
         k: u32,
         stream: u64,
     ) -> Result<()> {
-        // `AVAROK_MTP_TC=1`: the tensor-core BF16 GEMV takes every width it
-        // covers (2..=32) ahead of the CUDA-core table below. Off (the
-        // default), nothing is launched here and the table is unchanged.
+        // The tensor-core BF16 GEMV takes every width it covers (2..=32)
+        // ahead of the CUDA-core table below. Under the kill switch
+        // `AVAROK_NO_MTP_TC` nothing is launched here and the table is
+        // unchanged.
         if ops::dense_gemv_tc::try_dense_gemv_tc(gpu, input, w, output, m as u32, n, k, n, stream)?
         {
             return Ok(());
@@ -630,7 +631,8 @@ impl MtpHead {
         Ok(())
     }
 
-    /// `AVAROK_MTP_TC=1` keeps the drafter LM head on the tensor-core
+    /// The tensor-core drafter path (on unless `AVAROK_NO_MTP_TC`) keeps the
+    /// drafter LM head on the tensor-core
     /// `w4a16_gemv_tc8/16` (via `w4a16_gemv_batchm`) at EVERY width it covers,
     /// instead of switching to the tile twin at n >= 5: the tile twin is the
     /// W4A8 dequant GEMM (per-k-step LUT dequant + barriers, issue-bound on
@@ -659,7 +661,7 @@ impl MtpHead {
         h: usize,
     ) -> &'static str {
         if ops::dense_gemv_tc::kernel_for(gpu, n as u32, h as u32, (2 * h) as u32).is_some() {
-            return "TC-GEMV (AVAROK_MTP_TC=1)";
+            return "TC-GEMV (kill: AVAROK_NO_MTP_TC)";
         }
         // Probed at the `fc` shape (N = h, K = 2h) — the first weight-bearing
         // projection of every draft position. All the other large-N ones
