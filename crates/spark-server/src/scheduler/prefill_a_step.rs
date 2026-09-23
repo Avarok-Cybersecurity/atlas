@@ -294,6 +294,10 @@ pub fn start_chunked_prefill(
             model.ep_broadcast_cmd(0)?; // chunk_start
             model.ep_broadcast_cmd(prompt_tokens.len() as u32)?; // full prompt length
             model.ep_broadcast_tokens(&prompt_tokens)?;
+            // Vision is excluded from co-dispatch, so this sends a zero count
+            // — but it must still be SENT, because the worker's handler reads
+            // it for every prefill on a vision-capable model.
+            model.ep_sync_vision_embeds(&prompt_tokens)?;
             Ok(())
         })() {
             let msg = format!("deferred prefill EP broadcast failed: {e:#}");
@@ -385,6 +389,11 @@ pub fn start_chunked_prefill(
         if let Some(s) = vision_slice {
             model.set_vision_slice_base(s.patch_row_offset, s.grid_index_offset, s.num_images);
         }
+        // AFTER the slice base is set, because that base is which rows of the
+        // shared packed buf_out this request owns — and BEFORE prefill_chunk,
+        // because the worker reads this at the matching point of its handler.
+        // No collective runs in between, so the pairing holds.
+        model.ep_sync_vision_embeds(&prompt_tokens)?;
         let _pt0 = std::time::Instant::now();
         let chunk_res = model.prefill_chunk(
             &prompt_tokens,

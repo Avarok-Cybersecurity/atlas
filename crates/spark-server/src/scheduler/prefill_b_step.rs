@@ -262,6 +262,9 @@ pub fn prefill_request(
         model.ep_broadcast_cmd(0)?; // chunk_start = 0 (non-chunked)
         model.ep_broadcast_cmd(prompt_tokens.len() as u32)?; // full prompt length
         model.ep_broadcast_tokens(&prompt_tokens)?;
+        // Hand the workers the same merged rows rank 0 just encoded, before
+        // either side splices. See `prefill_a/vision_sync.rs`.
+        model.ep_sync_vision_embeds(&prompt_tokens)?;
 
         let logits = model.prefill(&prompt_tokens, &mut seq, 0)?;
         // #131: constrain the FIRST token with the grammar too (and advance

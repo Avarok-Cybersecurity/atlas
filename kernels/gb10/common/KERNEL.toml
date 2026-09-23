@@ -27,6 +27,25 @@ extra_nvcc_flags = ["--fmad=false", "-DTQ_PLUS_SIGNS"]
 #       remaining reference is `avarok-spark-bench/benches/moe.rs`, a benchmark —
 #       no production dispatch path resolves it.
 #
+#   moe_w4a16::{moe_w4a16_grouped_gemm_ptrtable_*, moe_w4a16_grouped_stream_probe}
+#       (atlas#1243, candidate-s8) The `P3B_GROUPED_VARIANT` tile-geometry sweep
+#       added to GB10's common/moe_w4a16_grouped_gemm.cu (e3b0fe125): 34 ADDITIVE
+#       `_ptrtable_*` entry points (k/m/n-tile x k-major x arith-LUT x transposed-
+#       staging combinations) plus the `moe_w4a16_grouped_stream_probe` bandwidth-
+#       ceiling control, all gated behind `AVAROK_GLM_MOE_GEMM_TILE` and used only
+#       by GLM-5.3-Flash's routed-MoE prefill
+#       (`spark-model::layers::glm5next_mlp::forward_prefill_gemm`). Because
+#       hopper/common and strix/common are symlinks to the SAME gb10/common source
+#       file, the sweep became part of their common/ too, even though it was
+#       measured and is dispatched only on GB10. No model shadow on hopper or
+#       strix implements the sweep, and none needs to: every other model keeps
+#       resolving the pre-existing `_ptrtable`/`_ptrtable_t` base kernels
+#       unchanged (commit message: "all variants are ADDITIVE entry points ...
+#       the thirteen other models that resolve that file keep launching the
+#       byte-identical kernel they launched before"). Startup audit stays
+#       fail-closed if a hopper/strix model's dispatch ever asks for one of
+#       these.
+#
 #   norm::{rms_norm_residual_vanilla, residual_add_rms_norm_vanilla}
 #       HF-vanilla RMSNorm counterparts (weight, not 1 + weight), added to
 #       common/rms_norm.cu for Laguna-S 2.1. They are resolved ONLY behind
@@ -55,7 +74,44 @@ extra_nvcc_flags = ["--fmad=false", "-DTQ_PLUS_SIGNS"]
 #       function whose only caller is optional.
 [shadow_exempt]
 w4a16 = ["w4a16_dequant"]
-moe_w4a16 = ["moe_w4a16_grouped_gemm"]
+moe_w4a16 = [
+  "moe_w4a16_grouped_gemm",  # superseded (see comment above)
+  "moe_w4a16_grouped_gemm_ptrtable_al_k64",
+  "moe_w4a16_grouped_gemm_ptrtable_alkm_k128",
+  "moe_w4a16_grouped_gemm_ptrtable_alkm_k64",
+  "moe_w4a16_grouped_gemm_ptrtable_alkm_m16_k128",
+  "moe_w4a16_grouped_gemm_ptrtable_alkm_m16_k256",
+  "moe_w4a16_grouped_gemm_ptrtable_alkm_m16_k32",
+  "moe_w4a16_grouped_gemm_ptrtable_alkm_m16_k64",
+  "moe_w4a16_grouped_gemm_ptrtable_alkm_m16_n128_k128",
+  "moe_w4a16_grouped_gemm_ptrtable_alkm_m16_n128_k64",
+  "moe_w4a16_grouped_gemm_ptrtable_al_m16_k128",
+  "moe_w4a16_grouped_gemm_ptrtable_al_m16_k32",
+  "moe_w4a16_grouped_gemm_ptrtable_al_m16_k64",
+  "moe_w4a16_grouped_gemm_ptrtable_al_m16_n128_k64",
+  "moe_w4a16_grouped_gemm_ptrtable_bt_k128",
+  "moe_w4a16_grouped_gemm_ptrtable_bt_m16_k128",
+  "moe_w4a16_grouped_gemm_ptrtable_bt_m16_k256",
+  "moe_w4a16_grouped_gemm_ptrtable_bt_m16_k64",
+  "moe_w4a16_grouped_gemm_ptrtable_bt_m16_n128_k128",
+  "moe_w4a16_grouped_gemm_ptrtable_k128",
+  "moe_w4a16_grouped_gemm_ptrtable_k32",
+  "moe_w4a16_grouped_gemm_ptrtable_k64",
+  "moe_w4a16_grouped_gemm_ptrtable_km_k64",
+  "moe_w4a16_grouped_gemm_ptrtable_km_m16_k128",
+  "moe_w4a16_grouped_gemm_ptrtable_km_m16_k32",
+  "moe_w4a16_grouped_gemm_ptrtable_km_m16_k64",
+  "moe_w4a16_grouped_gemm_ptrtable_km_m16_n128_k128",
+  "moe_w4a16_grouped_gemm_ptrtable_km_m16_n128_k64",
+  "moe_w4a16_grouped_gemm_ptrtable_m16_k128",
+  "moe_w4a16_grouped_gemm_ptrtable_m16_k256",
+  "moe_w4a16_grouped_gemm_ptrtable_m16_k32",
+  "moe_w4a16_grouped_gemm_ptrtable_m16_k64",
+  "moe_w4a16_grouped_gemm_ptrtable_m16_n128_k128",
+  "moe_w4a16_grouped_gemm_ptrtable_m16_n128_k32",
+  "moe_w4a16_grouped_gemm_ptrtable_m16_n128_k64",
+  "moe_w4a16_grouped_stream_probe",
+]
 norm = [
   "rms_norm_residual_vanilla",
   "residual_add_rms_norm_vanilla",

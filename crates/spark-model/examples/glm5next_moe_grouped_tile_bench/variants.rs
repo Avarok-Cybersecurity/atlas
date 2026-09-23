@@ -1,0 +1,280 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+//! The tile-geometry variants this bench prices against the base kernel.
+//!
+//! Split out of `glm5next_moe_grouped_tile_bench.rs` to keep that file under the 500-LoC
+//! cap; this is pure data (no GPU calls), so it is a clean seam.
+
+/// One kernel under test. 🪤 `m_tile` sets the grid HEIGHT and `n_tile` the grid WIDTH;
+/// getting either wrong is silent (dropped rows / a half-written output), not an error.
+pub(crate) struct Variant {
+    pub name: &'static str,
+    pub kernel: &'static str,
+    pub m_tile: u32,
+    pub n_tile: u32,
+    pub threads: u32,
+}
+
+const fn v(
+    name: &'static str,
+    kernel: &'static str,
+    m_tile: u32,
+    n_tile: u32,
+    threads: u32,
+) -> Variant {
+    Variant {
+        name,
+        kernel,
+        m_tile,
+        n_tile,
+        threads,
+    }
+}
+
+pub(crate) const VARIANTS: &[Variant] = &[
+    v(
+        "base M64 N64 K16",
+        "moe_w4a16_grouped_gemm_ptrtable",
+        64,
+        64,
+        128,
+    ),
+    v(
+        "     M64 N64 K32",
+        "moe_w4a16_grouped_gemm_ptrtable_k32",
+        64,
+        64,
+        128,
+    ),
+    v(
+        "     M64 N64 K64",
+        "moe_w4a16_grouped_gemm_ptrtable_k64",
+        64,
+        64,
+        128,
+    ),
+    v(
+        "     M64 N64 K128",
+        "moe_w4a16_grouped_gemm_ptrtable_k128",
+        64,
+        64,
+        128,
+    ),
+    v(
+        "     M16 N64 K32",
+        "moe_w4a16_grouped_gemm_ptrtable_m16_k32",
+        16,
+        64,
+        128,
+    ),
+    v(
+        "     M16 N64 K64",
+        "moe_w4a16_grouped_gemm_ptrtable_m16_k64",
+        16,
+        64,
+        128,
+    ),
+    v(
+        "     M16 N64 K128",
+        "moe_w4a16_grouped_gemm_ptrtable_m16_k128",
+        16,
+        64,
+        128,
+    ),
+    v(
+        "     M16 N64 K256",
+        "moe_w4a16_grouped_gemm_ptrtable_m16_k256",
+        16,
+        64,
+        128,
+    ),
+    v(
+        "     M16 N128 K32",
+        "moe_w4a16_grouped_gemm_ptrtable_m16_n128_k32",
+        16,
+        128,
+        256,
+    ),
+    v(
+        "     M16 N128 K64",
+        "moe_w4a16_grouped_gemm_ptrtable_m16_n128_k64",
+        16,
+        128,
+        256,
+    ),
+    v(
+        "     M16 N128 K128",
+        "moe_w4a16_grouped_gemm_ptrtable_m16_n128_k128",
+        16,
+        128,
+        256,
+    ),
+    v(
+        "kmaj M64 N64 K64",
+        "moe_w4a16_grouped_gemm_ptrtable_km_k64",
+        64,
+        64,
+        128,
+    ),
+    v(
+        "kmaj M16 N64 K32",
+        "moe_w4a16_grouped_gemm_ptrtable_km_m16_k32",
+        16,
+        64,
+        128,
+    ),
+    v(
+        "kmaj M16 N64 K64",
+        "moe_w4a16_grouped_gemm_ptrtable_km_m16_k64",
+        16,
+        64,
+        128,
+    ),
+    v(
+        "kmaj M16 N64 K128",
+        "moe_w4a16_grouped_gemm_ptrtable_km_m16_k128",
+        16,
+        64,
+        128,
+    ),
+    v(
+        "kmaj M16 N128 K64",
+        "moe_w4a16_grouped_gemm_ptrtable_km_m16_n128_k64",
+        16,
+        128,
+        256,
+    ),
+    v(
+        "kmaj M16 N128 K128",
+        "moe_w4a16_grouped_gemm_ptrtable_km_m16_n128_k128",
+        16,
+        128,
+        256,
+    ),
+    v(
+        "alut M64 N64 K64",
+        "moe_w4a16_grouped_gemm_ptrtable_al_k64",
+        64,
+        64,
+        128,
+    ),
+    v(
+        "alut M16 N64 K32",
+        "moe_w4a16_grouped_gemm_ptrtable_al_m16_k32",
+        16,
+        64,
+        128,
+    ),
+    v(
+        "alut M16 N64 K64",
+        "moe_w4a16_grouped_gemm_ptrtable_al_m16_k64",
+        16,
+        64,
+        128,
+    ),
+    v(
+        "alut M16 N64 K128",
+        "moe_w4a16_grouped_gemm_ptrtable_al_m16_k128",
+        16,
+        64,
+        128,
+    ),
+    v(
+        "alut M16 N128 K64",
+        "moe_w4a16_grouped_gemm_ptrtable_al_m16_n128_k64",
+        16,
+        128,
+        256,
+    ),
+    v(
+        "al+km M64 N64 K64",
+        "moe_w4a16_grouped_gemm_ptrtable_alkm_k64",
+        64,
+        64,
+        128,
+    ),
+    v(
+        "al+km M64 N64 K128",
+        "moe_w4a16_grouped_gemm_ptrtable_alkm_k128",
+        64,
+        64,
+        128,
+    ),
+    v(
+        "al+km M16 N64 K32",
+        "moe_w4a16_grouped_gemm_ptrtable_alkm_m16_k32",
+        16,
+        64,
+        128,
+    ),
+    v(
+        "al+km M16 N64 K64",
+        "moe_w4a16_grouped_gemm_ptrtable_alkm_m16_k64",
+        16,
+        64,
+        128,
+    ),
+    v(
+        "al+km M16 N64 K128",
+        "moe_w4a16_grouped_gemm_ptrtable_alkm_m16_k128",
+        16,
+        64,
+        128,
+    ),
+    v(
+        "al+km M16 N64 K256",
+        "moe_w4a16_grouped_gemm_ptrtable_alkm_m16_k256",
+        16,
+        64,
+        128,
+    ),
+    v(
+        "al+km M16 N128 K64",
+        "moe_w4a16_grouped_gemm_ptrtable_alkm_m16_n128_k64",
+        16,
+        128,
+        256,
+    ),
+    v(
+        "al+km M16 N128 K128",
+        "moe_w4a16_grouped_gemm_ptrtable_alkm_m16_n128_k128",
+        16,
+        128,
+        256,
+    ),
+    v(
+        "BT M16 N64 K64",
+        "moe_w4a16_grouped_gemm_ptrtable_bt_m16_k64",
+        16,
+        64,
+        128,
+    ),
+    v(
+        "BT M16 N64 K128",
+        "moe_w4a16_grouped_gemm_ptrtable_bt_m16_k128",
+        16,
+        64,
+        128,
+    ),
+    v(
+        "BT M16 N64 K256",
+        "moe_w4a16_grouped_gemm_ptrtable_bt_m16_k256",
+        16,
+        64,
+        128,
+    ),
+    v(
+        "BT M16 N128 K128",
+        "moe_w4a16_grouped_gemm_ptrtable_bt_m16_n128_k128",
+        16,
+        128,
+        256,
+    ),
+    v(
+        "BT M64 N64 K128",
+        "moe_w4a16_grouped_gemm_ptrtable_bt_k128",
+        64,
+        64,
+        128,
+    ),
+];
