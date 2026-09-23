@@ -318,7 +318,11 @@ impl TransformerModel {
                     super::graph_borrow::find_borrowable_decode_key(&key[..n], g.0.keys(), |s| {
                         s == dummy || self.ssm_pool.slot_is_free(s as usize)
                     });
-                if let Some(bk) = borrowed {
+                // A key that keeps borrowing is a SETTLED width, not a drain:
+                // decline and capture it (`borrow_streak.rs`).
+                if let Some(bk) = borrowed
+                    && super::borrow_streak::DECODE_BORROW_STREAK.allow(key)
+                {
                     dispatch_n = bk.len();
                     let e =
                         g.0.get_mut(&bk)
