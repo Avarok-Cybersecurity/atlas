@@ -708,10 +708,11 @@ pub fn forward_moe(
     // and decode can never reach here, so the host read of `expert_offsets` inside
     // `forward_moe_grouped_prefill` cannot land inside a capture.
     //
-    // 🔴 The width FLOOR is load-bearing, not caution. MEASURED on one image at 5,400
-    // tokens: at the shipping 16-row sub-chunk the grouped path is 25.14 tok/s against the
-    // GEMV's 63.05 (0.40x); at 256 rows it is 128.10 against 82.14 (1.56x). Without the
-    // floor, "default ON" would have regressed the default serve by 2.5x.
+    // 🔴 The width FLOOR is load-bearing, not caution. MEASURED at 5,400 tokens, matched
+    // arms on one binary — GEMV / grouped GEMM tok/s: 16 rows 63.05 / 25.14 (0.40x),
+    // 64 rows 77.79 / 57.71 (0.74x), 128 rows 80.73 / 88.17 (1.09x), 256 rows 82.14 /
+    // 128.10 (1.56x). The crossover is between 64 and 128. Without the floor, "default ON"
+    // would have regressed the shipping serve 2.5x, because PREFILL_ROWS defaults to 16.
     let grouped_prefill = rows > MOE_ROW_BATCH_MAX_ROWS
         && rows >= forward_prefill_gemm::prefill_gemm_min_rows()
         && forward_prefill_gemm::prefill_gemm_enabled()

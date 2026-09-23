@@ -113,26 +113,38 @@ pub(crate) fn prefill_gemm_enabled() -> bool {
 
 /// Narrowest prefill sub-chunk the grouped GEMM may take, `AVAROK_GLM_MOE_PREFILL_GEMM_MIN_ROWS`.
 ///
-/// 🔴 MEASURED, and the reason this gate exists at all. n1/n2, one image
-/// (`ws1p1-moegemm`, `bfeed3d84`), community ckpt, 5,400-token prompt, matched arms:
+/// 🔴 MEASURED, and the reason this gate exists at all. n1/n2, ONE image per round,
+/// community ckpt, 5,400-token prompt, spec-off, max-seq-len 131072, transport gate PROVEN
+/// RoCE on both rails, every cell a matched arm on the same binary:
 ///
 /// | sub-chunk | GEMV (production) | grouped GEMM | ratio |
 /// |---|---:|---:|---:|
-/// | 16 rows (the shipping default) | **63.05 tok/s** | **25.14 tok/s** | **0.40x** |
+/// | 16 rows (the shipping default) | **63.05 tok/s** | 25.14 tok/s | **0.40x** |
+/// | 64 rows | 77.79 tok/s | 57.71 tok/s | 0.74x |
+/// | 128 rows | 80.73 tok/s | **88.17 tok/s** | **1.09x** |
 /// | 256 rows | 82.14 tok/s | **128.10 tok/s** | **1.56x** |
 ///
-/// At 16 rows the grouped path is a 2.5x REGRESSION, and the arithmetic says why: 16 rows
-/// at `top_k = 8` is 128 routed slots over 288 experts, so the union of experts a chunk
-/// touches is barely smaller than the GEMV's own — there is no weight traffic to save —
-/// while the path still pays `ceil(N/16) * layers` host stream drains and an `M_TILE = 64`
-/// tile per active expert holding ~2.6 real rows. At 256 rows the same chunk touches
-/// essentially this rank's WHOLE local expert set once, which is ~5x less weight traffic
-/// per token, and the win appears.
+/// The crossover is between 64 and 128, so THE FLOOR IS 128. It was first shipped at 64 on
+/// the reasoning that 64 sits between the measured-bad 16 and the measured-good 256; the
+/// 64- and 128-row arms were then run and 64 turned out to be on the LOSING side (0.74x).
+/// That is what the sweep was for.
 ///
-/// 🪤 So a default-ON grouped path with no width floor would have silently regressed the
+/// Why the narrow widths lose: 16 rows at `top_k = 8` is 128 routed slots over 288 experts,
+/// so the expert union a chunk touches is barely smaller than the 8-row GEMV's own — there
+/// is no weight traffic to save — while every active expert still gets an `M_TILE = 64` tile
+/// holding ~2.6 real rows. At 256 rows the same chunk touches essentially this rank's WHOLE
+/// local expert set once: ~5x less weight traffic per token, and the win appears.
+///
+/// 🪤 NOT the host sync. The obvious suspect was the per-layer `expert_offsets` D2H, which
+/// drains the stream `ceil(5400/16) * 42 = 14,196` times at a 16-row chunk. Measured with
+/// [`prefill_gemm_exact_tiles`] off — every one of those drains removed — the 16-row arm went
+/// 25.14 -> 25.56 tok/s, **+1.7 %**. The sync is not the cost; the tile geometry is. Anyone
+/// tempted to fix narrow widths by deferring the sync should read that number first.
+///
+/// 🪤 A default-ON grouped path with no width floor would have silently regressed the
 /// shipping serve by 2.5x, because `PREFILL_ROWS` defaults to 16. The floor is what makes
-/// "default ON" safe. It is set at 64 — above the measured-bad 16, below the measured-good
-/// 256 — and it is an env lever so the crossover can be swept without a rebuild.
+/// "default ON" safe, and it is an env lever so the crossover can be re-swept without a
+/// rebuild.
 pub(crate) fn prefill_gemm_min_rows() -> usize {
     static M: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *M.get_or_init(|| {
@@ -144,7 +156,7 @@ pub(crate) fn prefill_gemm_min_rows() -> usize {
         if m != DEFAULT_GEMM_MIN_ROWS {
             tracing::warn!(
                 "GLM routed-MoE prefill grouped GEMM width floor overridden to {m} rows \
-                 (default {DEFAULT_GEMM_MIN_ROWS}; MEASURED 0.40x at 16, 1.56x at 256)"
+                 (default {DEFAULT_GEMM_MIN_ROWS}; MEASURED 0.40x at 16, 0.74x at 64, 1.09x at 128, 1.56x at 256)"
             );
         }
         m
@@ -152,7 +164,7 @@ pub(crate) fn prefill_gemm_min_rows() -> usize {
 }
 
 /// See [`prefill_gemm_min_rows`] for the measurement this number comes from.
-pub(crate) const DEFAULT_GEMM_MIN_ROWS: usize = 64;
+pub(crate) const DEFAULT_GEMM_MIN_ROWS: usize = 128;
 
 /// Read the REAL expert histogram to size the grid, `AVAROK_GLM_MOE_PREFILL_GEMM_EXACT_TILES=0`
 /// to use the worst-case bound instead and skip the host read entirely.
