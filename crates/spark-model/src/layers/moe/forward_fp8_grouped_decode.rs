@@ -93,19 +93,24 @@ pub(crate) fn grouped_decode_buffer_need(
 }
 
 impl MoeLayer {
-    /// True when `forward_fp8_grouped_decode` can serve `m` rows on this layer
-    /// under `ctx`. Every term is a property of the loaded weights, the shipped
-    /// kernels or the arena — plus the kill switch — so callers can branch on it
-    /// before touching the pre-FFN norm.
-    pub fn fp8_grouped_decode_ok(&self, m: usize, ctx: &ForwardContext) -> bool {
-        let cfg = ctx.config;
+    /// The weight, kernel, shape and arena terms of
+    /// [`Self::fp8_grouped_decode_ok`] — everything decidable from the layer,
+    /// the config and the arena alone, so a width policy
+    /// (`MtpHead::propose_batch_max`) can size a batch without a
+    /// `ForwardContext`. NOT sufficient on its own: the kill switch, the
+    /// FP32-routing lever and expert parallelism are context terms only the
+    /// full predicate adds.
+    pub fn fp8_grouped_decode_arena_ok(
+        &self,
+        m: usize,
+        cfg: &avarok_core::config::ModelConfig,
+        b: &spark_runtime::buffers::BufferArena,
+    ) -> bool {
         let h = cfg.hidden_size;
         let inter = cfg.moe_intermediate_size;
         let need =
             grouped_decode_buffer_need(m, h, inter, cfg.num_experts, cfg.num_experts_per_tok);
-        let b = ctx.buffers;
-        fp8_grouped_decode_enabled()
-            && fp8_grouped_decode_shape_ok(m, h as u32, inter as u32)
+        fp8_grouped_decode_shape_ok(m, h as u32, inter as u32)
             && self.fp8_gate_weight_ptrs.is_some()
             && self.fp8_up_weight_ptrs.is_some()
             && self.fp8_down_weight_ptrs.is_some()
@@ -124,8 +129,6 @@ impl MoeLayer {
             && self.router_logits_n as usize == cfg.num_experts
             // sqrtsoftplus (DeepSeek-V4) has no proven batched top-k kernel.
             && !(self.correction_bias_dev.is_some() && cfg.scoring_func == "sqrtsoftplus")
-            && !self.fp32_routing_active(ctx.levers)
-            && !(ctx.comm.is_some() && cfg.ep_world_size > 1)
             && b.scratch_bytes() >= need.scratch
             && b.gate_logits_bytes() >= need.gate_logits
             && b.expert_gate_out_bytes() >= need.expert_gate_out
@@ -134,6 +137,18 @@ impl MoeLayer {
             && b.ssm_qkvz_bytes() >= need.shared_inter
             && b.attn_output_bytes() >= need.row_hidden
             && b.moe_output_bytes() >= need.row_hidden
+    }
+
+    /// True when `forward_fp8_grouped_decode` can serve `m` rows on this layer
+    /// under `ctx`: [`Self::fp8_grouped_decode_arena_ok`] plus the kill switch
+    /// and the context terms, so callers can branch on it before touching the
+    /// pre-FFN norm.
+    pub fn fp8_grouped_decode_ok(&self, m: usize, ctx: &ForwardContext) -> bool {
+        let cfg = ctx.config;
+        fp8_grouped_decode_enabled()
+            && self.fp8_grouped_decode_arena_ok(m, cfg, ctx.buffers)
+            && !self.fp32_routing_active(ctx.levers)
+            && !(ctx.comm.is_some() && cfg.ep_world_size > 1)
     }
 
     /// Cross-row grouped FP8 MoE for `m` decode rows: `input` is `[m, H]` BF16,

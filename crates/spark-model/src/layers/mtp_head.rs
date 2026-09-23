@@ -179,6 +179,20 @@ pub struct MtpHead {
     moe_nvfp4: Option<MoeLayer>,
     moe_experts_generic: Option<Vec<(ProjectionWeight, ProjectionWeight, ProjectionWeight)>>,
     moe_shared_generic: Option<(ProjectionWeight, ProjectionWeight, ProjectionWeight)>,
+    /// The checkpoint's own FP8 block-scaled routed + shared experts as a
+    /// [`MoeLayer`] with FP8 pointer tables — the native-FP8 main layers'
+    /// construction (null NVFP4 slots, BF16 router, `set_fp8_experts`) —
+    /// built for a BF16/FP8 head whenever the loader found the MTP experts
+    /// FP8 on disk (`MtpWeights::fp8_experts`; Qwen3.6-35B-A3B-FP8). One
+    /// layer serves BOTH drafter paths: `forward_one` runs it at M=1
+    /// (`MoeLayer::forward`, the fused single-token FP8 kernels) and the
+    /// batched propose runs `forward_fp8_grouped_decode` for its n rows —
+    /// the kernel pair the G9 GPU oracle proves bit-identical per row. The
+    /// per-expert BF16 GEMV loop (`moe_forward_generic`) cannot batch across
+    /// sequences, which is why the MoE drafter fell back to n single-row
+    /// forwards per draft position (16 at C=16: ~24 ms of a 176 ms step).
+    /// `None` = that loop.
+    moe_fp8: Option<MoeLayer>,
     moe_gate: DenseWeight,
     shared_expert_gate: DenseWeight,
 
@@ -402,6 +416,7 @@ mod batch_caps;
 mod draft_proposer;
 mod forward;
 mod forward_batch;
+mod forward_batch_ffn;
 mod moe_forward;
 mod new;
 mod prefill;

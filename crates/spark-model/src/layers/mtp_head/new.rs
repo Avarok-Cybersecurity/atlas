@@ -9,7 +9,9 @@ use spark_runtime::kv_cache::{KvCacheConfig, KvCacheDtype, PagedKvCache};
 
 use super::{MtpHead, MtpQuantization, ProjectionWeight};
 use crate::layers::MoeLayer;
-use crate::weight_map::{DenseWeight, MoeWeights, MtpWeights, QuantizedWeight, quantize_to_nvfp4};
+use crate::weight_map::{
+    DenseWeight, ExpertWeight, MoeWeights, MtpWeights, QuantizedWeight, quantize_to_nvfp4,
+};
 
 impl MtpHead {
     pub fn new(
@@ -90,9 +92,12 @@ impl MtpHead {
             None
         };
 
-        // MoE: NVFP4 uses fused MoeLayer; FP8/BF16 stores per-expert weights
-        let (moe_nvfp4, moe_experts_generic, moe_shared_generic) = if dense_ffn_generic.is_some() {
-            (None, None, None)
+        // MoE: NVFP4 uses fused MoeLayer; FP8/BF16 stores per-expert weights,
+        // or — when the checkpoint ships the MTP experts as FP8 block-scaled
+        // tables — a MoeLayer on those tables (`moe_fp8`, see the field docs).
+        let mut weights = weights;
+        let moe_parts = if dense_ffn_generic.is_some() {
+            (None, None, None, None)
         } else {
             match quant {
                 MtpQuantization::Nvfp4 => {
@@ -193,7 +198,11 @@ impl MtpHead {
                         gpu,
                         config,
                     )?;
-                    (Some(moe), None, None)
+                    (Some(moe), None, None, None)
+                }
+                MtpQuantization::Fp8 | MtpQuantization::Bf16 if weights.fp8_experts.is_some() => {
+                    let moe = Self::new_native_fp8_moe(&mut weights, config, gpu)?;
+                    (None, None, None, Some(moe))
                 }
                 MtpQuantization::Fp8 | MtpQuantization::Bf16 => {
                     let mut experts_g = Vec::with_capacity(weights.experts.len());
@@ -215,10 +224,11 @@ impl MtpHead {
                         q(&weights.shared_expert.up_proj, inter, h)?,
                         q(&weights.shared_expert.down_proj, h, inter)?,
                     );
-                    (None, Some(experts_g), Some(shared))
+                    (None, Some(experts_g), Some(shared), None)
                 }
             }
         };
+        let (moe_nvfp4, moe_experts_generic, moe_shared_generic, moe_fp8) = moe_parts;
 
         // MTP KV cache: 1 attention layer. The FP8 KV path hard-codes
         // k_scale=v_scale=1.0, which on Qwen3.6-A3B (large deep-layer K/V
@@ -309,6 +319,8 @@ impl MtpHead {
             "dense FFN"
         } else if moe_nvfp4.is_some() {
             "MoE (NVFP4 fused)"
+        } else if moe_fp8.is_some() {
+            "MoE (native FP8 tables; batched propose grouped)"
         } else {
             "MoE (per-expert)"
         };
@@ -378,6 +390,7 @@ impl MtpHead {
             moe_nvfp4,
             moe_experts_generic,
             moe_shared_generic,
+            moe_fp8,
             moe_gate: weights.moe_gate,
             shared_expert_gate: weights.shared_expert_gate,
             dense_ffn_generic,
@@ -469,5 +482,42 @@ impl MtpHead {
             propose_meta_stride,
             prefill_scratch,
         })
+    }
+
+    /// The drafter's MoE on the checkpoint's FP8 tables, constructed exactly
+    /// as `qwen35/load_layers.rs` builds a native-FP8 main layer: null NVFP4
+    /// expert slots for the constructor's pointer tables, the BF16 router
+    /// (`gate_nvfp4 = None` → `dense_gemv`/`dense_gemm`), then
+    /// `set_fp8_experts`. Every FP8 decode arm reads `fp8_shared_expert`, so
+    /// the NVFP4 shared slot stays null too. The loader's BF16 dequants are
+    /// released afterwards — they were the same tensors, kept only for the
+    /// NVFP4 re-quantization path this head does not take.
+    fn new_native_fp8_moe(
+        weights: &mut MtpWeights,
+        config: &avarok_core::config::ModelConfig,
+        gpu: &dyn GpuBackend,
+    ) -> Result<MoeLayer> {
+        let fp8 = weights
+            .fp8_experts
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("new_native_fp8_moe: no FP8 tables"))?;
+        anyhow::ensure!(
+            fp8.experts.len() == config.num_experts,
+            "MTP FP8 tables cover {} experts, config says {}",
+            fp8.experts.len(),
+            config.num_experts
+        );
+        let moe_weights = MoeWeights {
+            gate: weights.moe_gate,
+            shared_expert: ExpertWeight::null(),
+            shared_expert_gate: weights.shared_expert_gate,
+            experts: vec![ExpertWeight::null(); config.num_experts],
+            router_pre_norm: None,
+            correction_bias: None,
+        };
+        let mut moe = MoeLayer::new(moe_weights, config.num_experts, None, gpu, config)?;
+        moe.set_fp8_experts(&fp8.experts, fp8.shared_expert, gpu)?;
+        weights.release_bf16_expert_dequants(gpu)?;
+        Ok(moe)
     }
 }

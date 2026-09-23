@@ -248,6 +248,7 @@ pub(crate) fn load_mtp(
             experts: Vec::new(),
             dense_ffn: Some(dense_ffn),
             norm: dense(store, "mtp.norm.weight")?,
+            fp8_experts: None,
         });
     }
 
@@ -278,7 +279,8 @@ pub(crate) fn load_mtp(
     // `[I, H]` (gate/up) or `[H, I]` (down) BF16 matrix.
     let stacked_gate_up = format!("{mlp}.experts.gate_up_proj");
     let stacked_down = format!("{mlp}.experts.down_proj");
-    let experts = if store.contains(&stacked_gate_up) && store.contains(&stacked_down) {
+    let stacked = store.contains(&stacked_gate_up) && store.contains(&stacked_down);
+    let experts = if stacked {
         load_mtp_experts_stacked(store, mlp, num_experts)?
     } else {
         let mut v = Vec::with_capacity(num_experts);
@@ -291,6 +293,16 @@ pub(crate) fn load_mtp(
         }
         v
     };
+    // Native FP8 tables ride along with the dequants (the head decides which
+    // to keep — see `MtpWeights::fp8_experts`). Gated on the DEQUANTING
+    // variants only: under `Bf16Raw` the `load` closure hands out store
+    // pointers, and `release_bf16_expert_dequants` must never free those.
+    let fp8_experts =
+        if !stacked && variant != Nvfp4Variant::Bf16Raw && mtp_experts_native_fp8(store, mlp) {
+            Some(load_mtp_fp8_experts(store, mlp, num_experts, gpu)?)
+        } else {
+            None
+        };
 
     Ok(MtpWeights {
         pre_fc_norm_embedding: dense(store, "mtp.pre_fc_norm_embedding.weight")?,
@@ -310,5 +322,112 @@ pub(crate) fn load_mtp(
         experts,
         dense_ffn: None,
         norm: dense(store, "mtp.norm.weight")?,
+        fp8_experts,
     })
+}
+
+/// True when the MTP routed experts are stored per expert as FP8 E4M3 with a
+/// `weight_scale_inv` block-scale sibling — the layout
+/// `load_fp8_block_scaled_as_fp8weight` consumes and the native-FP8 main
+/// layers already serve. Probes expert 0's `gate_proj`; a checkpoint that
+/// mixes formats across experts fails loudly inside the per-expert load.
+pub(crate) fn mtp_experts_native_fp8(store: &WeightStore, mlp: &str) -> bool {
+    let weight = format!("{mlp}.experts.0.gate_proj.weight");
+    store
+        .get(&weight)
+        .map(|w| w.dtype == WeightDtype::FP8E4M3)
+        .unwrap_or(false)
+        && store.contains(&format!("{mlp}.experts.0.gate_proj.weight_scale_inv"))
+}
+
+/// The MTP routed + shared experts as FP8 block-scaled tables (FP8 bytes are
+/// the store's; the FP32 block scales are widened into owned allocations).
+fn load_mtp_fp8_experts(
+    store: &WeightStore,
+    mlp: &str,
+    num_experts: usize,
+    gpu: &dyn GpuBackend,
+) -> Result<MtpFp8Experts> {
+    let proj = |prefix: &str, name: &str| -> Result<Fp8Weight> {
+        load_fp8_block_scaled_as_fp8weight(store, &format!("{prefix}.{name}"), gpu)
+    };
+    let load = |prefix: &str| -> Result<Fp8ExpertWeight> {
+        Ok(Fp8ExpertWeight {
+            gate_proj: proj(prefix, "gate_proj")?,
+            up_proj: proj(prefix, "up_proj")?,
+            down_proj: proj(prefix, "down_proj")?,
+        })
+    };
+    let mut experts = Vec::with_capacity(num_experts);
+    for e in 0..num_experts {
+        experts.push(
+            load(&format!("{mlp}.experts.{e}"))
+                .with_context(|| format!("MTP expert {e}: native FP8 tables"))?,
+        );
+    }
+    let shared_expert =
+        load(&format!("{mlp}.shared_expert")).context("MTP shared expert: native FP8 tables")?;
+    Ok(MtpFp8Experts {
+        experts,
+        shared_expert,
+    })
+}
+
+#[cfg(test)]
+mod mtp_fp8_detect_tests {
+    use super::*;
+    use spark_runtime::weights::WeightTensor;
+    use std::collections::HashMap;
+
+    const MLP: &str = "mtp.layers.0.mlp";
+
+    fn store(entries: Vec<(String, WeightDtype)>) -> WeightStore {
+        let mut m = HashMap::new();
+        for (name, dtype) in entries {
+            m.insert(
+                name,
+                WeightTensor {
+                    ptr: DevicePtr::NULL,
+                    shape: vec![512, 2048],
+                    dtype,
+                },
+            );
+        }
+        WeightStore::from_map(m)
+    }
+
+    fn gate0(suffix: &str) -> String {
+        format!("{MLP}.experts.0.gate_proj.{suffix}")
+    }
+
+    #[test]
+    fn fp8_weight_with_block_scale_is_native_fp8() {
+        let s = store(vec![
+            (gate0("weight"), WeightDtype::FP8E4M3),
+            (gate0("weight_scale_inv"), WeightDtype::BF16),
+        ]);
+        assert!(mtp_experts_native_fp8(&s, MLP));
+    }
+
+    #[test]
+    fn bf16_experts_are_not_native_fp8() {
+        // A BF16 MTP head (Sehyo / RedHatAI NVFP4 checkpoints): the dequant
+        // path is the only copy, so the tables must NOT be attached (and the
+        // release must never run).
+        let s = store(vec![(gate0("weight"), WeightDtype::BF16)]);
+        assert!(!mtp_experts_native_fp8(&s, MLP));
+    }
+
+    #[test]
+    fn fp8_without_a_block_scale_is_refused() {
+        // FP8 bytes with no `weight_scale_inv` is not the block-scaled layout
+        // the grouped kernels index (per-tensor FP8 has a different dequant).
+        let s = store(vec![(gate0("weight"), WeightDtype::FP8E4M3)]);
+        assert!(!mtp_experts_native_fp8(&s, MLP));
+    }
+
+    #[test]
+    fn absent_experts_are_not_native_fp8() {
+        assert!(!mtp_experts_native_fp8(&store(vec![]), MLP));
+    }
 }

@@ -427,9 +427,12 @@ impl MtpHead {
                     .as_ref()
                     .unwrap()
                     .forward(normed2, ctx, stream)?,
-                MtpQuantization::Fp8 | MtpQuantization::Bf16 => {
-                    self.moe_forward_generic(normed2, ctx, stream)?
-                }
+                MtpQuantization::Fp8 | MtpQuantization::Bf16 => match self.moe_fp8.as_ref() {
+                    // Native FP8 tables: the same layer the batched propose
+                    // runs grouped, at M=1 (no per-propose D2H of the routing).
+                    Some(moe) => moe.forward(normed2, ctx, stream)?,
+                    None => self.moe_forward_generic(normed2, ctx, stream)?,
+                },
             }
         };
         ops::residual_add(ctx.gpu, self.residual_add_k, hidden, ffn_out, h, stream)?;

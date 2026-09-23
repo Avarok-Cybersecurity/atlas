@@ -138,4 +138,67 @@ pub struct MtpWeights {
     pub dense_ffn: Option<DenseExpertWeight>,
     /// Final output RMSNorm: `[hidden_size]` BF16.
     pub norm: DenseWeight,
+    /// The routed + shared experts as the checkpoint's own FP8 block-scaled
+    /// tables, when the MTP head ships them that way (Qwen3.6-35B-A3B-FP8:
+    /// `mtp.layers.0.mlp.experts.{e}.*_proj.{weight,weight_scale_inv}`, the
+    /// per-expert layout the native-FP8 main layers consume). `experts` /
+    /// `shared_expert` above are then fresh BF16 dequants of the SAME tensors,
+    /// kept for the NVFP4 re-quantization path; a BF16/FP8 head builds its
+    /// MoE from these tables instead and calls
+    /// [`Self::release_bf16_expert_dequants`]. `None` when the experts are
+    /// BF16 on disk (or stacked), in which case there is nothing to release.
+    pub fp8_experts: Option<MtpFp8Experts>,
+}
+
+/// Native FP8 block-scaled MTP MoE tables: `experts[e]` is routed expert `e`
+/// (all `num_experts` present — the drafter is never expert-parallel), plus
+/// the shared expert. FP8 bytes are the weight store's; only the widened FP32
+/// block scales are owned allocations.
+pub struct MtpFp8Experts {
+    pub experts: Vec<Fp8ExpertWeight>,
+    pub shared_expert: Fp8ExpertWeight,
+}
+
+impl MtpWeights {
+    /// Free the BF16 dequants of the routed and shared experts once an FP8
+    /// `MoeLayer` serves them. Only legal when [`Self::fp8_experts`] is
+    /// `Some`: the loader attaches the tables exactly when the on-disk experts
+    /// are FP8, and in that case every entry of `experts` / `shared_expert`
+    /// is a fresh `dequant_fp8_blockscaled_to_bf16` allocation (never a store
+    /// pointer, never a slice of a stacked tensor). Leaves the vectors empty so
+    /// a later reader cannot touch the released memory.
+    pub fn release_bf16_expert_dequants(&mut self, gpu: &dyn GpuBackend) -> Result<()> {
+        ensure!(
+            self.fp8_experts.is_some(),
+            "release_bf16_expert_dequants: no FP8 tables — the BF16 experts are the only copy"
+        );
+        let mut released = 0usize;
+        for de in self.experts.drain(..) {
+            for w in [de.gate_proj, de.up_proj, de.down_proj] {
+                gpu.free(w.weight)?;
+                released += 1;
+            }
+        }
+        let null = DenseWeight {
+            weight: DevicePtr::NULL,
+        };
+        let shared = std::mem::replace(
+            &mut self.shared_expert,
+            DenseExpertWeight {
+                gate_proj: null,
+                up_proj: null,
+                down_proj: null,
+            },
+        );
+        for w in [shared.gate_proj, shared.up_proj, shared.down_proj] {
+            if !w.weight.is_null() {
+                gpu.free(w.weight)?;
+                released += 1;
+            }
+        }
+        tracing::info!(
+            "MTP head: released {released} BF16 expert dequants (native FP8 tables serve the MoE)"
+        );
+        Ok(())
+    }
 }

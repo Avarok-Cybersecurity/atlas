@@ -59,7 +59,7 @@ impl MtpHead {
     /// reads the weight ONCE for all `m` rows on the narrowest batched
     /// W4A16 GEMV tier (tensor-core where resolved), else one GEMV per row.
     #[allow(clippy::too_many_arguments)]
-    fn proj_rows(
+    pub(super) fn proj_rows(
         &self,
         gpu: &dyn spark_runtime::gpu::GpuBackend,
         input: DevicePtr,
@@ -112,7 +112,7 @@ impl MtpHead {
     /// All three see the same `[m, k]` contiguous `input` and write m
     /// contiguous `[n]` output rows, so `out_stride == n`.
     #[allow(clippy::too_many_arguments)]
-    fn gemm_rows(
+    pub(super) fn gemm_rows(
         &self,
         gpu: &dyn spark_runtime::gpu::GpuBackend,
         input: DevicePtr,
@@ -494,39 +494,10 @@ impl MtpHead {
             stream,
         )?;
 
-        // 9. Dense FFN [n, h] -> [n, h] (dense_ffn_forward_generic, M=n).
-        let inter = if ctx.config.intermediate_size > 0 {
-            ctx.config.intermediate_size as u32
-        } else {
-            ctx.config.moe_intermediate_size as u32
-        };
-        let (gate_w, up_w, down_w) = match self.dense_ffn_generic.as_ref() {
-            Some((g, u, d)) => (g, u, d),
-            None => anyhow::bail!("propose_batch: no dense FFN (can_propose_batch lied)"),
-        };
-        let gate_out = ctx.buffers.expert_gate_out();
-        let up_out = ctx.buffers.expert_up_out();
-        self.proj_rows(gpu, normed2, gate_w, gate_out, n, inter, h as u32, stream)?;
-        self.proj_rows(gpu, normed2, up_w, up_out, n, inter, h as u32, stream)?;
-        ops::moe_silu_mul(
-            gpu,
-            self.moe_silu_mul_k.unwrap(),
-            gate_out,
-            up_out,
-            gate_out,
-            n as u32 * inter,
-            stream,
-        )?;
-        let ffn_out = ctx.buffers.moe_output();
-        self.proj_rows(gpu, gate_out, down_w, ffn_out, n, h as u32, inter, stream)?;
-        ops::residual_add(
-            gpu,
-            self.residual_add_k,
-            hidden,
-            ffn_out,
-            n as u32 * h as u32,
-            stream,
-        )?;
+        // 9. FFN for the n rows — the dense BF16 MLP at M=n, or the native-FP8
+        //    MoE through ONE cross-row grouped decode (`forward_batch_ffn`);
+        //    `hidden += ffn(normed2)`.
+        self.ffn_rows(normed2, hidden, n, ctx, stream)?;
 
         // 10. Final norm [n, h] + batched LM head + per-row argmax.
         let final_normed = ctx.buffers.norm_output();
@@ -760,19 +731,21 @@ impl MtpHead {
                 && let Some((_, ldb)) = self.lm_head_nvfp4_t
             {
                 tracing::info!(
-                    "MTP propose_batch active: n={n} proj={} pipelined_gemm={:#x} \
+                    "MTP propose_batch active: n={n} proj={} ffn={} pipelined_gemm={:#x} \
                      gemv_batchm={:#x} lm_head=TILE-TWIN (handle {:#x}, ldb={ldb}) \
                      — kill switch AVAROK_NO_MTP_LMHEAD_TGEMM (presence)",
                     self.propose_proj_arm(ctx.gpu, n, ctx.config.hidden_size),
+                    self.propose_ffn_arm_name(),
                     self.dense_gemm_pipelined_k.0,
                     self.dense_gemv_batchm_k.0,
                     self.w4a16_gemm_t_k.0,
                 );
             } else {
                 tracing::info!(
-                    "MTP propose_batch active: n={n} proj={} pipelined_gemm={:#x} \
+                    "MTP propose_batch active: n={n} proj={} ffn={} pipelined_gemm={:#x} \
                      gemv_batchm={:#x} lm_head_batchm={:#x}",
                     self.propose_proj_arm(ctx.gpu, n, ctx.config.hidden_size),
+                    self.propose_ffn_arm_name(),
                     self.dense_gemm_pipelined_k.0,
                     self.dense_gemv_batchm_k.0,
                     self.lm_head_batch_kernel(n).0

@@ -363,6 +363,10 @@ name = "fp8_moe_grouped_decode_microtest"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]
+name = "fp8_moe_grouped_routing_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
 name = "native_fp8_decode_proj_w8a8_microtest"
 required-features = ["cuda", "gpu-examples"]
 

@@ -114,29 +114,32 @@ pub(crate) fn clamp_stride_override(bytes: usize) -> usize {
     (bytes.saturating_add(7) & !7).clamp(PROPOSE_META_STRIDE_FLOOR, PROPOSE_META_STRIDE_CAP)
 }
 
-/// The weight-layout half of the batched-propose scope: a BF16-forward head
-/// with BF16 KV, BF16 fc/k/v (the drafter prefill and the batched K/V GEMMs
-/// read them as BF16), and q/o plus a dense FFN that are each BF16 or the
-/// weight-only NVFP4 stream of a dense head under `--mtp-quantization nvfp4`
-/// (`forward_batch::proj_rows`). `proj` is `[fc, q, k, v, o]`.
+/// A projection the batched propose's row dispatch (`forward_batch::proj_rows`)
+/// can run: BF16, or the weight-only NVFP4 stream of a dense head under
+/// `--mtp-quantization nvfp4`. q/o and the dense FFN are admitted on it.
+pub(super) fn is_row_proj(p: &ProjectionWeight) -> bool {
+    matches!(p, ProjectionWeight::Bf16(_) | ProjectionWeight::Nvfp4(_))
+}
+
+/// The attention-projection half of the batched-propose scope: a
+/// BF16-forward head with BF16 KV, BF16 fc/k/v (the drafter prefill and the
+/// batched K/V GEMMs read them as BF16), and q/o each BF16 or the weight-only
+/// NVFP4 stream ([`is_row_proj`]). `proj` is `[fc, q, k, v, o]`. The FFN is
+/// decided separately by `propose_ffn_arm` (`forward_batch_ffn`).
 fn batch_weight_layout_ok(
     quant: MtpQuantization,
     kv_bf16: bool,
     proj: [&ProjectionWeight; 5],
-    dense_ffn: Option<&(ProjectionWeight, ProjectionWeight, ProjectionWeight)>,
 ) -> bool {
     let bf16_proj = |p: &ProjectionWeight| matches!(p, ProjectionWeight::Bf16(_));
-    let row_proj =
-        |p: &ProjectionWeight| matches!(p, ProjectionWeight::Bf16(_) | ProjectionWeight::Nvfp4(_));
     let [fc, q, k, v, o] = proj;
     matches!(quant, MtpQuantization::Bf16)
         && kv_bf16
         && bf16_proj(fc)
-        && row_proj(q)
+        && is_row_proj(q)
         && bf16_proj(k)
         && bf16_proj(v)
-        && row_proj(o)
-        && dense_ffn.is_some_and(|(g, u, d)| row_proj(g) && row_proj(u) && row_proj(d))
+        && is_row_proj(o)
 }
 
 impl MtpHead {
@@ -164,6 +167,8 @@ impl MtpHead {
 
     /// Whether the BF16-everything scope + non-width-dependent kernels the
     /// batched propose needs are all present. Width is [`Self::propose_batch_max`].
+    /// The FFN identity (dense BF16 MLP or native-FP8 MoE) is decided by the
+    /// one reader `propose_ffn_arm` — see `forward_batch_ffn`.
     fn propose_batch_scope_ok(&self) -> bool {
         batch_weight_layout_ok(
             self.quant,
@@ -175,11 +180,10 @@ impl MtpHead {
                 &self.v_proj,
                 &self.o_proj,
             ],
-            self.dense_ffn_generic.as_ref(),
-        ) && self.dense_gemm_pipelined_k.0 != 0
+        ) && self.propose_ffn_arm().is_some()
+            && self.dense_gemm_pipelined_k.0 != 0
             && self.dense_gemv_k.is_some()
             && self.deinterleave_qg_k.is_some()
-            && self.moe_silu_mul_k.is_some()
             && !self.propose_meta.is_null()
     }
 
@@ -212,6 +216,16 @@ impl MtpHead {
         // one that is actually resolved.
         while cap > 1 && self.lm_head_batch_kernel(cap).0 == 0 {
             cap -= 1;
+        }
+        // The native-FP8 MoE arm runs the grouped decode for the n rows: its
+        // row envelope (2..=64) and its own arena needs bound the width too
+        // (monotone in the row count). The context-only terms — kill switch,
+        // FP32-routing lever, EP — are re-checked by `propose_batch`, which
+        // refuses (per-seq fallback) rather than fail mid-chain.
+        if let Some(moe) = self.moe_fp8.as_ref() {
+            while cap > 1 && !moe.fp8_grouped_decode_arena_ok(cap, config, buffers) {
+                cap -= 1;
+            }
         }
         cap.max(1)
     }
@@ -264,13 +278,16 @@ mod tests {
         )
     }
 
+    /// The weight half of `propose_batch_scope_ok` for a dense head: the
+    /// attention layout AND the dense FFN arm (`dense_rows_ok`).
     fn layout_ok(
         quant: MtpQuantization,
         kv_bf16: bool,
         p: &[ProjectionWeight; 5],
         ffn: Option<&Ffn>,
     ) -> bool {
-        batch_weight_layout_ok(quant, kv_bf16, [&p[0], &p[1], &p[2], &p[3], &p[4]], ffn)
+        batch_weight_layout_ok(quant, kv_bf16, [&p[0], &p[1], &p[2], &p[3], &p[4]])
+            && super::super::forward_batch_ffn::dense_rows_ok(ffn)
     }
 
     #[test]
@@ -325,7 +342,7 @@ mod tests {
         let (fwd, p, ffn) = dense_head(MtpQuantization::Fp8);
         assert!(!layout_ok(fwd, true, &p, Some(&ffn)), "FP8 head");
         let (fwd, p, _) = dense_head(MtpQuantization::Bf16);
-        assert!(!layout_ok(fwd, true, &p, None), "MoE head (no dense FFN)");
+        assert!(!layout_ok(fwd, true, &p, None), "no dense FFN, no dense arm");
         let (_, p, ffn) = dense_head(MtpQuantization::Nvfp4);
         // The legacy (MoE-head) NVFP4 forward: quant stays Nvfp4, FP8 KV.
         assert!(!layout_ok(MtpQuantization::Nvfp4, false, &p, Some(&ffn)));
