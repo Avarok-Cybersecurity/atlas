@@ -219,11 +219,30 @@ impl Glm5NextMlpKernels {
             // 🪤 `[modules]` in `common/KERNEL.toml`: `moe_permute = "moe"` and
             // `moe_w4a16_grouped_gemm = "moe_w4a16"`. Neither takes its file stem.
             moe_sort_by_expert: crate::layers::try_kernel(gpu, MOE_MODULE, "moe_sort_by_expert"),
-            moe_grouped_gemm: crate::layers::try_kernel(
-                gpu,
-                MOE_GROUPED_MODULE,
-                "moe_w4a16_grouped_gemm_ptrtable",
-            ),
+            // 🪤 The tile geometry is chosen by env BEFORE the handle is resolved, because
+            // the tile IS a different kernel entry point (and a different grid). A target
+            // whose PTX predates the tile variants resolves 0 here; rather than leave the
+            // grouped path unreachable, fall back to the base entry point and say so — the
+            // base is what every other model still launches.
+            moe_grouped_gemm: {
+                let tile = forward_prefill_gemm::gemm_tile();
+                let h = crate::layers::try_kernel(gpu, MOE_GROUPED_MODULE, tile.name);
+                if h.0 == 0 && tile.name != forward_prefill_gemm::GEMM_TILES[0].name {
+                    tracing::warn!(
+                        "GLM routed-MoE grouped GEMM tile `{}` is not in this target's PTX — \
+                         falling back to `{}`",
+                        tile.name,
+                        forward_prefill_gemm::GEMM_TILES[0].name
+                    );
+                    crate::layers::try_kernel(
+                        gpu,
+                        MOE_GROUPED_MODULE,
+                        forward_prefill_gemm::GEMM_TILES[0].name,
+                    )
+                } else {
+                    h
+                }
+            },
             combine_indexed: crate::layers::try_kernel(
                 gpu,
                 FFN_MODULE,

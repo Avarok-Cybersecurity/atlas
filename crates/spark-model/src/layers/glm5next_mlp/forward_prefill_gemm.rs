@@ -88,9 +88,166 @@ use super::forward::Glm5NextMlpWorkspace;
 use super::weights::Glm5NextMoeWeights;
 use super::{Glm5NextMlpConfig, Glm5NextMlpKernels};
 
-/// `M_TILE` of `moe_w4a16_grouped_gemm_ptrtable`. 🪤 COUPLED to `#define M_TILE 64` in
-/// `kernels/gb10/common/moe_w4a16_grouped_gemm.cu`; `max_m_tiles` is counted in these.
+/// `M_TILE` of the BASE `moe_w4a16_grouped_gemm_ptrtable`. 🪤 COUPLED to `#define M_TILE 64`
+/// in `kernels/gb10/common/moe_w4a16_grouped_gemm.cu`; `max_m_tiles` is counted in these.
+/// A tile variant carries its own — see [`GemmTile`].
+#[cfg(test)]
 pub(crate) const GROUPED_M_TILE: usize = 64;
+
+/// Which grouped-GEMM tile geometry the routed prefill launches,
+/// `AVAROK_GLM_MOE_GEMM_TILE=<name>`.
+///
+/// 🔴 MEASURED 2026-09-22 on n1 (one GB10), `examples/glm5next_moe_grouped_tile_bench.rs`,
+/// the REAL production shape (288 experts / 144 local under EP=2, `top_k = 8`, gate+up
+/// `N=2048 K=4096`, down `N=4096 K=2048`, 679.5 MB of expert weight per sweep, rows=256
+/// routing). Every row is BYTE-IDENTICAL to `base`; the harness asserts that rather than an
+/// error bar, because the production claim is `sha8 d44c9251` unchanged.
+///
+/// | tile | gate/up GB/s | down GB/s | % of 273 | vs base |
+/// |---|---:|---:|---:|---:|
+/// | `base` (M64 N64 K16) | 43.2 | 46.1 | 15.8 / 16.9 % | 1.00x |
+/// | `k32` (M64 N64 K32) | 57.6 | 59.8 | 21 % | ~1.3x |
+/// | `k64` (M64 N64 K64) | 58.4 | 63.1 | 21–23 % | ~1.37x |
+/// | `m16_k64` (M16 N64 K64) | 72.9 | 73.0 | 27 % | ~1.6x |
+/// | `alkm_m16_k128` (+arith LUT, k-major fetch) | 138.7 | 140.6 | 51 % | ~3.1x |
+/// | **`bt_m16_k128`** (+transposed staging) | **156.2** | **161.8** | **57–59 %** | **3.5x** |
+///
+/// 🔴 And the denominator that makes those percentages mean something: a PURE coalesced
+/// stream of exactly these bytes, no dequant and no mma, measures **237–240 GB/s (87 %)** on
+/// this part in this harness (`moe_w4a16_grouped_stream_probe`). So `bt_m16_k128` is at
+/// **66 % of what the memory system actually delivers here**, and the 273 GB/s datasheet
+/// figure is not the reachable bar.
+///
+/// 🪤 What the three winning changes were, in order of size — none of them the M tile the
+/// profile pointed at, which is why they were measured rather than argued:
+///  1. **The `__constant__` E2M1 table.** A constant-memory read broadcasts ONE address per
+///     replay; 32 lanes holding up to 16 distinct nibbles cost up to 16 replays per lookup,
+///     and there is one lookup per weight element (1.2e9 per launch). Replacing it with
+///     integer bit assembly is worth **1.7x on its own** (72.9 → 123.6 GB/s at M16 K64).
+///  2. **Transposed staged B tile** — 16 BF16 become two 16-byte shared stores instead of
+///     16 two-byte ones, and the mma's `b0`/`b1` become one aligned 32-bit read: **1.12x**.
+///  3. **`M_TILE` 64 → 16** with the four warps splitting N instead of M: **1.6x** at the
+///     base dequant, and it is the padding fix the profile predicted — but only the third
+///     largest of the three, and worth far less than the table.
+///
+/// 🪤 Staging MORE k stops paying once the shared-memory footprint costs a resident CTA:
+/// K256 is slower than K128 at every other setting, and at `M_TILE = 64` K128 loses to K64.
+/// This kernel is latency-bound, not bandwidth-bound, until the dequant cost is removed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GemmTile {
+    /// Kernel entry point in the `moe_w4a16` module.
+    pub name: &'static str,
+    /// 🪤 `max_m_tiles` and the worst-case bound are counted in THIS, not in 64. A kernel
+    /// launched with a grid height computed against the wrong tile silently drops every row
+    /// past the first tile of any expert.
+    pub m_tile: usize,
+    /// 🪤 grid.x is counted in THIS. Too small computes the left of the output twice and
+    /// never writes the right.
+    pub n_tile: u32,
+    /// Block threads = warps x 32.
+    pub threads: u32,
+}
+
+/// The tile this branch ships by default: measured 3.5x the base at rows=256,
+/// byte-identical. `AVAROK_GLM_MOE_GEMM_TILE=base` restores the prior behaviour exactly.
+pub(crate) const DEFAULT_GEMM_TILE: GemmTile = GemmTile {
+    name: "moe_w4a16_grouped_gemm_ptrtable_bt_m16_k128",
+    m_tile: 16,
+    n_tile: 64,
+    threads: 128,
+};
+
+/// Every tile the dispatch will accept. Kept small on purpose: these are the shapes the
+/// microbench actually measured on GLM's own geometry, not the full instantiation list.
+pub(crate) const GEMM_TILES: &[GemmTile] = &[
+    // 🪤 index 0 is the BASE tile and the fallback; `select_gemm_tile("base")` and the
+    // PTX-missing path both name it by position.
+    GemmTile {
+        name: "moe_w4a16_grouped_gemm_ptrtable",
+        m_tile: 64,
+        n_tile: 64,
+        threads: 128,
+    },
+    GemmTile {
+        name: "moe_w4a16_grouped_gemm_ptrtable_k32",
+        m_tile: 64,
+        n_tile: 64,
+        threads: 128,
+    },
+    GemmTile {
+        name: "moe_w4a16_grouped_gemm_ptrtable_k64",
+        m_tile: 64,
+        n_tile: 64,
+        threads: 128,
+    },
+    GemmTile {
+        name: "moe_w4a16_grouped_gemm_ptrtable_m16_k64",
+        m_tile: 16,
+        n_tile: 64,
+        threads: 128,
+    },
+    GemmTile {
+        name: "moe_w4a16_grouped_gemm_ptrtable_alkm_m16_k128",
+        m_tile: 16,
+        n_tile: 64,
+        threads: 128,
+    },
+    DEFAULT_GEMM_TILE,
+    GemmTile {
+        name: "moe_w4a16_grouped_gemm_ptrtable_bt_m16_n128_k128",
+        m_tile: 16,
+        n_tile: 128,
+        threads: 256,
+    },
+];
+
+/// Resolve `AVAROK_GLM_MOE_GEMM_TILE` to one of [`GEMM_TILES`]. The value is the kernel's
+/// suffix (`base`, `k32`, `k64`, `m16_k64`, `alkm_m16_k128`, `bt_m16_k128`,
+/// `bt_m16_n128_k128`) or the full kernel name.
+///
+/// 🪤 Unknown names FAIL LOUD at resolve time. A typo that silently fell back to the base
+/// tile would turn an A/B arm into a duplicate of its control and read as "no difference".
+pub(crate) fn select_gemm_tile(v: &str) -> Option<GemmTile> {
+    let v = v.trim();
+    if v.eq_ignore_ascii_case("base") || v.is_empty() {
+        return Some(GEMM_TILES[0]);
+    }
+    GEMM_TILES
+        .iter()
+        .copied()
+        .find(|t| t.name == v || t.name.strip_prefix("moe_w4a16_grouped_gemm_ptrtable_") == Some(v))
+}
+
+/// The tile in force for this process. Read once — this sits on the per-layer path.
+pub(crate) fn gemm_tile() -> GemmTile {
+    static T: std::sync::OnceLock<GemmTile> = std::sync::OnceLock::new();
+    *T.get_or_init(|| match std::env::var("AVAROK_GLM_MOE_GEMM_TILE") {
+        Ok(v) => match select_gemm_tile(&v) {
+            Some(t) => {
+                tracing::warn!(
+                    "GLM routed-MoE prefill grouped GEMM tile overridden to `{}` \
+                     (M_TILE {}, N_TILE {}, {} threads); default is `{}`",
+                    t.name,
+                    t.m_tile,
+                    t.n_tile,
+                    t.threads,
+                    DEFAULT_GEMM_TILE.name
+                );
+                t
+            }
+            None => {
+                tracing::error!(
+                    "AVAROK_GLM_MOE_GEMM_TILE=`{v}` is not a known tile — using the default \
+                     `{}`. Known: {:?}",
+                    DEFAULT_GEMM_TILE.name,
+                    GEMM_TILES.iter().map(|t| t.name).collect::<Vec<_>>()
+                );
+                DEFAULT_GEMM_TILE
+            }
+        },
+        Err(_) => DEFAULT_GEMM_TILE,
+    })
+}
 
 /// Route the routed-expert **prefill** through the grouped GEMM.
 /// `AVAROK_GLM_MOE_PREFILL_GEMM=0` restores the row-batched GEMV path exactly.
@@ -203,7 +360,7 @@ pub(crate) fn prefill_gemm_exact_tiles() -> bool {
 /// 🪤 Cannot truncate: the result is the max over the ACTUAL per-expert counts, and it is
 /// clamped to the worst case only as an upper bound. `layers::moe`'s prefill makes the same
 /// trade (`moe_prefill_exact_tiles`, default-on for NVFP4, measured -120.7 ms cold TTFT).
-pub(crate) fn max_m_tiles_from_offsets(offsets: &[i32], worst_case: u32) -> u32 {
+pub(crate) fn max_m_tiles_from_offsets(offsets: &[i32], worst_case: u32, m_tile: usize) -> u32 {
     let mut prev = 0i32;
     let mut max_rows = 0i32;
     for &cur in offsets.iter().skip(1) {
@@ -211,16 +368,17 @@ pub(crate) fn max_m_tiles_from_offsets(offsets: &[i32], worst_case: u32) -> u32 
         prev = cur;
     }
     (max_rows.max(0) as u32)
-        .div_ceil(GROUPED_M_TILE as u32)
+        .div_ceil(m_tile.max(1) as u32)
         .max(1)
         .min(worst_case.max(1))
 }
 
 /// `C[te, n_out] = gather(A)[te, k] @ dequant(expert weights)^T`, all experts, ONE launch.
 ///
-/// 🪤 grid.x is COUPLED to the kernel's `N_TILE = 64`; block is 128 threads (4 warps of
-/// `M_TILE/16`). Mirrors `ops::moe_w4a16_grouped_gemm_ptrtable`, which is `pub` but lives
-/// behind `MoeLayer`'s own dispatch — called directly here to keep GLM off that type.
+/// 🪤 grid.x, grid.y and the block width ALL come from `tile` — they are properties of the
+/// kernel entry point, not constants. Mirrors `ops::moe_w4a16_grouped_gemm_ptrtable`, which
+/// is `pub` but lives behind `MoeLayer`'s own dispatch — called directly here to keep GLM
+/// off that type.
 #[allow(clippy::too_many_arguments)]
 fn grouped_gemm(
     gpu: &dyn GpuBackend,
@@ -234,11 +392,16 @@ fn grouped_gemm(
     n_out: usize,
     kk: usize,
     max_m_tiles: u32,
+    tile: GemmTile,
     stream: u64,
 ) -> Result<()> {
     KernelLaunch::new(gpu, k)
-        .grid([(n_out as u32).div_ceil(64), max_m_tiles, num_experts as u32])
-        .block([128, 1, 1])
+        .grid([
+            (n_out as u32).div_ceil(tile.n_tile),
+            max_m_tiles,
+            num_experts as u32,
+        ])
+        .block([tile.threads, 1, 1])
         .arg_ptr(a)
         .arg_ptr(t.packed_ptrs)
         .arg_ptr(t.scale_ptrs)
@@ -307,7 +470,8 @@ pub(super) fn forward_moe_grouped_prefill(
     // 🪤 `copy_d2h_on_stream` drains the stream inside the call, so the host read below
     // happens-after the sort. It is a host stall, paid once per routed layer per prefill
     // sub-chunk — never on decode or verify, which never reach this path.
-    let worst_case = te.div_ceil(GROUPED_M_TILE).max(1) as u32;
+    let tile = gemm_tile();
+    let worst_case = te.div_ceil(tile.m_tile).max(1) as u32;
     let max_m_tiles = if prefill_gemm_exact_tiles() {
         let mut off_raw = vec![0u8; (cfg.num_experts + 1) * 4];
         gpu.copy_d2h_on_stream(ws.expert_offsets(), &mut off_raw, stream)?;
@@ -315,7 +479,7 @@ pub(super) fn forward_moe_grouped_prefill(
             .chunks_exact(4)
             .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
-        max_m_tiles_from_offsets(&offsets, worst_case)
+        max_m_tiles_from_offsets(&offsets, worst_case, tile.m_tile)
     } else {
         worst_case
     };
@@ -333,6 +497,7 @@ pub(super) fn forward_moe_grouped_prefill(
         mi,
         cfg.hidden,
         max_m_tiles,
+        tile,
         stream,
     )?;
     grouped_gemm(
@@ -347,6 +512,7 @@ pub(super) fn forward_moe_grouped_prefill(
         mi,
         cfg.hidden,
         max_m_tiles,
+        tile,
         stream,
     )?;
 
@@ -381,6 +547,7 @@ pub(super) fn forward_moe_grouped_prefill(
         cfg.hidden,
         mi,
         max_m_tiles,
+        tile,
         stream,
     )?;
     Ok(())

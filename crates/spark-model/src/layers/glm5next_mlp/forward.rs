@@ -655,9 +655,19 @@ fn announce_grouped_prefill(on: bool, rows: usize) {
         return;
     }
     if on {
+        // 🔴 The tile is part of the path, not a detail: two arms of a WS1/P3b A/B differ
+        // ONLY by this string, and an arm that silently fell back to the base tile would
+        // read as "no difference". Announce which kernel actually ran.
+        let t = super::forward_prefill_gemm::gemm_tile();
         tracing::info!(
             "GLM MoE prefill: grouped tensor-core W4A16 GEMM, {rows} rows in ONE launch \
-             per projection (AVAROK_GLM_MOE_PREFILL_GEMM=0 to restore the GEMV path)"
+             per projection, tile `{}` (M_TILE {}, N_TILE {}, {} threads) \
+             (AVAROK_GLM_MOE_PREFILL_GEMM=0 to restore the GEMV path; \
+             AVAROK_GLM_MOE_GEMM_TILE=base for the prior tile)",
+            t.name,
+            t.m_tile,
+            t.n_tile,
+            t.threads
         );
     } else {
         tracing::info!(

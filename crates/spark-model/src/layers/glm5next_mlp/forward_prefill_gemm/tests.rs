@@ -108,24 +108,24 @@ fn sort_contract_holds_at_glm_shapes() {
 fn max_m_tiles_covers_the_busiest_expert_and_never_exceeds_the_worst_case() {
     // 288 experts, 2048 slots, perfectly balanced at 7.1 → one 64-row tile.
     let balanced: Vec<i32> = (0..=288i32).map(|e| e * 2048 / 288).collect();
-    assert_eq!(max_m_tiles_from_offsets(&balanced, 32), 1);
+    assert_eq!(max_m_tiles_from_offsets(&balanced, 32, GROUPED_M_TILE), 1);
 
     // One expert takes everything: ceil(2048/64) = 32 tiles, exactly the worst case.
     let mut skewed = vec![0i32; 289];
     for o in skewed.iter_mut().skip(1) {
         *o = 2048;
     }
-    assert_eq!(max_m_tiles_from_offsets(&skewed, 32), 32);
+    assert_eq!(max_m_tiles_from_offsets(&skewed, 32, GROUPED_M_TILE), 32);
 
     // 65 rows on one expert needs TWO tiles — the off-by-one that would drop row 64.
     let mut sixty_five = vec![0i32; 289];
     for (e, o) in sixty_five.iter_mut().enumerate() {
         *o = if e == 0 { 0 } else { 65 };
     }
-    assert_eq!(max_m_tiles_from_offsets(&sixty_five, 32), 2);
+    assert_eq!(max_m_tiles_from_offsets(&sixty_five, 32, GROUPED_M_TILE), 2);
 
     // Empty routing still launches one tile — every CTA early-exits on M_expert <= 0.
-    assert_eq!(max_m_tiles_from_offsets(&[0i32; 289], 1), 1);
+    assert_eq!(max_m_tiles_from_offsets(&[0i32; 289], 1, GROUPED_M_TILE), 1);
 }
 
 /// Cross-check against the live routing shape: whatever the router picks, the bound
@@ -137,7 +137,7 @@ fn max_m_tiles_is_never_short_for_a_real_routing() {
         let ids = routing(rows, topk, ne, seed);
         let (_, _, offsets, _) = sort_ref(&ids, ne, topk);
         let worst = (rows * topk).div_ceil(GROUPED_M_TILE) as u32;
-        let tiles = max_m_tiles_from_offsets(&offsets, worst);
+        let tiles = max_m_tiles_from_offsets(&offsets, worst, GROUPED_M_TILE);
         let busiest = (0..ne)
             .map(|e| offsets[e + 1] - offsets[e])
             .max()
@@ -152,4 +152,70 @@ fn max_m_tiles_is_never_short_for_a_real_routing() {
             "seed {seed}: {tiles} exceeds worst case {worst}"
         );
     }
+}
+
+/// The tile table is the dispatch's only source of grid geometry, so a wrong row is a
+/// silently-wrong answer on the device. Pin every field against the kernel file.
+#[test]
+fn every_gemm_tile_matches_its_kernel_geometry() {
+    for t in GEMM_TILES {
+        assert!(
+            t.name.starts_with("moe_w4a16_grouped_gemm_ptrtable"),
+            "{} is not an entry point of moe_w4a16_grouped_gemm.cu",
+            t.name
+        );
+        // SPLIT_N kernels are the `m16` family; everything else keeps the 64-row tile.
+        let expect_m16 = t.name.contains("m16");
+        assert_eq!(
+            t.m_tile,
+            if expect_m16 { 16 } else { 64 },
+            "{}: m_tile must equal the kernel's M_TILE or rows are dropped",
+            t.name
+        );
+        // An N_TILE of 128 is built with eight warps; 64 with four.
+        let expect_n128 = t.name.contains("n128");
+        assert_eq!(
+            t.n_tile,
+            if expect_n128 { 128 } else { 64 },
+            "{}: n_tile must equal the kernel's NTILE or the output is half-written",
+            t.name
+        );
+        assert_eq!(
+            t.threads,
+            if expect_n128 { 256 } else { 128 },
+            "{}: block width must equal WARPS*32 or the cooperative load is short",
+            t.name
+        );
+    }
+}
+
+/// 🪤 A typo in the env must not silently become the control arm.
+#[test]
+fn tile_selection_is_exact_and_rejects_unknown_names() {
+    assert_eq!(select_gemm_tile("base").unwrap().name, GEMM_TILES[0].name);
+    assert_eq!(select_gemm_tile("").unwrap().name, GEMM_TILES[0].name);
+    assert_eq!(
+        select_gemm_tile("bt_m16_k128").unwrap().name,
+        DEFAULT_GEMM_TILE.name
+    );
+    assert_eq!(
+        select_gemm_tile(DEFAULT_GEMM_TILE.name).unwrap().name,
+        DEFAULT_GEMM_TILE.name
+    );
+    assert!(select_gemm_tile("bt_m16_k129").is_none());
+    assert!(select_gemm_tile("m16").is_none());
+}
+
+/// The default tile's grid height is counted in 16s, so the bound must grow where the
+/// 64-row one would not. This is the exact off-by-one that would drop rows 16..63 of an
+/// expert if the dispatch kept using `GROUPED_M_TILE`.
+#[test]
+fn m16_tile_needs_more_rows_of_grid_than_the_base_tile() {
+    let mut off = vec![0i32; 289];
+    for (e, o) in off.iter_mut().enumerate() {
+        *o = if e == 0 { 0 } else { 40 };
+    }
+    assert_eq!(max_m_tiles_from_offsets(&off, 128, 64), 1);
+    assert_eq!(max_m_tiles_from_offsets(&off, 128, 16), 3);
+    assert_eq!(DEFAULT_GEMM_TILE.m_tile, 16);
 }
