@@ -104,6 +104,10 @@ pub struct GateRecord {
     /// what it hit, and anything the verdict or log makes noteworthy.
     pub summary: String,
     /// The scheduler performance controls this run actually resolved.
+    /// Records before G22 (2026-09-23) also carry `AVAROK_PREFILL_CODISPATCH`
+    /// here, which is WRONG for any serve given `--prefill-codispatch`: the
+    /// flag never reached the environment this read. Newer records disclose
+    /// the flag in `serve_resolved` (`record_serve::PREFILL_CODISPATCH`).
     ///
     /// `--pull-request-gate` starts the server as a task INSIDE this process
     /// (`bench_selfstart::serve_for`), so the scheduler reads these from the

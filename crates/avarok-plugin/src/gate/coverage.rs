@@ -214,7 +214,7 @@ const GATE_MACHINERY_FILES: &[&str] = &[
     // too) changes what history survives, never what a run scores.
     "crates/avarok-plugin/src/gate/record_write.rs",
     // `record_serve.rs` names what a record DISCLOSES about its serve
-    // (`mtp_gate`, `speculative`). `check_record` never reads the field —
+    // (`mtp_gate`, `speculative`, `prefill_codispatch`). `check_record` never reads the field —
     // `serve_resolved_never_reaches_check_record` pins that — so no edit here
     // can move a verdict.
     "crates/avarok-plugin/src/gate/record_serve.rs",

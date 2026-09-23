@@ -196,12 +196,6 @@ fn an_unset_control_is_recorded_as_the_default_the_scheduler_would_apply() {
     let resolved = resolve_perf_env(|_| None);
     assert_eq!(
         resolved
-            .get("AVAROK_PREFILL_CODISPATCH")
-            .map(String::as_str),
-        Some("0")
-    );
-    assert_eq!(
-        resolved
             .get("AVAROK_PREFILL_CODISPATCH_WINDOW_MS")
             .map(String::as_str),
         Some("100")
@@ -220,15 +214,15 @@ fn a_set_control_wins_and_an_empty_one_does_not() {
     // this"; the scheduler's own parse falls back to the default for it, so
     // recording the empty string would misreport the run.
     let resolved = resolve_perf_env(|k| match k {
-        "AVAROK_PREFILL_CODISPATCH" => Some("1".into()),
+        "AVAROK_PREFILL_CODISPATCH_SETTLE_MS" => Some("25".into()),
         "AVAROK_PREFILL_CODISPATCH_WINDOW_MS" => Some("   ".into()),
         _ => None,
     });
     assert_eq!(
         resolved
-            .get("AVAROK_PREFILL_CODISPATCH")
+            .get("AVAROK_PREFILL_CODISPATCH_SETTLE_MS")
             .map(String::as_str),
-        Some("1")
+        Some("25")
     );
     assert_eq!(
         resolved
@@ -271,10 +265,14 @@ fn perf_env_defaults_match_the_scheduler() {
     // SSOT rather than being deleted. `AVAROK_PREFILL_CODISPATCH` became the
     // `--prefill-codispatch` flag, so mod_helpers.rs no longer reads the
     // variable at all — it asks `prefill_codispatch_enabled()`, which resolves
-    // the flag first and falls back to the variable. The CONTRACT is unchanged
-    // and is what matters here: the record's "0" default is correct only while
-    // an UNSET variable still means off. Asserting that where it is now decided
-    // is the point; asserting it in mod_helpers.rs would now pass on prose.
+    // the flag first and falls back to the variable. ★ G22 (2026-09-23): the
+    // record no longer discloses the enable from `perf_env` at all — a flag
+    // never reaches the environment, so the table default "0" contradicted
+    // every `--prefill-codispatch true` serve. It is disclosed from the
+    // rendered flag in `serve_resolved`, ABSENT when the flag was absent, and
+    // that absence reads "off" only while an UNSET variable still means off
+    // (a declared legacy variable is in `serve_env`). Asserting that where it
+    // is now decided is the point; in mod_helpers.rs it would pass on prose.
     let ssot = repo_root().join("crates/spark-model/src/layers/ops/dispatch_helpers.rs");
     let ssot_src =
         std::fs::read_to_string(&ssot).unwrap_or_else(|e| panic!("{}: {e}", ssot.display()));
@@ -289,14 +287,15 @@ fn perf_env_defaults_match_the_scheduler() {
     );
     assert!(
         body.contains("bool_value_enabled"),
-        "the truthiness rule changed; the record's \"0\" default assumes unset means off: {body}"
+        "the truthiness rule changed; an absent disclosure assumes unset means off: {body}"
     );
-    // And the rule itself, executed rather than read: unset MUST be off.
+    // G22 regression pin: the enable must never be re-resolved from the
+    // environment into `perf_env`, where its table default would contradict
+    // the flag the serve actually ran.
     assert!(
-        crate::gate::record::resolve_perf_env(|_| None)
-            .get("AVAROK_PREFILL_CODISPATCH")
-            .is_none_or(|v| v != "1"),
-        "an unset codispatch must resolve to off"
+        !crate::gate::record::resolve_perf_env(|_| None).contains_key("AVAROK_PREFILL_CODISPATCH"),
+        "perf_env re-discloses the codispatch enable from the environment; the flag is \
+         disclosed in serve_resolved (record_serve::PREFILL_CODISPATCH)"
     );
     // The scheduler must no longer read the variable behind the SSOT's back —
     // two readers of one lever is what made this lever hard to reason about.
