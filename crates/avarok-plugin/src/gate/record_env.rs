@@ -46,12 +46,19 @@ use super::record::GateRecord;
 /// `unset` (the path ran), any set value disclosed verbatim.
 /// `tc_mtp_switch_default_matches_the_lever` pins that rule against
 /// `layers/ops/dense_gemv_tc.rs`.
-const PERF_CONTROLS: [(&str, &str); 5] = [
+///
+/// `AVAROK_NO_BORROW_STREAK_LIMIT` is the same kind of PRESENCE kill switch,
+/// for the steady-state CUDA-graph borrow guard (a batch that keeps
+/// borrowing a wider graph captures its own after 8 steps): default `unset`
+/// (the guard ran). `borrow_streak_switch_default_matches_the_lever` pins it
+/// against `model/trait_impl/borrow_streak.rs`.
+const PERF_CONTROLS: [(&str, &str); 6] = [
     ("AVAROK_PREFILL_CODISPATCH_WINDOW_MS", "100"),
     ("AVAROK_PREFILL_CODISPATCH_SETTLE_MS", "10"),
     ("AVAROK_NO_W4A16_TC", "unset"),
     ("AVAROK_W4A16_TC_WIDE", "unset"),
     ("AVAROK_NO_MTP_TC", "unset"),
+    ("AVAROK_NO_BORROW_STREAK_LIMIT", "unset"),
 ];
 
 /// Resolve the `PERF_CONTROLS` table through `lookup`, substituting each

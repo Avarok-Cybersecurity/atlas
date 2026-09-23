@@ -216,6 +216,11 @@ fn an_unset_control_is_recorded_as_the_default_the_scheduler_would_apply() {
         resolved.get("AVAROK_NO_MTP_TC").map(String::as_str),
         Some("unset")
     );
+    // The steady-state graph-borrow guard: unset means the guard ran.
+    assert_eq!(
+        resolved.get("AVAROK_NO_BORROW_STREAK_LIMIT").map(String::as_str),
+        Some("unset")
+    );
 }
 
 #[test]

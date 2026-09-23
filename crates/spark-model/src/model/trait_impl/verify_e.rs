@@ -314,9 +314,12 @@ impl TransformerModel {
                 // arrays and logits cap by construction — but that bound
                 // guards the `unsafe` upload lengths below, so it is
                 // re-checked as a hard borrow veto, never assumed.
+                // A key that keeps borrowing is a SETTLED width, not a drain:
+                // decline and capture it (`borrow_streak.rs`).
                 if let Some(b) = borrowed
                     && r_total + b.ghosts.iter().map(|&(_, k)| k as usize).sum::<usize>()
                         <= super::verify_e2::VERIFY_ROW_CAP
+                    && super::borrow_streak::VERIFY_BORROW_STREAK.allow(key)
                 {
                     let e =
                         g.0.get_mut(&b.key)
