@@ -289,6 +289,11 @@ mod tests;
 #[path = "record_contract_tests.rs"]
 mod record_contract_tests;
 
+/// The per-rung J/token ceilings as the gate judge applies them.
+#[cfg(test)]
+#[path = "energy_ceiling_tests.rs"]
+mod energy_ceiling_tests;
+
 #[cfg(test)]
 #[path = "variant_tests.rs"]
 mod variant_tests;

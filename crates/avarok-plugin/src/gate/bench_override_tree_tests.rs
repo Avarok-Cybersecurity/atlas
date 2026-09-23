@@ -305,3 +305,65 @@ fn the_moe_concurrency_entry_is_the_published_instrument_with_its_bootstrap_floo
         "the head dtype is the nvfp4head recipe's own precision choice, not a gate pin"
     );
 }
+
+/// ★ The dense ladder carries a J/token CEILING on every one of its eight
+/// rungs (owner requirement 2026-09-23), on the key the producer writes
+/// (`hardware::energy`: `c{C}_` + `gpu_rail_joules_per_token`). Values pinned
+/// so a re-cut edits this test — the derivation (max over dgx2/dgx3 x 1.10,
+/// rounded up to 2 s.f.) is in the BENCH.toml block above the first ceiling.
+/// `max` only, no noise: the 10% guard is already in each bar, and a `min`
+/// on the same key would make `apply_threshold_params` ambiguous.
+#[test]
+fn the_dense_concurrency_entry_carries_a_joule_ceiling_on_every_rung() {
+    use crate::gate::record::Bound;
+    use std::collections::BTreeMap;
+    let root = repo_root();
+    let all = load_all(&root).expect("tree loads");
+    let dense: Vec<_> = all
+        .iter()
+        .filter(|(target, entry)| {
+            target.hardware == "gb10"
+                && target.model == "qwen3.8-27b"
+                && entry.gate == "concurrency-sweep"
+                && entry.default
+        })
+        .collect();
+    assert_eq!(dense.len(), 1, "one default subject on the dense ladder");
+    let metrics = dense[0]
+        .1
+        .metrics
+        .as_ref()
+        .expect("the dense ladder is bounded");
+    let ceilings: BTreeMap<&str, &Bound> = metrics
+        .iter()
+        .filter(|(k, _)| k.ends_with("_gpu_rail_joules_per_token"))
+        .map(|(k, b)| (k.as_str(), b))
+        .collect();
+    let want = [
+        (1, 1.7),
+        (2, 1.0),
+        (4, 0.62),
+        (8, 0.44),
+        (16, 0.30),
+        (32, 0.23),
+        (64, 0.19),
+        (128, 0.16),
+    ];
+    assert_eq!(ceilings.len(), want.len(), "{:?}", ceilings.keys());
+    for (c, max) in want {
+        let key = format!("c{c}_gpu_rail_joules_per_token");
+        let b = ceilings
+            .get(key.as_str())
+            .unwrap_or_else(|| panic!("{key} missing"));
+        assert_eq!((b.min, b.max, b.noise), (None, Some(max), None), "{key}");
+    }
+    // Every ceiling sits on a rung the entry also floors, so no ceiling can
+    // name a rung the pinned ladder does not measure.
+    for k in ceilings.keys() {
+        let rung = k.trim_end_matches("_gpu_rail_joules_per_token");
+        assert!(
+            metrics.contains_key(&format!("{rung}_aggregate_tok_s")),
+            "{k} has no matching tok/s floor"
+        );
+    }
+}

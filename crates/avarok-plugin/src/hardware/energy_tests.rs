@@ -197,13 +197,47 @@ fn every_energy_key_names_the_rail_and_the_sample_count_rides_beside_the_joules(
     w.metrics("", 915, None, &mut bare);
     assert!(!bare.contains_key("gpu_rail_energy_above_idle_j"));
     assert_eq!(bare["gpu_rail_energy_j"], 1800.0);
-    // Joules and tokens are stored; no key stores their ratio.
+    // Joules and tokens are stored, and J/token is the ONE ratio beside them
+    // (the key a BENCH.toml ceiling bounds): the pair's own quotient, no other.
+    assert!((m["c8_gpu_rail_joules_per_token"] - 1800.0 / 2560.0).abs() < 1e-12);
+    assert!((bare["gpu_rail_joules_per_token"] - 1800.0 / 915.0).abs() < 1e-12);
     assert!(
         m.keys()
             .chain(bare.keys())
-            .all(|k| !k.contains("per_token") && !k.contains("_per_") && !k.contains("tok_j")),
+            .all(|k| k.ends_with("joules_per_token")
+                || (!k.contains("per_token") && !k.contains("_per_") && !k.contains("tok_j"))),
         "{m:?} {bare:?}"
     );
+}
+
+/// The ceiling-bound ratio is ABSENT whenever it is undefined or meaningless:
+/// a ceiling compares `value <= max`, so 0.0 would pass it and NaN/inf must
+/// never reach a record. Absent makes the gate say "missing from the record".
+#[test]
+fn joules_per_token_is_absent_not_zero_inf_or_nan_when_unmeasurable() {
+    use super::joules_per_token;
+    assert_eq!(joules_per_token(1800.0, 2560), Some(1800.0 / 2560.0));
+    assert_eq!(joules_per_token(1800.0, 0), None, "no tokens: undefined");
+    assert_eq!(joules_per_token(0.0, 2560), None, "0 J measured nothing");
+    assert_eq!(joules_per_token(-1.0, 2560), None);
+    assert_eq!(joules_per_token(f64::NAN, 2560), None);
+    assert_eq!(joules_per_token(f64::INFINITY, 2560), None);
+
+    let w = EnergyWindow {
+        window_s: 30.0,
+        samples: 120,
+        energy_j: 1800.0,
+        mean_power_w: 60.0,
+        ..Default::default()
+    };
+    let mut m = BTreeMap::new();
+    w.metrics("c128_", 0, None, &mut m);
+    assert!(!m.contains_key("c128_gpu_rail_joules_per_token"), "{m:?}");
+    assert_eq!(
+        m["c128_gpu_rail_energy_window_tokens"], 0.0,
+        "the pair is still recorded, so the absence is explainable"
+    );
+    assert!(m.values().all(|v| v.is_finite()), "{m:?}");
 }
 
 #[test]

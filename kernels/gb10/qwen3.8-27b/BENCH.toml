@@ -1301,6 +1301,85 @@ min = 650.0
 # vacuous cells, and this pins the same fact at the record level.
 max = 0.0
 
+# --- J/token CEILINGS, one per rung (owner requirement 2026-09-23) ---------
+# `c{C}_gpu_rail_joules_per_token` = the cell's GPU-rail joules / the output
+# tokens it delivered inside the same window (hardware/energy.rs
+# `joules_per_token`; the pair `c{C}_gpu_rail_energy_j` and
+# `c{C}_gpu_rail_energy_window_tokens` rides beside it). A ceiling, so `max`.
+#
+# ★ ENERGY IS THE GPU RAIL ONLY. nvidia-smi `power.draw.average` sampled at
+# 250 ms and integrated over the batch window; the NVML total-energy counter
+# validates that integration within 0.2% on Atlas. The module rail (Grace +
+# LPDDR5X) reads N/A on GB10 and is NOT in these numbers.
+#
+# ★ ABSENT IS A FAILURE, NOT A SKIP. The key is written only when the window
+# delivered >0 tokens and measured a finite positive joule count; otherwise it
+# is absent, and `gate::scoring::check_record` reports "<key>: missing from the
+# record" for a declared metric with no value. A run whose energy was not
+# sampled cannot pass these bounds. (The sweep's own self-verdict judges only
+# the tok/s floors; the ceilings are enforced by the gate judge.)
+#
+# DERIVATION. Sources: the two gate records on THIS instrument (128/1024 essay,
+# ctx 2048, batch 128, fp8 KV, prefill_codispatch + w4a4_downcast):
+#   dgx2 (spark-43fa) 2026-09-23-4aa424dc9b.json at 4aa424dc9, driver 580.126.09
+#   dgx3 (spark-28c2) 2026-09-23-2731f279a9.json at 2731f279a, driver 580.159.03
+# The campaign may schedule this gate on either box, so the bar is
+#   ceiling = max(dgx2, dgx3) x 1.10, rounded UP to 2 significant figures.
+# dgx2 reads 6-13% above dgx3 at the same rung (C1 1.06x, C4 1.13x, C128
+# 1.08x) at identical token counts: a hotter box, not a different workload.
+#   rung   dgx2    dgx3    max x1.10  ceiling  vLLM v0.27.1 (dgx2, context)
+#   C1    1.5318  1.4463  1.6850     1.7      1.902
+#   C2    0.9032  0.8038  0.9935     1.0      1.072
+#   C4    0.5588  0.4928  0.6147     0.62     0.612
+#   C8    0.3933  0.3499  0.4327     0.44     0.373
+#   C16   0.2678  0.2400  0.2946     0.30     0.251
+#   C32   0.2050  0.1896  0.2255     0.23     0.208
+#   C64   0.1640  0.1518  0.1804     0.19     0.175
+#   C128  0.1410  0.1312  0.1551     0.16     0.174
+# The vLLM column is the same-box reference, NOT the bar: the ceilings sit
+# under it at C1/C2/C128 and above it at C4..C64 — a regression guard for
+# Atlas's own energy, not a claim to beat vLLM at every rung.
+#
+# ★ HISTORY READ BEFORE CUTTING. Earlier records on this gate are NOT this
+# regime: f314604ac / 6c75c09da (same instrument, WITHOUT w4a4_downcast) read
+# C1 3.44-3.46, C2 2.07-2.12, C4 0.69-0.70 J/tok (C1 draws ~78 W vs ~37 W
+# with downcast); the 512/320 natural instrument (<= 1ec0a0e9d) reads 3.4 at C1
+# and 0.48 at C128. Dropping w4a4_downcast would therefore FAIL C1..C8 here,
+# which is intended. n=2 on this regime (one per box) — re-cut when more
+# records land, and only after reading them.
+
+[benchmarks.metrics.c1_gpu_rail_joules_per_token]
+# dgx2 1.5318, dgx3 1.4463; 1.5318 x 1.10 = 1.6850 -> 1.7. vLLM 1.902.
+max = 1.7
+
+[benchmarks.metrics.c2_gpu_rail_joules_per_token]
+# dgx2 0.9032, dgx3 0.8038; 0.9032 x 1.10 = 0.9935 -> 1.0. vLLM 1.072.
+max = 1.0
+
+[benchmarks.metrics.c4_gpu_rail_joules_per_token]
+# dgx2 0.5588, dgx3 0.4928; 0.5588 x 1.10 = 0.6147 -> 0.62. vLLM 0.612.
+max = 0.62
+
+[benchmarks.metrics.c8_gpu_rail_joules_per_token]
+# dgx2 0.3933, dgx3 0.3499; 0.3933 x 1.10 = 0.4327 -> 0.44. vLLM 0.373.
+max = 0.44
+
+[benchmarks.metrics.c16_gpu_rail_joules_per_token]
+# dgx2 0.2678, dgx3 0.2400; 0.2678 x 1.10 = 0.2946 -> 0.30. vLLM 0.251.
+max = 0.30
+
+[benchmarks.metrics.c32_gpu_rail_joules_per_token]
+# dgx2 0.2050, dgx3 0.1896; 0.2050 x 1.10 = 0.2255 -> 0.23. vLLM 0.208.
+max = 0.23
+
+[benchmarks.metrics.c64_gpu_rail_joules_per_token]
+# dgx2 0.1640, dgx3 0.1518; 0.1640 x 1.10 = 0.1804 -> 0.19. vLLM 0.175.
+max = 0.19
+
+[benchmarks.metrics.c128_gpu_rail_joules_per_token]
+# dgx2 0.1410, dgx3 0.1312; 0.1410 x 1.10 = 0.1551 -> 0.16. vLLM 0.174.
+max = 0.16
+
 # --- concurrency-sweep-dflash2 ---------------------------------------------
 # The same ladder with the DFlash2 drafter armed, REQUIRED since 2026-08-29.
 #

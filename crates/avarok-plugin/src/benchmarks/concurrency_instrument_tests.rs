@@ -185,6 +185,12 @@ fn metrics_map_carries_both_itl_clocks_jitter_and_energy_per_rung() {
     assert_eq!(m.get("c4_gpu_rail_energy_j"), Some(&720.0));
     assert_eq!(m.get("c4_gpu_rail_power_samples"), Some(&48.0));
     assert_eq!(m.get("c4_gpu_rail_energy_window_tokens"), Some(&512.0));
+    // The per-rung J/token a BENCH.toml ceiling bounds: this cell's joules
+    // over this cell's delivered tokens, under the same c{C}_ prefix.
+    assert_eq!(
+        m.get("c4_gpu_rail_joules_per_token"),
+        Some(&(720.0 / 512.0))
+    );
     assert_eq!(m.get("c4_gpu_rail_sw_power_cap_frac"), Some(&1.0));
     // No idle baseline was taken → no above-idle key, never a zero.
     assert!(!m.contains_key("c4_gpu_rail_energy_above_idle_j"));
