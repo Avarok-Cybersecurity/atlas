@@ -27,6 +27,8 @@ use crate::traits::{Model, SequenceState};
 mod batch;
 mod batch_kernel;
 #[cfg(test)]
+mod batch_kernel_restorable_tests;
+#[cfg(test)]
 mod batch_kernel_tests;
 mod batched_layer;
 mod embed_chunk;

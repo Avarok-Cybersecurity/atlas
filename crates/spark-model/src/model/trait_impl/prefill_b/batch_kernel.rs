@@ -44,7 +44,7 @@ mod eligible;
 use eligible::first_chunk_batched_enabled;
 pub(in crate::model) use eligible::{
     batched_reserve_hybrid_ssm_ok, cache_batch_matches_compatible, check_kernel_batched_eligible,
-    config_is_mla, varlen_prefill_enabled,
+    config_is_mla, hybrid_match_is_restorable, varlen_prefill_enabled,
 };
 
 use crate::layer::{

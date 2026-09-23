@@ -56,6 +56,40 @@ impl TransformerModel {
             ));
         }
 
+        // Hybrid-SSM models: a warm match whose snapshot the per-stream path
+        // provably would not restore buys nothing there (it recomputes every
+        // token), so release it and admit that stream as cold. Only matches
+        // that could actually restore are left to veto the wave below.
+        let hybrid_ssm = self.config.num_ssm_layers() != 0;
+        if hybrid_ssm {
+            let min_tokens = crate::model::mtp_carry::marconi_min_tokens();
+            let mut demoted = 0usize;
+            for (slice, m) in streams.iter().zip(matches.iter_mut()) {
+                if m.matched_tokens > 0
+                    && !super::batch_kernel::hybrid_match_is_restorable(m, min_tokens)
+                {
+                    self.prefix_cache.release_matched(
+                        slice.prompt_tokens,
+                        block_size,
+                        m.matched_tokens,
+                        slice.seq.adapter_id,
+                    );
+                    *m = PrefixMatch::empty();
+                    demoted += 1;
+                }
+            }
+            if demoted > 0 {
+                tracing::info!(
+                    target: "avarok::q12",
+                    demoted,
+                    n = streams.len(),
+                    min_tokens,
+                    "batched prefix reservation: warm matches with no restorable SSM \
+                     snapshot admitted as cold"
+                );
+            }
+        }
+
         // Hybrid-SSM models: a WARM prefix match implies a KV/Marconi skip
         // whose recurrent-state interplay this transactional admission does
         // not handle (the v1 rule). But a model-level blanket veto rejected
@@ -67,10 +101,7 @@ impl TransformerModel {
         // same state as the cache-inactive admission above, which has always
         // admitted hybrid models. Warm hybrid batches keep falling back to
         // the per-stream path, whose restore logic is established.
-        if !super::batch_kernel::batched_reserve_hybrid_ssm_ok(
-            &matches,
-            self.config.num_ssm_layers() != 0,
-        ) {
+        if !super::batch_kernel::batched_reserve_hybrid_ssm_ok(&matches, hybrid_ssm) {
             tracing::info!(
                 target: "avarok::q12",
                 "batched prefix reservation declined: hybrid-SSM model with a \

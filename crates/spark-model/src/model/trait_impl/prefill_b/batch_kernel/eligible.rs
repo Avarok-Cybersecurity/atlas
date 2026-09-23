@@ -146,6 +146,26 @@ pub(in crate::model) fn batched_reserve_hybrid_ssm_ok(
     !hybrid_ssm || matches.iter().all(|m| m.matched_tokens == 0)
 }
 
+/// Could the per-stream path RESTORE this hybrid-SSM match's snapshot?
+///
+/// `snap_agree::local_proposal` proposes a restore only when the snapshot
+/// depth is non-zero and `>= min_tokens` (`marconi_min_tokens()`), and the
+/// depth it sees is `ssm_snapshot_tokens` or, for a spilled anchor,
+/// `ssm_snapshot_tier_tokens`. Taking the larger of the two over-states
+/// restorability, so `false` is a proof: the per-stream path would log
+/// "Prefix cache hit ... but no SSM snapshot — recomputing all KV", report
+/// zero reused tokens, and prefill every token exactly as a cold stream does.
+///
+/// Such a match is therefore admitted to the batched path AS COLD instead of
+/// vetoing the whole wave. Without this, a burst of prompts that were served
+/// once before (the concurrency sweep's warm-up primes the exact measured
+/// prompts: 192 of 200 tokens match, snapshot depth 200 < 256) fell back to
+/// one forward per stream, while the identical cold burst was fused.
+pub(in crate::model) fn hybrid_match_is_restorable(m: &PrefixMatch, min_tokens: usize) -> bool {
+    let depth = m.ssm_snapshot_tokens.max(m.ssm_snapshot_tier_tokens);
+    depth != 0 && depth >= min_tokens
+}
+
 impl TransformerModel {
     /// DIAG: detect cross-stream physical-block sharing (co-dispatch KV
     /// double-issue hypothesis for the n>=5 decode-bleed bug). Gated behind
