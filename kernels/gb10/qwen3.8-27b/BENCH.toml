@@ -428,7 +428,7 @@ max = 3.0
 quant = "nvfp4"
 checkpoint = "unsloth/Qwen3.8-27B-NVFP4"
 gate = "concurrency-sweep"
-recipe = "qwen3.8/qwen3.8-27b-nvfp4-unsloth"
+recipe = "qwen3.8/qwen3.8-27b-nvfp4-throughput"
 label = "Qwen3.8-27B dense (NVFP4, unsloth)"
 default = true
 status = "measured"
@@ -436,6 +436,57 @@ note = """\
 BOX RULE (2026-09-13): Speed-class; spread across nodes only under \
 hardware::equivalence::SPEED_SPREAD, else bundled — see the decode-floor \
 note and docs/provable-benchmark-work.md §5c. \
+★ INSTRUMENT RE-POINTED 2026-09-21 TO THE PUBLISHED LADDER'S, owner's call. \
+This gate now measures ISL 128 / OSL 1024, ctx 2048, batch 128, fp8 KV, \
+ESSAY fixture — the instrument bench/ladder38 measured for the published \
+Atlas-vs-vLLM ladder, axis for axis. It previously measured ISL 512 / OSL \
+320, ctx 4096, natural fixture. site/src/lib/ladder-baselines.js exists \
+because those two instruments were being read as one engine (~478 vs ~116 \
+tok/s on the same checkpoint, same day); the fix asked for is not a chart \
+change but this one — the site's top chart must show the LIVE Atlas against \
+the measured vLLM bar, and that requires the live gate record to fingerprint \
+as the published instrument on every REQUIRED axis (isl, osl, prompt_mode, \
+max_model_len, max_batch_size, kv_cache_dtype). \
+★ RE-CUT 2026-09-23: the nine rung floors and min_completion_tokens now carry \
+bars cut from the first gate record on this instrument plus the same-instrument \
+ladder38 history on all three boxes -- see the derivation block directly \
+above [benchmarks.metrics.c1_aggregate_tok_s]. The paragraph that follows is \
+the 2026-09-21 state, kept so the sequence stays legible. \
+★ EVERY RUNG FLOOR IS THEREFORE OFF (min = 0.0), NOT LOWERED. The committed \
+floors were cut at the retired instrument and sit 1.15x to 4.3x below what \
+this one produces — published Atlas on it reads C1 23.59, C2 41.02, C4 \
+74.21, C8 125.95, C16 203.36, C32 291.01, C64 386.63, C128 478.11 — so \
+leaving them in place would report a guard that cannot fail anywhere above \
+C=2 while risking a false FAIL at C=1, where 20.5 sits 13% under. `RUNGS` in \
+concurrency.rs names 0.0 as the record-without-gating state and that is \
+exactly what it is for: measure, then declare. The sweep is NOT unguarded \
+meanwhile — vacuous_cells = 0 and min_completion_tokens keep their bars, and \
+a sweep with any request error never passes, whatever the floors say. Re-cut \
+all nine together from >=3 records on THIS instrument under the speed-bound \
+policy and its guard, in a follow-up PR. \
+★ THIS RE-POINT INVALIDATES EVERY CONCURRENCY-SWEEP RECORD COMMITTED BEFORE \
+IT, because check_record demands an exact serve-pin and param match. That is \
+correct; they measured a different instrument. \
+★ NOTHING IS STILL UNPINNED, as of 2026-09-22: this entry's `recipe =` \
+line now names qwen3.8/qwen3.8-27b-nvfp4-throughput, and that recipe IS the \
+published leg's CLI frozen as a file -- verified key for key against \
+published.json `series[0].cli`, including the two the gate had been getting \
+wrong by inheritance (--ssm-cache-slots 8, and NO --lm-head-dtype, i.e. the \
+native NVFP4 head). serve_overrides therefore drops from seventeen pins to \
+three, and the three that remain are there for the site fingerprint, not for \
+the serve -- see the block below. Three of the four env-only levers it \
+also carried cannot be pinned here (no ServeArgs flag exists for FP8_ROWWISE, \
+MTP_DCUT_RATIO or MTP_K_LADDER; PREFILL_CODISPATCH became --prefill-codispatch \
+on 2026-09-22 and IS pinned below) and are set in each node's bench.yaml env: map, which is the only \
+input the agent's env_clear() passes through -- and which is NODE-WIDE, so \
+arming them re-tunes every other gate on that node too: campaign 8 attempt 7 \
+failed ttft-warm-gate at +5.4%% median with AVAROK_PREFILL_CODISPATCH=1, \
+against three control records at 0 that agree to 0.045%%. \
+Speculation IS shared — the recipe pins --speculative --mtp-quantization \
+bf16 with num_drafts 3, the same drafter and K the published leg ran — so \
+the live leg is not a weakened Atlas against a speculating vLLM. The \
+remainder is the engine under test, which is the point of a live series: \
+the WORKLOAD is pinned here, the configuration is whatever main ships. \
 ★ READ FIRST — EVERY LADDER FIGURE IN THIS NOTE IS SUPERSEDED HISTORY, NOT \
 THE BOUNDS IN FORCE. The floors this entry enforces were re-cut 2026-08-30 \
 from the WIDENED instrument (C=1..128 at bs=128, concurrent warm-up); their \
@@ -467,10 +518,12 @@ serial reproduction config (batch 1, bf16 KV, 256 Marconi slots, 32K \
 context) that strangles a concurrency instrument: the first certified run \
 served it verbatim and measured C=1..16 all ~19 tok/s with TTFT stacking \
 linearly, and its serve sized only ~0.6-1.1 GB of KV — nowhere near 16 \
-concurrent ~832-token sequences. The gate therefore pins its own serve \
-profile in [benchmarks.serve_overrides] below (each key justified inline), \
-disclosed on every record per the serve_overrides contract; lm_head_dtype \
-stays the recipe's bf16 correctness pin. \
+concurrent ~832-token sequences. That reasoning stands, but its REMEDY was replaced on 2026-09-22: rather than \
+override the agentic recipe key by key, the entry now points at the \
+throughput recipe, which is the published leg's own profile. The \
+lm_head_dtype sentence that stood here -- "stays the recipe's bf16 \
+correctness pin" -- was wrong and is retracted; see the serve_overrides \
+block. \
 ★ THOSE FIVE FLOORS ARE GONE — RE-CUT 2026-08-30; this paragraph is kept so \
 the sequence stays legible, and it described the file's state for weeks after \
 it stopped being true. The five placeholders were 24/43/63/94/94, cut from \
@@ -496,78 +549,91 @@ output."""
 # with no OVERRIDES disclosure line — keep every sub-table BELOW the header
 # it belongs to. bench_tests pins where each committed serve pin sits.
 [benchmarks.serve_overrides]
-# The gate's serve profile. Every key is a `defaults:` key of the
-# qwen3.8/qwen3.8-27b-nvfp4-unsloth recipe, overridden because that recipe
-# is the serial agentic reproduction config (see the note). Applied by gate
-# self-start, recorded on the run record, and demanded there by
-# check_record.
+# ★ SEVENTEEN PINS -> THREE, 2026-09-22, owner's call: "the gate serves the
+# throughput recipe ... match the throughput recipe". The `recipe =` line above
+# now names qwen3.8/qwen3.8-27b-nvfp4-throughput, and that file is not a
+# similar profile -- it is the published ladder's CLI frozen, verified key for
+# key against bench/ladder38/published.json `series[0].cli`. So the fourteen
+# pins removed here were re-stating the recipe's own defaults back at it:
+#   max_batch_size 128, kv_cache_dtype fp8, max_model_len 2048, mtp_gate force,
+#   num_drafts 3, mtp_quantization bf16, speculative true, scheduling_policy
+#   fifo, ssm_checkpoint_interval 32, ssm_h_dtype f16-pool, gdn_fused_norm
+#   true, ssm_batched_recurrent true, prefill_varlen_batch true,
+#   ssm_tail_midchunk false, disable_thinking true, request_timeout 0.
+# Each was compared to the recipe's value before removal. The f16-pool /
+# gdn_fused_norm boot requirement (serve_phases/preflight/ssm_h_fp16.rs bails
+# without the pair) is still satisfied -- by the recipe, which sets both -- and
+# the pair still must not be split.
 #
-# The recipe pins max_batch_size: 1 (its own memory doctrine). A concurrency
-# instrument measured at batch 1 is serial by construction — the 2026-08-15
-# first certified run proved it (C=1..16 all ~19 tok/s, TTFT stacking
-# linearly). 0.85 util + batch 32 verified to boot and serve on 2026-08-15
-# (the calibration ladders ran on it).
-# ⚠ 32 -> 128 on 2026-08-29, with the ladder. A batch cap below the widest
-# rung makes that rung serial by construction, which is the same defect the
-# recipe's batch 1 had at C=16 — the cap must cover the widest measured C or
-# the top of the curve measures the cap, not the engine. Because check_record
-# demands an exact serve-pin match, this INVALIDATES every concurrency-sweep
-# record committed before it; that is correct, they measured a different
-# instrument.
+# ★ WHAT WAS ACTUALLY WRONG. The gate had been serving
+# qwen3.8/qwen3.8-27b-nvfp4-unsloth -- the AGENTIC profile -- and overriding it
+# back toward the published leg one key at a time. Two of that recipe's
+# defaults were never in the override list and so were inherited in silence:
+# `lm_head_dtype: bf16` and `kv_high_precision_layers: auto`. The bf16 head is
+# the expensive one. kernels/gb10/HARDWARE.toml sets lm_head_batchm_max = 8, so
+# above M=8 lm_head_batched.rs abandons the batched GEMV and falls to
+# dense_gemm_bf16.cu: 16x16 tiles, one thread per output element, a scalar
+# accumulate over K=5120 into N=248320. That is ~3.25e11 FLOP per decode step
+# at M=128 -- paid once per step, i.e. a PER-SEQUENCE cost that grows with the
+# rung. It is exactly the shape of the measured deficit (0.91x at C=1
+# degrading to 0.51x at C=32); a flat regression cannot make that curve.
+#
+# A/B on this box, one sha, one harness, C=8/32/128 (scripts/ab_sweep.sh, a
+# SHORT-OSL RANKING RIG at osl 256 -- these are ratios, not ladder figures;
+# this gate's own osl is 1024 and the published bar is quoted there):
+#
+#     C=8     74.5 -> 104.9 tok/s  (+41%)   TPOT  94.8 -> 68.6 ms
+#     C=32   136.8 -> 198.9 tok/s  (+45%)   TPOT 206.2 -> 134.5 ms
+#     C=128  198.6 -> 303.6 tok/s  (+53%)   TPOT 550.9 -> 327.2 ms
+#
+# The gain growing with width is the per-sequence signature, as predicted, and
+# the treatment leg's serve log carries `LM head quantized to NVFP4` while the
+# control's does not -- the lever is proved armed, not assumed.
+#
+# ★ THE THREE BELOW ARE NOT REDUNDANT, THOUGH THEY DO RESTATE RECIPE DEFAULTS.
+# site/src/lib/ladder-baselines.js builds a record's fingerprint from `params`
+# + `serve_overrides` and NOTHING ELSE (line 88; it never reads
+# serve_resolved), and all three are REQUIRED_AXES. Dropped from this table
+# they would read null, null counts as a difference on a required axis, and the
+# live series would stop being comparable to published.json -- the precise
+# defect the 2026-09-21 re-point existed to fix. The other three required axes
+# (isl, osl, prompt_mode) come from [benchmarks.param_overrides] below.
 max_batch_size = "128"
-# The recipe's bf16 KV is its <=32K single-stream reproduction pin. This
-# model's own MODEL.toml carries default_kv_dtype = "fp8" (a property of the
-# shared FP8-KV kernel set), and the serve itself WARNs that bf16 is the
-# risky override for this model; fp8 halves KV bytes, which this profile
-# spends on concurrent sequences.
 kv_cache_dtype = "fp8"
-# The recipe's 256 slots built a measured 38.7 GB Marconi snapshot pool
-# (2026-08-16 gate serve log) — geometry for 1000-sample serial prefix
-# reuse, useless to a 16-way ladder and the single largest KV thief. Each
-# slot holds one full per-seq SSM blob (48 GDN layers × 3,309,568 B =
-# 151.5 MiB), so 32 slots reserve 4.73 GiB and 8 reserve 1.18 GiB.
-# Concurrency serving does not replay long shared prefixes — the ladder's
-# requests are independent ~832-token sequences — so 8 slots retain the
-# warm-prefix value at 1/4 the reserve, returning the other 3.55 GiB to
-# the KV budget on top of the ~34 GB the 256→32 cut already returned.
-# ⚠ The committed record above was measured with 32 slots; this pin change
-# means that record no longer covers, pending the planned re-record (the
-# floors already carry the "AWAIT RE-CUT" caveat in the note).
-#
-# 2026-09-13: 8 → 32. The sweep WARMS every cell and its warm rule demands a
-# material cached fraction, but a warm request costs 3 snapshot slots across
-# a cell (its tail checkpoint, its finish leaf, and one stale finish leaf an
-# earlier cell left for the same prompt; the redundant exact leaf is no
-# longer saved) and a re-home takes a fresh slot before releasing the old,
-# so a pool holds warm cells only while `slots > 3·C`. With 8 that was C ≤ 2
-# — measured: conc 2 warm TTFT 152 ms, conc 4 896 ms with every request
-# recomputing — and the rule was failing cells it could never hold once the
-# accounting became honest (#1041). 32 slots (4.73 GiB, the ladder's original
-# reserve) hold C ≤ 10: the 1/2/4/8 rungs warm; C ≥ 16 measure cold BY
-# CONSTRUCTION and the sweep says so per cell instead of applying the warm
-# rule (`warm_cache_capable`). The C ≥ 16 floors were cut with no reuse
-# (server TTFT ~900 ms at every rung above 1) so nothing they measure
-# changes; C=2..8 gain their warm TTFT back.
-#
-# 2026-09-14, the count corrected: `3·C` was one leaf per earlier cell, and
-# at C ≥ 8 the warm-up and measured generations drift apart by a token, so
-# an earlier cell leaves TWO stale leaves per prompt it ran. The pool's
-# eviction is session-first, so the overflow takes a whole prompt's tail.
-# Measured twice on this 32-slot pin, same node: C=8 after 1/2/4 lost two,
-# then three, of its eight tails (warm rule INCONCLUSIVE) while C=2/4 held
-# at 97 % cached. The rule is now `slots > Σ(2 + 2·earlier cells the prompt
-# ran in) + C` (`concurrency::slots_needed`): with 32, C=1/2/4 warm (3, 8,
-# 18 needed) and C=8 (38) upward measure cold by construction. C=8's floor
-# was cut cold on the 8-slot pin, so nothing it measures changes; C=2/4
-# keep their warm TTFT (506 / 656 ms, 2026-09-14).
-ssm_cache_slots = "32"
-# The gate's sequences are isl 512 + osl 320 (<900 tokens with template);
-# 4096 leaves >4x headroom while shrinking the per-sequence KV commitment
-# and the max_model_len-sized inference reserve — multiplying available KV
-# blocks roughly 8x vs the recipe's 32768.
-max_model_len = "4096"
-# lm_head_dtype is deliberately NOT overridden: the recipe's bf16 head is a
-# correctness pin (exact argmax over the 248K vocab), not a throughput knob.
+max_model_len = "2048"
+# ★ THE FOURTH PIN IS A SERVE PIN, NOT A FINGERPRINT PIN, and it is the one
+# lever the published leg carried that the recipe cannot: AVAROK_PREFILL_CODISPATCH
+# was env-only and node-wide, so it could not be given to this gate without also
+# giving it to ttft-warm-gate (+4.78% warm TTFT, 107x the control spread, over a
+# +3.0% limit). --prefill-codispatch makes it per-gate. The dense proof that beats
+# vLLM at every rung (proof/MANIFEST.json, 2026-09-22) was measured WITH it; a
+# certification without it measures a different, slower engine than the site
+# claims. Requires the flag to exist in the tree being certified.
+prefill_codispatch = "true"
+# ★ ssm_cache_slots IS DELIBERATELY ABSENT: 32 -> the recipe's 8, which is also
+# `--ssm-cache-slots 8` on the published CLI, so this table's last disagreement
+# with that leg is gone. The measured case for 32 above was real but
+# INSTRUMENT-SPECIFIC, and its instrument was retired on 2026-09-21: the
+# slots_needed calibration was taken on isl 512 / natural-fixture ~832-token
+# prompts, where a Marconi snapshot restore is eligible at all. This gate now
+# sends isl 128, which renders to ~200 tokens -- under
+# DEFAULT_MARCONI_MIN_TOKENS = 256 (mtp_carry.rs) -- so every restore is
+# DECLINED by design and the pool size barely moves warm behaviour. 8 slots
+# reserve 1.18 GiB against 32's 4.73 GiB, returning ~3.55 GiB to the KV budget,
+# which is where the widest rungs need it.
+# Consequence, stated rather than discovered: at 8 slots only C=1 is
+# `warm_cache_capable` (slots_needed is 3/8/18/38 at C=1/2/4/8 and the rule is
+# a strict `>`), so C>=2 measures cold BY CONSTRUCTION. That does not fail
+# anything -- cache_is_uncontrolled is evaluated per cell and only when
+# warm_capable (concurrency.rs:747), so those cells skip the warm rule rather
+# than trip it.
+# ★ lm_head_dtype IS ALSO ABSENT, and that is the whole point: the throughput
+# recipe leaves it unset, so the head runs the checkpoint's native NVFP4. The
+# comment that stood here called the agentic recipe's bf16 head "a correctness
+# pin (exact argmax over the 248K vocab), not a throughput knob". Both halves
+# were wrong: nothing ever measured an argmax difference, the published 478.11
+# ladder itself ran with no --lm-head-dtype flag, and the "not a throughput
+# knob" claim was off by 41-53%.
 
 [benchmarks.param_overrides]
 # The gate's instrument — see the block comment above. Values are parsed by
@@ -577,8 +643,27 @@ max_model_len = "4096"
 # claim ungated. C=2 is in because it is the thinnest margin on that ladder
 # and the one most easily lost silently.
 concurrencies = "1,2,4,8,16,32,64,128"
-isls = "512"
-osl = "320"
+# ★ 512/320 natural -> 128/1024 essay on 2026-09-21. These three lines ARE
+# the re-point; everything else in this entry follows from them.
+#   isls        128    the published ladder's ISL (~200 rendered tokens)
+#   osl        1024    its output budget
+#   prompt_mode essay  `Fixture::Essay` in concurrency.rs, whose ESSAY_TASK is
+#                      SUFFIX_ESSAY from bench/ladder38/harness_w55_conc_ladder.py
+#                      BYTE FOR BYTE (nonce width 6, presence_penalty and
+#                      frequency_penalty pinned to 0.0 on this fixture only),
+#                      SHA-256-pinned against the Python harness by
+#                      concurrency_verdict_tests.
+# ★ WHY THE FIXTURE HAD TO CHANGE WITH THE BUDGET, and why this is still only
+# a parameter change: the natural (MinHeap code) fixture's deterministic
+# completion is ~296 tokens, so at osl 1024 every cell would be vacuous by
+# construction — occupancy 0.29 against a 0.8 floor — and the gate would be
+# INCONCLUSIVE forever. The essay fixture is the published instrument's own
+# request and elicits the full budget. It already exists in the driver, so no
+# kernel or stats path moves and this entry costs no campaign of its own;
+# BENCH.toml is in NON_COMPILED_KERNEL_FILES.
+isls = "128"
+osl = "1024"
+prompt_mode = "essay"
 
 # ── Floors re-cut 2026-08-30 from 3 fresh reps of the WIDENED instrument
 # (C=1..128, bs=128, concurrent warm-up), mean - max(3*sigma, ~5%) per rung,
@@ -638,15 +723,82 @@ osl = "320"
 # a judgement. `noise` is untouched on every rung, as the 2026-09-11 ratchet
 # left it, so the ratchet is visible in `min` and not hidden in the allowance.
 
+# ── RE-CUT 2026-09-23, THE FIRST CUT ON THE 128/1024 ESSAY INSTRUMENT. Policy
+# as on 2026-09-20 (owner): a FLOOR is the latest measured value x 0.975
+# rounded DOWN to a clean step (0.5 below 100, 10 from 100 to 1000, 50 above),
+# "latest" being ONE named committed record:
+# .benchmarks/concurrency-sweep/2026-09-23-6c75c09da4.json (spark-28c2 = dgx3,
+# 2026-09-23 00:28 UTC, PASS, the only gate record on this instrument), which
+# reads
+#
+#     C1 22.78  C2 41.47  C4 73.58  C8 125.46  C16 199.82
+#     C32 285.74  C64 385.89  C128 478.91  peak 478.91 (at C=128)
+#
+# ★ ONE GATE RECORD IS NOT A REGIME. recut_floors.py exits 3 on this directory
+# ("fewer than three records on this instrument"), and its pure policy bars
+# (22.0 / 40.0 / 71.5 / 120 / 190 / 270 / 370 / 460) would fail a healthy dgx1
+# run at C=2, C=4, C=8 and C=128 outright: the 2026-09-22 dgx1 proof reps read
+# 39.02 / 69.05 / 119.84 / 459.32. So the GUARD is applied against the whole
+# same-instrument history instead. The regime is every clean run of the
+# published build or later, on the ladder38 harness this gate's ESSAY fixture
+# reproduces byte for byte (the gate takes ONE timed rep per cell, so the
+# harness's per-rep values -- not its 3-rep means -- are the right noise
+# model): bench/ladder38 rounds 10 and 11 (dgx2, 2026-08-17; round 11 is the
+# published series), the 2026-08-18 C=2/C=8 hardening runs (dgx2), the
+# 2026-08-20 stack-tip sweeps on dgx1 (idle), dgx2 and dgx3 plus the dgx1
+# C=64/C=128 cross-box run, the 2026-09-22 dense proof on dgx1 (x2), dgx2 and
+# dgx3 (proof/MANIFEST.json, tree 8435a65348), and the gate record. n per rung
+# is 13-31 reps across three boxes. EXCLUDED, with the reason written down:
+# sweep_atlas_stacktip_dgx1_20260820.json, which RESULTS.md (the "dgx1
+# CONTENDED | dgx1 IDLE" table) records as measured minutes after the box had
+# served another session, and which was re-run idle for exactly that reason.
+# Rounds 4-9 are pre-K-ladder and read a different engine (C8 82-111), so they
+# are outside the regime the way pre-#968 records were outside the 09-20 one.
+#
+# ★ THE GUARD, read strictly because the regime is harness reps rather than
+# gate records: the written bar must clear EVERY regime rep by at least the
+# policy's own 2.5%, i.e. floor <= regime-min x 0.975 rounded down. Where the
+# policy bar meets that, it is written; where it does not (it is within 2.5%
+# of, or above, the slowest box's slowest rep), the regime-minimum basis is
+# written instead. Every regime minimum is a dgx1 rep except C=1, where the
+# gate record itself is the minimum.
+#
+#     rung  latest  policy  regime min (rep, box)               n   written  basis
+#     C1    22.78   22.0    22.78 (gate 6c75c09da4, dgx3)       19  22.0     policy
+#     C2    41.47   40.0    39.02 (proof 09-22, dgx1)           22  38.0     regime min (policy fails outright)
+#     C4    73.58   71.5    69.05 (proof 09-22 resample, dgx1)  28  67.0     regime min (policy fails outright)
+#     C8    125.46  120     119.84 (proof 09-22, dgx1)          31  110      regime min (policy fails outright)
+#     C16   199.82  190     192.22 (stack tip idle 08-20, dgx1) 28  180      regime min (policy clears by 1.2% only)
+#     C32   285.74  270     274.68 (stack tip idle 08-20, dgx1) 28  260      regime min (policy clears by 1.7% only)
+#     C64   385.89  370     375.08 (cross-box 08-20, dgx1)      13  360      regime min (policy clears by 1.4% only)
+#     C128  478.91  460     459.32 (cross-box 08-20, dgx1)      13  440      regime min (policy fails outright)
+#     peak  478.91  460     459.32 (same run; peak is C=128)    13  440      = C128, see the peak block
+#
+# The written bars sit 3.5% (C1) to 8.2% (C8, the 10-step rounding) under the
+# slowest clean rep ever measured on this instrument, and 3.4% (C1) to 12.3%
+# (C8) under the gate record. They are BELOW the published vLLM+MTP bars at
+# C=4/8/16/32 (71.61 / 124.48 / 197.03 / 283.48) by construction: Atlas's
+# margin there is 1-3% and a floor at the bar would fail a healthy run one
+# time in several -- the gate guards Atlas against ITSELF; the site's chart is
+# where the vLLM comparison is read. `noise` stays 0.0 on every rung so the
+# bar is the number written. RE-CUT under the pure policy (latest x 0.975,
+# guard over committed PASS records) once >= 3 gate records exist here; the
+# thin-margin rungs (C16/C32/C64) are the ones that will tighten first.
+
 [benchmarks.metrics.c1_aggregate_tok_s]
+# ★ RE-CUT 2026-09-23, 11.5 -> 22.0, on the 128/1024 essay instrument (derivation
+# block above the C1 table): latest 22.78 x 0.975 = 22.21 -> 22.0 (policy). Regime min is the gate
+# record itself (22.78; dgx1 22.90 on the 2026-09-22 proof, dgx2 23.19 on
+# round 10; n=19), 22.0 clears it by 3.5%.
+#
 # ★ RATCHETED 2026-09-20, 20.4 -> 20.5 (effective 20.1 -> 20.2 after the
-# unchanged noise 0.3): the floor of 20.5 is the policy floor on the
+# unchanged `noise` of 0.3): 20.5 was the policy floor on the
 # 2026-09-20-43a3c9b202 value 21.21 (x 0.975 = 20.68, rounded down). Guard:
 # regime min 20.95 (2026-09-13-93f380f24b, dgx1; n=22, sigma 0.11), 0.75
 # above the effective bar. The smallest ratchet in this re-cut, because the
 # 2026-09-11 one below already sat at the mean minus 5%.
 #
-# ★ RATCHETED 2026-09-11, 17.5 -> 20.4 (effective 20.1 after noise 0.3). This
+# ★ RATCHETED 2026-09-11, 17.5 -> 20.4 (effective 20.1 after the 0.3 allowance). This
 # rung is cut ALONE, which the block above says the ladder is not — "every rung
 # cut together". The exception is deliberate and the reason is that only this
 # rung's instrument moved:
@@ -687,10 +839,40 @@ osl = "320"
 #   C32/C64/C128  all clear their formula bars by ~4.5%, but each has only
 #        n=11 committed history and none stepped. ~2.5 tok/s of tightening is
 #        not worth spending that thin a record on; re-cut them with the ladder.
-min = 20.5
-noise = 0.3
+#
+# ★ PROVISIONAL, 2026-09-21. THE BAR ABOVE WAS CUT AT THE RETIRED 512/320
+# NATURAL INSTRUMENT AND IS NOT A BOUND ON THIS ONE — it sat 1.15x (C=1) to
+# 4.3x (C=128) under what this instrument produces, so carrying it would have
+# reported a guard that cannot fail while risking a false FAIL at C=1.
+#
+# ★ AND IT COULD NOT SIMPLY BE SWITCHED OFF. `RUNGS` says a rung with no
+# metrics block keeps the 0.0 default and gates nothing, which is true of ONE
+# rung beside bounded ones — but `Floors::gating()` in concurrency_verdict.rs
+# is `peak > 0 || any per_c > 0`, so ALL floors at zero flips the whole run to
+# the INFO verdict, and `GateRecord::verdict_passes` accepts only "PASS"
+# (gate/check.rs:382). Zeroing the ladder would have made this gate
+# unsatisfiable: every campaign record INFO, the gate red forever. CI caught
+# it; it is written here so the next person does not rediscover it.
+#
+# BASIS: the published ladder measured Atlas at 23.59 tok/s at C=1 on THIS
+# instrument (bench/ladder38, 2026-08-17/18, this checkpoint, this box class).
+# The floor is that x 0.5, rounded down to a clean step -> 11.5. The 2x margin
+# is not timidity, it is the honest price of the one thing that differs: that
+# leg ran an August build with its own CLI (fifo, 8 ssm slots, f16-pool,
+# --mtp-gate force), and this gate serves main's recipe. A bar 2x under
+# catches a collapse and cannot be reached by any drift or by noise.
+# (The 2026-09-21 basis above is superseded by the 2026-09-23 re-cut at the
+# top of this block.)
+min = 22.0
+noise = 0.0
 
 [benchmarks.metrics.c2_aggregate_tok_s]
+# ★ RE-CUT 2026-09-23, 20.5 -> 38.0, on the 128/1024 essay instrument (derivation
+# block above the C1 table): latest 41.47 x 0.975 = 40.43 -> 40.0 fails the guard outright: dgx1 read
+# 39.02 on the 2026-09-22 proof (n=22, range 39.02-41.69; dgx3 40.57-41.47).
+# Written on the regime-minimum basis, 39.02 x 0.975 = 38.04 -> 38.0. Under
+# the vLLM+MTP bar of 37.11 by 0.9 -- a real C=2 loss still reads on the site.
+#
 # ★ NOT RATCHETED 2026-09-20, deliberately. The policy floor on the latest
 # value (31.66 -> 30.5, effective 29.55) fails the guard outright: three of
 # the fourteen 32-slot-pin records read 26.74 / 27.40 / 27.43
@@ -700,14 +882,45 @@ noise = 0.3
 # fails one healthy run in four. The regime-minimum basis (26.74 x 0.975 =
 # 26.0, effective 25.05) is not written either: 26.0 was already proposed
 # once from a biased set, and the 25.5 run in the C1 block's survey would
-# clear that bar by 0.45, which is not a margin. The floor of 25.0 stays in
+# clear that bar by 0.45, which is not a margin. 25.0 stayed in
 # the gap between modes.
-min = 25.0
-noise = 0.95
+#
+# ★ PROVISIONAL, 2026-09-21. THE BAR ABOVE WAS CUT AT THE RETIRED 512/320
+# NATURAL INSTRUMENT AND IS NOT A BOUND ON THIS ONE — it sat 1.15x (C=1) to
+# 4.3x (C=128) under what this instrument produces, so carrying it would have
+# reported a guard that cannot fail while risking a false FAIL at C=1.
+#
+# ★ AND IT COULD NOT SIMPLY BE SWITCHED OFF. `RUNGS` says a rung with no
+# metrics block keeps the 0.0 default and gates nothing, which is true of ONE
+# rung beside bounded ones — but `Floors::gating()` in concurrency_verdict.rs
+# is `peak > 0 || any per_c > 0`, so ALL floors at zero flips the whole run to
+# the INFO verdict, and `GateRecord::verdict_passes` accepts only "PASS"
+# (gate/check.rs:382). Zeroing the ladder would have made this gate
+# unsatisfiable: every campaign record INFO, the gate red forever. CI caught
+# it; it is written here so the next person does not rediscover it.
+#
+# BASIS: the published ladder measured Atlas at 41.02 tok/s at C=2 on THIS
+# instrument (bench/ladder38, 2026-08-17/18, this checkpoint, this box class).
+# The floor is that x 0.5, rounded down to a clean step -> 20.5. The 2x margin
+# is not timidity, it is the honest price of the one thing that differs: that
+# leg ran an August build with its own CLI (fifo, 8 ssm slots, f16-pool,
+# --mtp-gate force), and this gate serves main's recipe. A bar 2x under
+# catches a collapse and cannot be reached by any drift or by noise.
+# (The 2026-09-21 basis above is superseded by the 2026-09-23 re-cut at the
+# top of this block.)
+min = 38.0
+noise = 0.0
 
 [benchmarks.metrics.c4_aggregate_tok_s]
+# ★ RE-CUT 2026-09-23, 37.0 -> 67.0, on the 128/1024 essay instrument (derivation
+# block above the C1 table): latest 73.58 x 0.975 = 71.74 -> 71.5 fails the guard outright: dgx1 read
+# 69.05 on the 2026-09-22 resample (n=28, range 69.05-75.77; dgx1 alone
+# 69.05-72.22). Regime-minimum basis, 69.05 x 0.975 = 67.32 -> 67.0. Sits
+# 4.6 under the vLLM+MTP bar (71.61): Atlas wins C=4 by 1.03x and a floor at
+# the bar would fail a healthy dgx1 run.
+#
 # ★ RATCHETED 2026-09-20, 37.5 -> 43.5 (effective 35.7 -> 41.7 after the
-# unchanged noise 1.8), on the REGIME-MINIMUM basis, not the policy one. The
+# unchanged `noise` of 1.8), on the REGIME-MINIMUM basis, not the policy one. The
 # policy floor on 2026-09-20-43a3c9b202 (53.17 -> 51.5, effective 49.7) fails
 # the guard: the 32-slot-pin records alone read 47.04-53.84 (n=14, sigma 2.27,
 # two modes near 47.5 and 53), and dgx1 — no record on this pin yet — read
@@ -716,69 +929,251 @@ noise = 0.95
 # committed runs since 2026-09-08, on every box, by at least 2.9. Re-cut
 # toward the policy once dgx1 has recorded on the 32-slot pin and the two
 # modes are understood (avarok#812 is still the open question at this rung).
-min = 43.5
-noise = 1.8
+#
+# ★ PROVISIONAL, 2026-09-21. THE BAR ABOVE WAS CUT AT THE RETIRED 512/320
+# NATURAL INSTRUMENT AND IS NOT A BOUND ON THIS ONE — it sat 1.15x (C=1) to
+# 4.3x (C=128) under what this instrument produces, so carrying it would have
+# reported a guard that cannot fail while risking a false FAIL at C=1.
+#
+# ★ AND IT COULD NOT SIMPLY BE SWITCHED OFF. `RUNGS` says a rung with no
+# metrics block keeps the 0.0 default and gates nothing, which is true of ONE
+# rung beside bounded ones — but `Floors::gating()` in concurrency_verdict.rs
+# is `peak > 0 || any per_c > 0`, so ALL floors at zero flips the whole run to
+# the INFO verdict, and `GateRecord::verdict_passes` accepts only "PASS"
+# (gate/check.rs:382). Zeroing the ladder would have made this gate
+# unsatisfiable: every campaign record INFO, the gate red forever. CI caught
+# it; it is written here so the next person does not rediscover it.
+#
+# BASIS: the published ladder measured Atlas at 74.21 tok/s at C=4 on THIS
+# instrument (bench/ladder38, 2026-08-17/18, this checkpoint, this box class).
+# The floor is that x 0.5, rounded down to a clean step -> 37.0. The 2x margin
+# is not timidity, it is the honest price of the one thing that differs: that
+# leg ran an August build with its own CLI (fifo, 8 ssm slots, f16-pool,
+# --mtp-gate force), and this gate serves main's recipe. A bar 2x under
+# catches a collapse and cannot be reached by any drift or by noise.
+# (The 2026-09-21 basis above is superseded by the 2026-09-23 re-cut at the
+# top of this block.)
+min = 67.0
+noise = 0.0
 
 [benchmarks.metrics.c8_aggregate_tok_s]
+# ★ RE-CUT 2026-09-23, 62.5 -> 110, on the 128/1024 essay instrument (derivation
+# block above the C1 table): latest 125.46 x 0.975 = 122.32 -> 120 fails the guard outright: dgx1 read
+# 119.84 on the 2026-09-22 proof (n=31, range 119.84-127.85). Regime-
+# minimum basis, 119.84 x 0.975 = 116.84 -> 110 (the 10-step above 100, which
+# is why this lands 8.2% under the minimum rather than 2.5%).
+#
 # ★ RATCHETED 2026-09-20, 48.0 -> 57.0 (effective 45.7 -> 54.7 after the
-# unchanged noise 2.3), on the REGIME-MINIMUM basis. The policy floor on
+# unchanged `noise` of 2.3), on the REGIME-MINIMUM basis. The policy floor on
 # 2026-09-20-43a3c9b202 (64.73 -> 63.0, effective 60.7) clears the fourteen
 # 32-slot-pin records (62.40-70.08) but fails the guard on dgx1: its four
 # 8-slot-pin runs read 58.83 / 61.4 / 60.6 / 59.4 (2026-09-11-da446c920b is
 # the 58.83) against 62.9-63.0 on dgx2 on the same days — a ~3 tok/s box gap
 # at this rung, an order of magnitude above the policy's margin. dgx2/dgx3
 # rose ~3 when the pin moved, so dgx1 may have too; "may" is not a record.
-# The floor of 57.0 is 58.83 x 0.975 rounded down; it clears every committed
+# 57.0 was 58.83 x 0.975 rounded down; it cleared every committed
 # run since 2026-09-08 by at least 4.1. Re-cut toward the policy once dgx1
 # has recorded on the 32-slot pin.
-min = 57.0
-noise = 2.3
+#
+# ★ PROVISIONAL, 2026-09-21. THE BAR ABOVE WAS CUT AT THE RETIRED 512/320
+# NATURAL INSTRUMENT AND IS NOT A BOUND ON THIS ONE — it sat 1.15x (C=1) to
+# 4.3x (C=128) under what this instrument produces, so carrying it would have
+# reported a guard that cannot fail while risking a false FAIL at C=1.
+#
+# ★ AND IT COULD NOT SIMPLY BE SWITCHED OFF. `RUNGS` says a rung with no
+# metrics block keeps the 0.0 default and gates nothing, which is true of ONE
+# rung beside bounded ones — but `Floors::gating()` in concurrency_verdict.rs
+# is `peak > 0 || any per_c > 0`, so ALL floors at zero flips the whole run to
+# the INFO verdict, and `GateRecord::verdict_passes` accepts only "PASS"
+# (gate/check.rs:382). Zeroing the ladder would have made this gate
+# unsatisfiable: every campaign record INFO, the gate red forever. CI caught
+# it; it is written here so the next person does not rediscover it.
+#
+# BASIS: the published ladder measured Atlas at 125.95 tok/s at C=8 on THIS
+# instrument (bench/ladder38, 2026-08-17/18, this checkpoint, this box class).
+# The floor is that x 0.5, rounded down to a clean step -> 62.5. The 2x margin
+# is not timidity, it is the honest price of the one thing that differs: that
+# leg ran an August build with its own CLI (fifo, 8 ssm slots, f16-pool,
+# --mtp-gate force), and this gate serves main's recipe. A bar 2x under
+# catches a collapse and cannot be reached by any drift or by noise.
+# (The 2026-09-21 basis above is superseded by the 2026-09-23 re-cut at the
+# top of this block.)
+min = 110
+noise = 0.0
 
 [benchmarks.metrics.c16_aggregate_tok_s]
+# ★ RE-CUT 2026-09-23, 100 -> 180, on the 128/1024 essay instrument (derivation
+# block above the C1 table): latest 199.82 x 0.975 = 194.82 -> 190 clears the regime min of 192.22
+# (dgx1 idle stack tip, 2026-08-20; n=28, dgx1 192.22-198.03) by 1.2% only,
+# under the policy's own margin, and the CONTENDED dgx1 run of the same hour
+# read 181.41 -- so the regime-minimum basis is written: 192.22 x 0.975 =
+# 187.41 -> 180.
+#
 # ★ RATCHETED 2026-09-20, 84.0 -> 86.0 (effective 82.55 -> 84.55 after the
-# unchanged noise 1.45), on the REGIME-MINIMUM basis. The policy floor on
+# unchanged `noise` of 1.45), on the REGIME-MINIMUM basis. The policy floor on
 # 2026-09-20-43a3c9b202 (91.76 -> 89.5, effective 88.05) fails the guard by
 # 0.56: the regime minimum is 88.61 (2026-09-18-0719dea47d, dgx3; n=22, sigma
 # 1.39, range 88.61-93.55), and the widened-instrument history before the
 # regime dips to 87.8 (2026-08-30-f0f6e48845). This is the rung the C1 block
 # already named as the proof that a fresh set is no substitute for reading
-# the history. The floor of 86.0 is 88.61 x 0.975 rounded down; it clears
+# the history. 86.0 was 88.61 x 0.975 rounded down; it cleared
 # every committed run on the widened instrument (since 2026-08-30) by at
 # least 3.2.
-min = 86.0
-noise = 1.45
+#
+# ★ PROVISIONAL, 2026-09-21. THE BAR ABOVE WAS CUT AT THE RETIRED 512/320
+# NATURAL INSTRUMENT AND IS NOT A BOUND ON THIS ONE — it sat 1.15x (C=1) to
+# 4.3x (C=128) under what this instrument produces, so carrying it would have
+# reported a guard that cannot fail while risking a false FAIL at C=1.
+#
+# ★ AND IT COULD NOT SIMPLY BE SWITCHED OFF. `RUNGS` says a rung with no
+# metrics block keeps the 0.0 default and gates nothing, which is true of ONE
+# rung beside bounded ones — but `Floors::gating()` in concurrency_verdict.rs
+# is `peak > 0 || any per_c > 0`, so ALL floors at zero flips the whole run to
+# the INFO verdict, and `GateRecord::verdict_passes` accepts only "PASS"
+# (gate/check.rs:382). Zeroing the ladder would have made this gate
+# unsatisfiable: every campaign record INFO, the gate red forever. CI caught
+# it; it is written here so the next person does not rediscover it.
+#
+# BASIS: the published ladder measured Atlas at 203.36 tok/s at C=16 on THIS
+# instrument (bench/ladder38, 2026-08-17/18, this checkpoint, this box class).
+# The floor is that x 0.5, rounded down to a clean step -> 100. The 2x margin
+# is not timidity, it is the honest price of the one thing that differs: that
+# leg ran an August build with its own CLI (fifo, 8 ssm slots, f16-pool,
+# --mtp-gate force), and this gate serves main's recipe. A bar 2x under
+# catches a collapse and cannot be reached by any drift or by noise.
+# (The 2026-09-21 basis above is superseded by the 2026-09-23 re-cut at the
+# top of this block.)
+min = 180
+noise = 0.0
 
 [benchmarks.metrics.c32_aggregate_tok_s]
+# ★ RE-CUT 2026-09-23, 140 -> 260, on the 128/1024 essay instrument (derivation
+# block above the C1 table): latest 285.74 x 0.975 = 278.60 -> 270 clears the regime min of 274.68
+# (dgx1 idle stack tip, 2026-08-20; n=28, dgx1 274.68-281.95) by 1.7% only;
+# the contended dgx1 run read 261.63. Regime-minimum basis: 274.68 x 0.975 =
+# 267.81 -> 260.
+#
 # ★ RATCHETED 2026-09-20, 98.5 -> 100 (effective 96.8 -> 98.3 after the
-# unchanged noise 1.7): the floor of 100 is the policy floor on the
+# unchanged `noise` of 1.7): 100 was the policy floor on the
 # 2026-09-20-43a3c9b202 value 104.99 (x 0.975 = 102.37, rounded DOWN to the
 # 10-step that applies from 100 up — which is why it lands 4.8% under the
 # latest value and not 2.5%). Guard: regime min 103.60 (2026-09-13-1a0dc88a8c,
 # dgx1; n=22, sigma 0.49), 5.3 above the effective bar.
-min = 100.0
-noise = 1.7
+#
+# ★ PROVISIONAL, 2026-09-21. THE BAR ABOVE WAS CUT AT THE RETIRED 512/320
+# NATURAL INSTRUMENT AND IS NOT A BOUND ON THIS ONE — it sat 1.15x (C=1) to
+# 4.3x (C=128) under what this instrument produces, so carrying it would have
+# reported a guard that cannot fail while risking a false FAIL at C=1.
+#
+# ★ AND IT COULD NOT SIMPLY BE SWITCHED OFF. `RUNGS` says a rung with no
+# metrics block keeps the 0.0 default and gates nothing, which is true of ONE
+# rung beside bounded ones — but `Floors::gating()` in concurrency_verdict.rs
+# is `peak > 0 || any per_c > 0`, so ALL floors at zero flips the whole run to
+# the INFO verdict, and `GateRecord::verdict_passes` accepts only "PASS"
+# (gate/check.rs:382). Zeroing the ladder would have made this gate
+# unsatisfiable: every campaign record INFO, the gate red forever. CI caught
+# it; it is written here so the next person does not rediscover it.
+#
+# BASIS: the published ladder measured Atlas at 291.01 tok/s at C=32 on THIS
+# instrument (bench/ladder38, 2026-08-17/18, this checkpoint, this box class).
+# The floor is that x 0.5, rounded down to a clean step -> 140. The 2x margin
+# is not timidity, it is the honest price of the one thing that differs: that
+# leg ran an August build with its own CLI (fifo, 8 ssm slots, f16-pool,
+# --mtp-gate force), and this gate serves main's recipe. A bar 2x under
+# catches a collapse and cannot be reached by any drift or by noise.
+# (The 2026-09-21 basis above is superseded by the 2026-09-23 re-cut at the
+# top of this block.)
+min = 260
+noise = 0.0
 
 [benchmarks.metrics.c64_aggregate_tok_s]
+# ★ RE-CUT 2026-09-23, 190 -> 360, on the 128/1024 essay instrument (derivation
+# block above the C1 table): latest 385.89 x 0.975 = 376.24 -> 370 clears the regime min of 375.08
+# (dgx1 C=64/C=128 cross-box run, 2026-08-20; n=13, dgx1 375.08-379.91) by
+# 1.4% only. Regime-minimum basis: 375.08 x 0.975 = 365.70 -> 360. Note the
+# vLLM+MTP bar here is 361.39: Atlas wins C=64 by 1.07x and the floor sits
+# just under the bar, not above it.
+#
 # ★ RATCHETED 2026-09-20, 109.5 -> 110 (effective 107.6 -> 108.1 after the
-# unchanged noise 1.9): the floor of 110 is the policy floor on the
+# unchanged `noise` of 1.9): 110 was the policy floor on the
 # 2026-09-20-43a3c9b202 value 116.38 (x 0.975 = 113.47, rounded down to the
 # 10-step). Guard: regime min 114.57 (2026-09-11-da446c920b, dgx1; n=22, sigma
 # 0.62), 6.5 above the effective bar.
-min = 110.0
-noise = 1.9
+#
+# ★ PROVISIONAL, 2026-09-21. THE BAR ABOVE WAS CUT AT THE RETIRED 512/320
+# NATURAL INSTRUMENT AND IS NOT A BOUND ON THIS ONE — it sat 1.15x (C=1) to
+# 4.3x (C=128) under what this instrument produces, so carrying it would have
+# reported a guard that cannot fail while risking a false FAIL at C=1.
+#
+# ★ AND IT COULD NOT SIMPLY BE SWITCHED OFF. `RUNGS` says a rung with no
+# metrics block keeps the 0.0 default and gates nothing, which is true of ONE
+# rung beside bounded ones — but `Floors::gating()` in concurrency_verdict.rs
+# is `peak > 0 || any per_c > 0`, so ALL floors at zero flips the whole run to
+# the INFO verdict, and `GateRecord::verdict_passes` accepts only "PASS"
+# (gate/check.rs:382). Zeroing the ladder would have made this gate
+# unsatisfiable: every campaign record INFO, the gate red forever. CI caught
+# it; it is written here so the next person does not rediscover it.
+#
+# BASIS: the published ladder measured Atlas at 386.63 tok/s at C=64 on THIS
+# instrument (bench/ladder38, 2026-08-17/18, this checkpoint, this box class).
+# The floor is that x 0.5, rounded down to a clean step -> 190. The 2x margin
+# is not timidity, it is the honest price of the one thing that differs: that
+# leg ran an August build with its own CLI (fifo, 8 ssm slots, f16-pool,
+# --mtp-gate force), and this gate serves main's recipe. A bar 2x under
+# catches a collapse and cannot be reached by any drift or by noise.
+# (The 2026-09-21 basis above is superseded by the 2026-09-23 re-cut at the
+# top of this block.)
+min = 360
+noise = 0.0
 
 [benchmarks.metrics.c128_aggregate_tok_s]
+# ★ RE-CUT 2026-09-23, 230 -> 440, on the 128/1024 essay instrument (derivation
+# block above the C1 table): latest 478.91 x 0.975 = 466.94 -> 460 fails the guard outright: dgx1 read
+# 459.32 on the 2026-08-20 cross-box run (n=13, range 459.32-482.05; the
+# 2026-09-22 dgx1 proof 468.44-469.14). Regime-minimum basis: 459.32 x 0.975
+# = 447.84 -> 440. Well above the vLLM+MTP bar of 358.57 (Atlas 1.34x).
+#
 # ★ RATCHETED 2026-09-20, 109.5 -> 110 (effective 107.6 -> 108.1 after the
-# unchanged noise 1.9): the floor of 110 is the policy floor on the
+# unchanged `noise` of 1.9): 110 was the policy floor on the
 # 2026-09-20-43a3c9b202 value 116.26 (x 0.975 = 113.35, rounded down to the
 # 10-step). Guard: regime min 114.00 (2026-09-11-da446c920b, dgx1; n=22, sigma
 # 0.72), 5.9 above the effective bar.
-min = 110.0
-noise = 1.9
+#
+# ★ PROVISIONAL, 2026-09-21. THE BAR ABOVE WAS CUT AT THE RETIRED 512/320
+# NATURAL INSTRUMENT AND IS NOT A BOUND ON THIS ONE — it sat 1.15x (C=1) to
+# 4.3x (C=128) under what this instrument produces, so carrying it would have
+# reported a guard that cannot fail while risking a false FAIL at C=1.
+#
+# ★ AND IT COULD NOT SIMPLY BE SWITCHED OFF. `RUNGS` says a rung with no
+# metrics block keeps the 0.0 default and gates nothing, which is true of ONE
+# rung beside bounded ones — but `Floors::gating()` in concurrency_verdict.rs
+# is `peak > 0 || any per_c > 0`, so ALL floors at zero flips the whole run to
+# the INFO verdict, and `GateRecord::verdict_passes` accepts only "PASS"
+# (gate/check.rs:382). Zeroing the ladder would have made this gate
+# unsatisfiable: every campaign record INFO, the gate red forever. CI caught
+# it; it is written here so the next person does not rediscover it.
+#
+# BASIS: the published ladder measured Atlas at 478.11 tok/s at C=128 on THIS
+# instrument (bench/ladder38, 2026-08-17/18, this checkpoint, this box class).
+# The floor is that x 0.5, rounded down to a clean step -> 230. The 2x margin
+# is not timidity, it is the honest price of the one thing that differs: that
+# leg ran an August build with its own CLI (fifo, 8 ssm slots, f16-pool,
+# --mtp-gate force), and this gate serves main's recipe. A bar 2x under
+# catches a collapse and cannot be reached by any drift or by noise.
+# (The 2026-09-21 basis above is superseded by the 2026-09-23 re-cut at the
+# top of this block.)
+min = 440
+noise = 0.0
 
 [benchmarks.metrics.peak_aggregate_tok_s]
+# ★ RE-CUT 2026-09-23, 230 -> 440, on the 128/1024 essay instrument (derivation
+# block above the C1 table): the peak is the C=128 cell in every regime run that measured both top rungs
+# (dgx1 379.8 -> 468.4, dgx2 389.6 -> 482.1, gate 385.9 -> 478.9), so the
+# floor is the C=128 floor, 440, cut in the block above. A sweep whose peak
+# fell under this has lost its top rung whichever C produced it.
+#
 # ★ RATCHETED 2026-09-20, 109.5 -> 110 (effective 107.6 -> 108.1 after the
-# unchanged noise 1.90): the floor of 110 is the policy floor on the
+# unchanged `noise` of 1.90): 110 was the policy floor on the
 # 2026-09-20-43a3c9b202 peak 116.38 (at C=64; x 0.975 = 113.47, rounded down
 # to the 10-step). Guard: regime min 114.57 (2026-09-11-da446c920b, dgx1;
 # n=22), 6.5 above the effective bar. The peak still lands at C=64 or C=128
@@ -789,18 +1184,69 @@ noise = 1.9
 # curve having saturated near 115 from C=64 on. The floor is therefore the
 # C=64/C=128 bar, not the C=16 one the previous comment described: a sweep
 # whose peak fell below this has lost its top rung whichever C produced it.
-min = 110.0
-noise = 1.90
+#
+# ★ PROVISIONAL, 2026-09-21. THE BAR ABOVE WAS CUT AT THE RETIRED 512/320
+# NATURAL INSTRUMENT AND IS NOT A BOUND ON THIS ONE — it sat 1.15x (C=1) to
+# 4.3x (C=128) under what this instrument produces, so carrying it would have
+# reported a guard that cannot fail while risking a false FAIL at C=1.
+#
+# ★ AND IT COULD NOT SIMPLY BE SWITCHED OFF. `RUNGS` says a rung with no
+# metrics block keeps the 0.0 default and gates nothing, which is true of ONE
+# rung beside bounded ones — but `Floors::gating()` in concurrency_verdict.rs
+# is `peak > 0 || any per_c > 0`, so ALL floors at zero flips the whole run to
+# the INFO verdict, and `GateRecord::verdict_passes` accepts only "PASS"
+# (gate/check.rs:382). Zeroing the ladder would have made this gate
+# unsatisfiable: every campaign record INFO, the gate red forever. CI caught
+# it; it is written here so the next person does not rediscover it.
+#
+# BASIS: the published ladder measured Atlas at 478.11 tok/s at C=64/C=128 on THIS
+# instrument (bench/ladder38, 2026-08-17/18, this checkpoint, this box class).
+# The floor is that x 0.5, rounded down to a clean step -> 230. The 2x margin
+# is not timidity, it is the honest price of the one thing that differs: that
+# leg ran an August build with its own CLI (fifo, 8 ssm slots, f16-pool,
+# --mtp-gate force), and this gate serves main's recipe. A bar 2x under
+# catches a collapse and cannot be reached by any drift or by noise.
+# (The 2026-09-21 basis above is superseded by the 2026-09-23 re-cut at the
+# top of this block.)
+min = 440
+noise = 0.0
 
 [benchmarks.metrics.min_completion_tokens]
-# The vacuity guarantee, restated where the gate can see it. The original
-# calibration (fixture minimum 334 > 320, every request budget-capped) was
-# measured on a tree where MTP speculated inside <think>; with the
-# serial-in-think fix (2c80bf2f7) token trajectories shifted and the
-# fixture's minimum deterministic completion is 296 (natural EOS, temp 0).
-# The floor guards degenerate early-EOS collapse; per-cell vacuity is
-# policed by vacuous_cells below.
-min = 260.0
+# ★ RE-CUT 2026-09-23, 260 -> 650, with the nine rung floors and from the same
+# records, as the paragraph below asked. The bar is the per-run minimum
+# completion over ALL requests, so the sample is each regime run's minimum
+# completion_tokens_per_req (n=27 runs plus the gate record): 676 (dgx1
+# C=64/C=128 cross-box run, 2026-08-20), 691, 691 (rounds 10/11 at C=128),
+# 717 (dgx1 proof 2026-09-22), 745, 745, 745, 753, ... and 892 on the gate
+# record. Guard arm as for the rungs: 676 x 0.975 = 659.1 -> 650 on the
+# 10-step. 0.8 x 1024 = 819 (the vacuity majority rule) is NOT written: three
+# clean runs stopped one request under it, deterministically at the widest
+# rungs, and a floor above a measured healthy minimum is a bootstrap.
+#
+# ★ KEPT AT 260 THROUGH THE 2026-09-21 RE-POINT, deliberately, while every
+# rung floor went to 0.0 — this is the one bar the re-point does not
+# invalidate, and it is not redundant with vacuous_cells.
+#
+# The sentence not to get wrong: the vacuity rule is NOT "no request under
+# 80% of the budget". concurrency_vacuity.rs was rewritten FOR this very
+# instrument — its module doc cites l38_r{7..11}_c*.json, where rep 2 of
+# C=128 deterministically stops one request at 691 tokens and C=64 one at
+# 753 — and now asks only for cell OCCUPANCY >= 0.8 of the total budget plus
+# a MAJORITY of requests over 0.8 x osl. A minority may deliver anything down
+# to zero. min_completion_tokens is what still denies that minority the
+# floor, so switching it off with the rung floors would have removed a guard
+# vacuity never replaced.
+#
+# 260 is loose here and is left loose ON PURPOSE rather than re-cut by
+# arithmetic. It was calibrated against the natural fixture's ~296-token
+# deterministic completion; the essay fixture's own minimum has not been
+# measured on this gate. The published raw files' observed minima on this
+# instrument are 691 (C=128) and 753 (C=64), so 260 passes everything ever
+# seen while still failing a degenerate early-EOS collapse. Re-cut it with
+# the nine rung floors from the same first records, not before: 0.8 x 1024 =
+# 819 is the number arithmetic would suggest, and declaring it now would be
+# a bootstrap.
+min = 650.0
 
 [benchmarks.metrics.vacuous_cells]
 # Zero, absolutely: the driver already refuses to mint throughput keys from
@@ -933,10 +1379,18 @@ draft_model = "incoai/Qwen3.8-27B-DFlash2"
 dflash_gamma = "8"
 
 [benchmarks.param_overrides]
-# The plain gate's instrument, truncated at the widest rung this serve can
-# actually admit (see the batch-cap note above). isl and osl are identical, so
-# the rungs the two ladders SHARE are directly comparable; the plain gate
-# simply continues past where this one can go.
+# ★ NO LONGER THE PLAIN GATE'S INSTRUMENT. Until 2026-09-21 this said "isl
+# and osl are identical, so the rungs the two ladders SHARE are directly
+# comparable"; that stopped being true when the plain gate was re-pointed to
+# the published ladder (isl 128 / osl 1024 / essay). This entry deliberately
+# stays at isl 512 / osl 200 / natural: its bars were cut there, DFlash2 is
+# not on the published ladder and never was, and re-pointing it would cost a
+# second set of floors to buy a comparison nothing draws. The two ladders are
+# now comparable to NEITHER each other nor the published pair — which the
+# entry note below already required of them for a different reason (speculation
+# moves low-C throughput by more than either bar is set to catch).
+# Rungs are still truncated at the widest this serve can admit (see the
+# batch-cap note above).
 concurrencies = "1,2,4,8,16"
 isls = "512"
 # 200, not the plain gate's 320 — see the osl note on this entry. Every request

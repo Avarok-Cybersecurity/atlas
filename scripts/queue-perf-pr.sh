@@ -13,7 +13,7 @@
 # THE PROTOCOL: freeze -> campaign -> queue alone.
 #   1. Update the branch to CURRENT main and push. This is the freeze; any
 #      later main movement restarts the protocol.
-#   2. Run all ten gates against exactly that sha (on a box with exclusive
+#   2. Run all twelve gates against exactly that sha (on a box with exclusive
 #      GPU), commit the records, push.
 #   3. Queue the PR with NO other performance PR ahead of it. Do not add a
 #      second record-bearing PR to the queue until this one has landed.
@@ -28,7 +28,7 @@
 #     why.
 #   * The TTFT gates need TWO runs each on a box with no stored baseline. The
 #     first one only creates the baseline and records `info`, which the gate
-#     does not accept — so a ten-gate campaign silently comes back eight.
+#     does not accept — so a twelve-gate campaign silently comes back ten.
 #   * The exit code is not the evidence. A BFCL run generated all 995
 #     responses, died in scoring, and correctly wrote NO record; a driver that
 #     trusted `rc` called that a pass. Ask
@@ -60,7 +60,8 @@ echo '  # that has none, run 1 only CREATES it and records verdict `info`,'
 echo '  # which the gate does not accept. They need two runs each; listing'
 echo '  # them twice is the whole fix.'
 echo '  for g in decode-floor vision-fidelity video-fidelity \'
-echo '           ssm-state-poisoning-gate concurrency-sweep agentic-webserver \'
+echo '           ssm-state-poisoning-gate concurrency-sweep concurrency-sweep-dflash2 \'
+echo '           agentic-webserver \'
 echo '           ttft-cold-gate ttft-cold-gate ttft-warm-gate ttft-warm-gate \'
 echo '           bfcl-subset bfcl-subset-echolp kat-equality-gate; do'
 echo '    timeout 21600 ./target/release/spark benchmark run "$g" --pull-request-gate --yes'

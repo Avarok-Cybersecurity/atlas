@@ -46,13 +46,33 @@ pre ──▶ begin ──▶ during (× many) ──▶ post ──▶ release
 | verb | when | tests | writes |
 |---|---|---|---|
 | `pre` | before the first gate | T0-T12 (+T13/T14 if records already added) | creates lock `evaluating` → `evaluated` |
-| `begin` | the moment before the driver launches | T0, T1, T2, T8, T9 | `evaluated` → `running_certification`, records `driver_pid` |
+| `begin`⚠️ | the moment before **a shell driver** launches (§ below — skip for `spark bench certify`) | T0, T1, T2, T8, T9 | `evaluated` → `running_certification`, records `driver_pid` |
 | `during` | between gates, and on a 5-min timer inside long ones | T0, T1, T2, T8, T9 | heartbeat, `current_gate`, `guard_last_rc` |
 | `post` | after the last gate, BEFORE `git add .benchmarks`, BEFORE `/seal` | T0, T1, T2, T9, T12, T13, T14 + gate-check text | the `post` verdict |
 | `release` | after `post` returned `CERT-SEAL` and records are pushed; or `--abandon --reason` | T0 | renames the lock to `.released.<ts>` |
 | `status` | any time | none | nothing — prints the lock and its liveness |
 
 `pre` is the default when no verb is given.
+
+⚠️ **If the driver is `spark bench certify`, do not run `begin`.** `spark bench
+certify` (`crates/spark-server/src/cli/bench_certify/mod.rs`) replaced the shell
+driver (`campaign_pr.sh` + `post_and_bank.sh`) on 2026-09-13 and now claims,
+heartbeats and releases `.oracle_should_begin_cert` **itself**, with its own pid as
+`driver_pid` (`lockfile::LockGuard::claim` — see `book/src/operations/certify.md`'s
+"Lock" step). `begin` still exists for the legacy shell-driver path, where the
+*caller* launches the driver and records its pid by hand. Running `begin` before
+`spark bench certify` pre-claims the lock under a pid that is not the certify
+process; `spark bench certify`'s own claim then finds a foreign, non-terminal lock
+and refuses it as LIVE — by design, per the book's documented "heartbeat under 30
+minutes old" rule — for up to 30 minutes, even though the very process being
+refused is the one you meant to run. Reproduced on the #1229 certification,
+2026-09-21/22 (`spark-bench/runs/cert-1229-1ec0a0e9d/n1-attempt1-lockcollision/`):
+`begin` recorded a `driver_pid` that had already exited by the time `spark bench
+certify` tried to claim the lock 193s later; the recent heartbeat alone was enough
+to read as LIVE, and the campaign was refused. When the driver is `spark bench
+certify`, run `pre` for the GO/NO-GO verdict only, then invoke `spark bench
+certify` directly and let it own the lock end-to-end; use `during`/`post` to read
+— never write — the lock it populates.
 
 ## Step 0 — read the lockfile before anything else
 
@@ -120,7 +140,12 @@ session superseded you — stop and print both), then write via temp + `mv -f`: 
 On `CERT-NO-GO` the lock **stays** as `evaluated` with the negative verdict, so a second
 session sees that a campaign was attempted and why.
 
-## `begin` — the read-on-start race check
+## `begin` — the read-on-start race check (legacy shell driver only)
+
+⚠️ **Skip this verb if the driver is `spark bench certify`** — see the ⚠️ note under
+the phase table. `begin` is for the shell-driver path, where *you* launch the driver
+and hand-write its pid into the lock; `spark bench certify` claims the lock itself
+and treats a lock `begin` already wrote as a competing session.
 
 Lock must be yours, `evaluated`, unexpired, verdict GO. Spawn the oracle for phase `begin`
 (seconds). **This is the window between verdict and launch** in which a co-tenant can appear

@@ -46,7 +46,7 @@ const { SUBJECTS } = await import('./concurrency-subjects.js');
 const { KEY, RUN_KEY, cellKey, DEFAULT_USD_PER_KWH, costTrend } = await import('./cost.js');
 const Panel = (await import('./components/CostSubjectPanel.svelte')).default;
 const Chart = (await import('./components/CostLadderChart.svelte')).default;
-const { costLadder, pueRange, PUE_TYPICAL, PUE_MAX, DEFAULT_PUE } = await import('./cost.js');
+const { costLadder, pueRange, PUE_TYPICAL, PUE_MAX, DEFAULT_PUE, rungVerdicts, verdictTile } = await import('./cost.js');
 const Tab = (await import('./components/CostTab.svelte')).default;
 const Dashboard = (await import('./components/BenchmarkDashboard.svelte')).default;
 const LADDERS = (await import('./ladders.generated.json')).default;
@@ -147,12 +147,53 @@ const panel = (records, lad, rungSel = 8) =>
 
 // ---- the empty state, which is what ships -----------------------------------
 
-describe('the empty state', () => {
-  // The REAL committed data and the REAL generated ladders: this is the state
-  // the section ships in.
-  const real = panel(recordsFor(DENSE.gate).filter((r) => r.target_model === DENSE.checkpoint), LADDERS);
+const realRecords = recordsFor(DENSE.gate).filter((r) => r.target_model === DENSE.checkpoint);
+// Every gpu_rail_* key stripped: the records as they were before the sampler
+// shipped. This is the ONLY way to reach the empty state on the dense subject
+// now — the committed records carry joules, and the real ladders carry an
+// energy leg (vllm-mtp-energy) — so the fixture is derived from the real
+// records rather than typed, and the record count it prints is the real one.
+const withoutEnergy = (rs) =>
+  rs.map((r) => ({ ...r, metrics: Object.fromEntries(Object.entries(r.metrics).filter(([k]) => !k.includes('gpu_rail'))) }));
+// A rendered figure is a digit before the unit; these match ONLY a literal
+// zero, never '$0.0039', '0.420 J/token' or '8570 tok/Wh'.
+const ZERO_COST = /\$\s*0\.00(?![\d])/;
+const ZERO_ENERGY = /(?<![\d.])0 J\/token|(?<![\d.])0 tok\/Wh|(?<![\d.])0\.000 J/;
 
-  test('the committed data has no energy yet, so the real dense tab renders the empty state', () => {
+describe('the populated state, which is what ships', () => {
+  // The REAL committed data and the REAL generated ladders. Since #1220 the
+  // newest passing record is on the published instrument and carries GPU-rail
+  // joules, and the manifest carries an energy-instrumented vLLM+MTP leg on
+  // that instrument, so the dense subject has a cost curve for both engines.
+  const real = panel(realRecords, LADDERS);
+  test('the dense tab renders costs, not the empty state', () => {
+    expect(real).not.toContain('Cost · not yet measured');
+    expect(real).not.toContain('No GPU-rail energy');
+    expect(real).toContain('per 1M tokens at 0.15 $/kWh');
+    expect(real).toContain('vLLM + MTP (energy) · one-shot · not re-run');
+    expect(real).toContain('$ per 1M tokens · ISL 128 / OSL 1024 · essay fixture');
+  });
+
+  test('the verdict tile is the one cost.js derives from the same records — never typed', () => {
+    const lad = costLadder(DENSE, realRecords, LADDERS);
+    const verdicts = rungVerdicts(lad.atlas.points, lad.baselines);
+    expect(verdicts.rungs.length).toBeGreaterThan(0); // measured on both engines at some rung
+    expect(real).toContain(`<span class="gbs-tile-val">${verdictTile(verdicts)}</span>`);
+    // A losing rung is labelled as such under its point, from the same ratio.
+    for (const r of verdicts.rungs.filter((x) => x.loseLabel)) expect(real).toContain(r.loseLabel);
+  });
+
+  test('NOTHING renders as a literal zero cost, zero joule count or zero efficiency', () => {
+    expect(real).not.toMatch(ZERO_COST);
+    expect(real).not.toMatch(ZERO_ENERGY);
+  });
+});
+
+describe('the empty state', () => {
+  // The real records with their joules removed (see withoutEnergy).
+  const real = panel(withoutEnergy(realRecords), LADDERS);
+
+  test('records without energy render the empty state', () => {
     expect(real).toContain('Cost · not yet measured');
     expect(real).toContain('No GPU-rail energy');
   });
@@ -172,14 +213,14 @@ describe('the empty state', () => {
   });
 
   test('it counts the records it DOES have rather than showing a zero', () => {
-    const n = recordsFor(DENSE.gate).filter((r) => r.target_model === DENSE.checkpoint).length;
+    const n = realRecords.length;
     expect(n).toBeGreaterThan(0);
     expect(real).toContain(`${n} concurrency-sweep records`);
   });
 
   test('NOTHING renders as a zero cost, a zero joule count or a zero efficiency', () => {
-    expect(real).not.toMatch(/\$\s*0\.00/);
-    expect(real).not.toMatch(/0 J\/token|0 tok\/Wh|0\.000 J/);
+    expect(real).not.toMatch(ZERO_COST);
+    expect(real).not.toMatch(ZERO_ENERGY);
   });
 
   test('a subject with no records at all says 0 records — and still not a zero cost', () => {
@@ -365,7 +406,12 @@ describe('the Cost tab', () => {
   test('carries all three subjects of the SSOT, with a derived chip for each', () => {
     const t = text(html(Tab, { subject: DENSE.id, rung: 8, benches: ['concurrency-sweep', 'concurrency-sweep-dflash2'], recordsFor, onselect: () => {} }));
     for (const s of SUBJECTS) expect(t).toContain(s.label);
-    expect(t).toContain('energy not yet measured'); // has runs, no joules
+    // The dense subject has joules now, so it carries NO derived chip; the
+    // chip is still derived for a subject that has runs and no joules.
+    expect(t).not.toContain('energy not yet measured');
+    const stripped = (bench) => withoutEnergy(recordsFor(bench));
+    const s = text(html(Tab, { subject: DENSE.id, rung: 8, benches: ['concurrency-sweep', 'concurrency-sweep-dflash2'], recordsFor: stripped, onselect: () => {} }));
+    expect(s).toContain('energy not yet measured'); // has runs, no joules
     expect(t).toContain('no runs yet'); // the MoE subject
   });
 

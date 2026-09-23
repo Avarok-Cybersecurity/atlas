@@ -4,12 +4,17 @@
   // latest gate sweep. The order is the argument: "how do we compare" before
   // "how are we moving".
   //
-  // The two charts are DIFFERENT INSTRUMENTS on one checkpoint (the published
-  // ladder is ISL 128 / OSL 1024 with speculation pinned; the gate is ISL 512
-  // / OSL 320 with the recipe defaults), which is why the top chart reads
-  // ~4x the bottom one. Every title here carries its instrument and the note
-  // between them says so in words, so no reader has to work it out — or
-  // conclude the engine is inconsistent.
+  // The two charts share ONE instrument as of #1220 (2026-09-21/22): the
+  // gate was re-pointed onto the published ladder's own axes (ISL 128 / OSL
+  // 1024 / essay / ctx 2048 / batch 128 / fp8 KV) and its throughput recipe.
+  // Until then they were different instruments (the gate ran ISL 512 / OSL
+  // 320 on the agentic recipe) and the top chart read ~4x the bottom one — a
+  // sentence that is now FALSE, which is why this comment says so rather than
+  // leaving a reader to reconcile two charts that finally agree. Every title
+  // still carries its instrument, and the note between the charts branches on
+  // `state`: "Same instrument as the chart above" once a live record pairs,
+  // "Not the chart above's instrument" while the gate still shows the
+  // retired one.
   import ConcurrencyComparison, {
     baselineTileOf,
     comparisonStateOf,

@@ -28,20 +28,18 @@ pub(in crate::model) fn config_is_mla(config: &ModelConfig) -> bool {
 }
 
 /// Whether chunk-0 streams may use the batched (paged) prefill path. Enabled by
-/// `AVAROK_Q12_BATCHED_FIRST_CHUNK=1` or `AVAROK_PREFILL_CODISPATCH=1` (the latter
-/// is the single end-to-end flag for cross-request co-dispatch of fresh prompts,
-/// whose every stream starts at chunk_start==0).
+/// `--prefill-codispatch` (legacy `AVAROK_PREFILL_CODISPATCH=1`) or by the older
+/// `AVAROK_Q12_BATCHED_FIRST_CHUNK=1` spelling of the same path.
+///
+/// ★ DELEGATES, 2026-09-22. This was a SECOND, independent implementation of
+/// the rule in `layers::ops::prefill_batched_first_chunk_enabled` -- same two
+/// keys, same truthiness, written out twice. That is what made codispatch hard
+/// to reason about: one variable with two readers that could drift apart, and
+/// nothing to fail if they did. Now that codispatch resolves through a
+/// `OnceLock` fed by the command line, two readers would be actively wrong --
+/// this one would keep reading the raw env and ignore the flag entirely.
 pub(super) fn first_chunk_batched_enabled() -> bool {
-    [
-        "AVAROK_Q12_BATCHED_FIRST_CHUNK",
-        "AVAROK_PREFILL_CODISPATCH",
-    ]
-    .iter()
-    .any(|k| {
-        std::env::var(k)
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false)
-    })
+    crate::layers::ops::prefill_batched_first_chunk_enabled()
 }
 
 impl TransformerModel {

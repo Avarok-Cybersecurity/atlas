@@ -76,6 +76,20 @@ pub(crate) fn publish_kernel_flags(args: &cli::ServeArgs) {
         }
         warn_shadowed_env();
     }
+    // `--prefill-codispatch`: Option, so an absent flag publishes NOTHING and
+    // `prefill_codispatch_enabled()` resolves from `AVAROK_PREFILL_CODISPATCH`
+    // on first touch, exactly as the varlen twin does. Publishing a clap
+    // default here would seal the cell on every boot and make the documented
+    // variable inert -- the failure this module's header exists to describe.
+    if let Some(on) = args.prefill_codispatch {
+        let in_force = spark_model::layers::ops::set_prefill_codispatch_from_cli(on);
+        if in_force != on {
+            tracing::warn!(
+                "prefill-codispatch was already resolved ({in_force}); the command \
+                 line's ({on}) did NOT take effect"
+            );
+        }
+    }
     // `--ssm-rollback-mode`: explicit clap default ("snapshot"), so it is
     // published on every serve. The value was validated by
     // `validate_serve_args` through the SAME `FromStr` (SSOT) before this

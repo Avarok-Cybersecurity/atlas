@@ -312,7 +312,7 @@ fn the_promotion_debt_section_is_always_rendered() {
     let body = super::render(&root, &prs);
     assert!(
         body.contains(
-            "### Promotion-candidate debt\n\nThese gates are NOT required, so these PRs can merge without them. Each row is coverage this repository chose not to buy — recorded so the choice stays visible rather than becoming an assumption.\n\n| PR | merged? | title | gates that wanted to run |\n|---|---|---|---|\n| #1 | not yet | a scheduler change | cross-contamination |\n"
+            "### Promotion-candidate debt\n\nThese gates are NOT required, so these PRs can merge without them. Each row is coverage this repository chose not to buy — recorded so the choice stays visible rather than becoming an assumption.\n\n| PR | merged? | title | gates that wanted to run |\n|---|---|---|---|\n| #1 | not yet | a scheduler change | cross-contamination, concurrency-sweep-moe |\n"
         ),
         "the unconditional debt section must retain its policy, schema, and row: {body}"
     );
@@ -351,9 +351,12 @@ fn debt_is_derived_from_the_prs_own_paths() {
     let views = super::views(&root, &prs);
     // The discrimination is real: the docs PR owes nothing, the engine PR
     // owes BOTH candidates — a scheduler edit can cross-wire concurrent
-    // requests AND make a reply depend on what ran before it.
+    // requests AND decides the batch the MoE ladder measures.
     assert_eq!(views[0].promotion_debt, Vec::<&str>::new());
-    assert_eq!(views[1].promotion_debt, vec!["cross-contamination"]);
+    assert_eq!(
+        views[1].promotion_debt,
+        vec!["cross-contamination", "concurrency-sweep-moe"]
+    );
 }
 
 /// A merged debt and an open debt are different things: one is coverage already
@@ -390,7 +393,7 @@ fn the_debt_table_distinguishes_merged_from_open() {
     let body = super::render(&root, &prs);
     assert!(
         body.contains(
-            "| #1 | not yet | still open | cross-contamination |\n| #2 | **yes** | already landed | cross-contamination |\n"
+            "| #1 | not yet | still open | cross-contamination, concurrency-sweep-moe |\n| #2 | **yes** | already landed | cross-contamination, concurrency-sweep-moe |\n"
         ),
         "open warning and accrued merged debt must remain distinct: {body}"
     );

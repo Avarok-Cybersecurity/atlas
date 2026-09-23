@@ -329,6 +329,15 @@ pub const TEST_ONLY_RUST_MODULES: &[TestOnlyRustModule] = &[
         name: "concurrency_verdict_tests",
         declared_path: Some("concurrency_verdict_tests.rs"),
     },
+    // The MoE ladder's descriptor tests, in a third file because both
+    // concurrency test files sit at the 500-line cap. Same parent, same
+    // proof, same reason: a test edit here must not re-open a GPU record.
+    TestOnlyRustModule {
+        path: "crates/avarok-plugin/src/benchmarks/concurrency_moe_tests.rs",
+        parent: "crates/avarok-plugin/src/benchmarks/concurrency.rs",
+        name: "concurrency_moe_tests",
+        declared_path: Some("concurrency_moe_tests.rs"),
+    },
 ];
 
 fn is_test_only_rust_module(path: &str) -> bool {
@@ -880,12 +889,38 @@ pub const REQUIRED: [GateCoverage; 12] = [
 /// were met (see the comments on their REQUIRED entries). Their old candidate
 /// entries are gone from here because a gate cannot be owed and excused at
 /// once — the test above pins that.
-pub const PROMOTION_CANDIDATES: &[GateCoverage] = &[GateCoverage {
-    id: "cross-contamination",
-    excludes: CONTAMINATION_EXCLUDES,
-}];
+pub const PROMOTION_CANDIDATES: &[GateCoverage] = &[
+    GateCoverage {
+        id: "cross-contamination",
+        excludes: CONTAMINATION_EXCLUDES,
+    },
+    // ── Added 2026-09-20: the MoE concurrency ladder ──────────────────────
+    //
+    // `concurrency-sweep-moe` runs the concurrency driver on the 35B MoE
+    // flagship at the published instrument (see `concurrency::MOE_DESCRIPTOR`
+    // for why it is a third gate id rather than a second checkpoint of
+    // `concurrency-sweep`). It shares CONCURRENCY_EXCLUDES because it shares
+    // the driver: exactly the set of foreign drivers that cannot reach either
+    // dense ladder cannot reach this one, and everything in the engine can.
+    //
+    // A CANDIDATE, not REQUIRED, because it cannot bootstrap inside a
+    // campaign: `sweep_verdict` says PASS only when at least one floor is
+    // populated, `check_record` demands PASS, and `bench::baseline_for` drops
+    // an unmeasured entry — a REQUIRED gate with no floors would block every
+    // PR while refusing to run under `--pull-request-gate`. The pipeline is
+    // the one `concurrency-sweep` itself walked on 2026-08-15: hand-measure
+    // >= 3 reps on the pinned instrument, commit the floors as
+    // `status = "measured"`, and move this entry to REQUIRED in that same PR
+    // (the campaign certifying it writes the first gated record). Until then
+    // every PR that would have re-opened the dense ladder owes a visible
+    // debt row for this one.
+    GateCoverage {
+        id: "concurrency-sweep-moe",
+        excludes: CONCURRENCY_EXCLUDES,
+    },
+];
 
-pub const NOT_REQUIRED: [(&str, &str); 5] = [
+pub const NOT_REQUIRED: [(&str, &str); 6] = [
     (
         "quick-speed-bench",
         "a single-user speed probe with no thresholds and no baseline — a MEASUREMENT tool, \
@@ -906,6 +941,14 @@ pub const NOT_REQUIRED: [(&str, &str); 5] = [
         "not required YET: a promotion candidate (see PROMOTION_CANDIDATES) run on release cuts \
          and recorded as debt until it has proven itself; a fresh gate that fails on day one \
          would train people to override it",
+    ),
+    (
+        "concurrency-sweep-moe",
+        "not required YET: a promotion candidate (see PROMOTION_CANDIDATES) with no measured \
+         floor on any instrument — its BENCH.toml entry is `unmeasured`, so `--pull-request-gate` \
+         refuses to run it and a REQUIRED entry would block every PR while running nothing. \
+         Promoted by the PR that commits its first hand-measured floors (>= 3 reps on the \
+         pinned published instrument), the path `concurrency-sweep` itself took on 2026-08-15",
     ),
     (
         "mlperf-agentic-subset",

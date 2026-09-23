@@ -112,26 +112,57 @@ fn the_trees_serve_pins_sit_on_the_gates_that_need_them() {
     );
     assert_eq!(p.serve_overrides.len(), 2, "{:?}", p.serve_overrides);
 
-    // The concurrency gate declares its whole batched serve profile: the
-    // shared agentic recipe is a serial reproduction config (batch 1, bf16 KV,
-    // 256 Marconi slots, 32K context) that strangles a concurrency instrument.
-    // lm_head_dtype is deliberately absent — the recipe's bf16 head is a
-    // correctness pin, not a throughput knob. Marconi is pinned at 32 slots
-    // (2026-09-13, back from the 8 of 2026-08-16): the sweep WARMS every
-    // cell and a warm request costs 3 slots across a cell, so its warm rule
-    // holds only while `slots > 3·C` — 32 keeps the 1/2/4/8 rungs warm and
-    // the sweep declares C ≥ 16 cold by construction (see the BENCH.toml
-    // comment and `concurrency::warm_cache_capable`).
+    // The concurrency gate no longer declares a serve profile at all: it names
+    // the recipe that IS the profile. Until 2026-09-22 it served the shared
+    // AGENTIC recipe — a serial reproduction config (batch 1, bf16 KV, 256
+    // Marconi slots, 32K context) that strangles a concurrency instrument —
+    // and overrode it seventeen keys at a time, which still left two of that
+    // recipe's defaults inherited in silence (`lm_head_dtype: bf16` and
+    // `kv_high_precision_layers: auto`). Marconi is no longer pinned either:
+    // the 32-slot rule was calibrated on the RETIRED isl-512 instrument, and at
+    // this gate's isl 128 (~200 rendered tokens) every snapshot restore is
+    // declined under DEFAULT_MARCONI_MIN_TOKENS = 256, so the recipe's 8 —
+    // which is also the published leg's value — costs no warm behaviour and
+    // returns ~3.55 GiB to the KV budget.
     let sweep = baseline_for(&root, "concurrency-sweep").unwrap();
     let (_, c) = sweep.resolve("gb10", None).unwrap();
+    // ★ SEVENTEEN PINS -> THREE, 2026-09-22 (owner: "the gate serves the
+    // throughput recipe ... match the throughput recipe"). The entry now names
+    // the THROUGHPUT recipe, which is bench/ladder38/published.json
+    // `series[0].cli` frozen as a file -- verified key for key. Fourteen pins
+    // were therefore re-stating that recipe's own defaults back at it and are
+    // gone; what they used to say is in the BENCH.toml block, with the A/B that
+    // justified the re-point (+41/45/53% at C=8/32/128).
+    //
+    // This assertion is the guard on the re-point itself: the gate had been
+    // serving the AGENTIC recipe and inheriting its `lm_head_dtype: bf16` in
+    // silence, which above M=8 (lm_head_batchm_max) drops the batched GEMV for
+    // a scalar dense_gemm over a 248K vocab -- a per-sequence cost, and the
+    // shape of the measured deficit.
+    assert_eq!(
+        c.recipe.as_deref(),
+        Some("qwen3.8/qwen3.8-27b-nvfp4-throughput"),
+        "the concurrency ladder must serve the published leg's own recipe, not the \
+         agentic profile it used to override key by key"
+    );
     for (key, want) in [
-        // 128, with the ladder: a batch cap below the widest measured rung
-        // makes that rung serial, which is the recipe's batch-1 defect one
-        // scale up.
+        // These three restate recipe defaults ON PURPOSE. ladder-baselines.js
+        // builds a record's fingerprint from `params` + `serve_overrides` and
+        // nothing else -- it never reads `serve_resolved` -- and all three are
+        // REQUIRED_AXES. Absent here they would read null, null counts as a
+        // difference on a required axis, and the live series would stop being
+        // comparable to the published bar: the exact defect the 2026-09-21
+        // re-point existed to fix. So they are fingerprint pins, not serve pins,
+        // and that is why they alone survived the cut.
         ("max_batch_size", "128"),
         ("kv_cache_dtype", "fp8"),
-        ("ssm_cache_slots", "32"),
-        ("max_model_len", "4096"),
+        ("max_model_len", "2048"),
+        // ★ The fourth pin is a SERVE pin, not a fingerprint pin: the one lever
+        // of the published leg the recipe cannot carry, promoted from a
+        // node-wide env var to a per-gate flag on this same stack so the ladder
+        // can have it while ttft-warm-gate does not. The dense proof that beats
+        // vLLM at every rung was measured WITH it.
+        ("prefill_codispatch", "true"),
     ] {
         assert_eq!(
             c.serve_overrides.get(key).map(String::as_str),
@@ -143,7 +174,13 @@ fn the_trees_serve_pins_sit_on_the_gates_that_need_them() {
     assert_eq!(c.serve_overrides.len(), 4, "{:?}", c.serve_overrides);
     assert!(
         !c.serve_overrides.contains_key("lm_head_dtype"),
-        "the bf16 head is a correctness pin the gate must not touch"
+        "the throughput recipe leaves the head at the checkpoint's native NVFP4; pinning \
+         bf16 here is what cost 41-53% across the ladder"
+    );
+    assert!(
+        !c.serve_overrides.contains_key("ssm_cache_slots"),
+        "the recipe's 8 is also the published leg's `--ssm-cache-slots 8`; overriding it \
+         back to 32 re-opens the last disagreement with that leg"
     );
 
     // The DFlash2 gate is the same profile PLUS the drafter, and nothing else.
@@ -182,28 +219,68 @@ fn the_trees_serve_pins_sit_on_the_gates_that_need_them() {
         !d.serve_overrides.contains_key("speculative"),
         "--dflash conflicts with --speculative at the CLI: pinning both would not start"
     );
-    // The one-variable rule, asserted rather than described — with exactly
-    // one documented exception. Every key the plain gate pins must be pinned
-    // identically here EXCEPT max_batch_size, which the drafter's memory
-    // footprint forces down (see the BENCH.toml note and its measured reserve
-    // table). Listing the exception rather than skipping the check is the
-    // point: a second axis of difference must never appear silently.
+    // The one-variable rule, asserted rather than described — with exactly TWO
+    // documented exceptions, each in its own list so the REASON a key differs
+    // is recorded and not just the fact. Every other key the plain gate pins
+    // must be pinned identically here. Listing an exception rather than
+    // skipping the check is the point: a third axis of difference must never
+    // appear silently, and a listed key that has quietly come back into
+    // agreement fails too, so an excuse cannot outlive its cause.
+    //
+    // max_batch_size: forced down by the drafter's memory footprint (see the
+    // BENCH.toml note and its measured reserve table).
     const FORCED_BY_THE_DRAFTER: [&str; 1] = ["max_batch_size"];
+    // max_model_len: forced apart on 2026-09-21 by the PLAIN gate's instrument
+    // re-point, not by anything about DFlash2. The plain ladder is now pinned
+    // to the published Atlas-vs-vLLM instrument (ISL 128 / OSL 1024 / essay,
+    // ctx 2048) so its live record can be drawn against the measured vLLM bar;
+    // `max_model_len` is a REQUIRED axis of that fingerprint
+    // (site/src/lib/ladder-baselines.js), so 2048 is not a free choice there.
+    // This gate deliberately did NOT follow: DFlash2 is not on the published
+    // ladder, its bars were cut at ctx 4096 / ISL 512 / OSL 200, and moving its
+    // context would refuse every record it has (`check_record` demands the pin)
+    // to buy a comparison nothing draws. The two ladders' shared rungs stopped
+    // being directly comparable at the same moment, which is stated in
+    // bench_override_tree_tests and in both BENCH.toml entries.
+    const FORCED_BY_THE_REPOINT: [&str; 1] = ["max_model_len"];
+    // prefill_codispatch: the published leg's lever, promoted from a node-wide
+    // env var to a per-gate flag on 2026-09-22 and pinned on the plain ladder
+    // because the all-rung proof against vLLM was measured WITH it. DFlash2 was
+    // never measured with co-dispatch on; pinning it there would move a ladder
+    // nothing has re-measured, so it is listed as forced apart rather than
+    // silently copied.
+    const FORCED_BY_THE_LEVER_PROMOTION: [&str; 1] = ["prefill_codispatch"];
+    // ★ WHAT THIS RULE NO LONGER COVERS, stated because a narrowed test that
+    // does not say it narrowed is worse than no test. Until 2026-09-22 the two
+    // ladders shared the agentic recipe and differed only in their pins, so
+    // iterating the plain gate's seventeen pins really did compare the two
+    // serves. They now resolve DIFFERENT RECIPES -- throughput here,
+    // qwen3.8-27b-nvfp4-dflash2 there -- and the plain gate pins three keys,
+    // so this loop compares three. The MTP-policy and published-profile
+    // exception lists that used to stand here are deleted rather than kept as
+    // commentary: their keys are no longer pinned by the plain gate at all, so
+    // as consts they would be dead code, and as excuses they would outlive
+    // their cause -- which is the one thing this rule exists to forbid. The
+    // divergence they described is now a property of the two recipes and is
+    // asserted at its own source, by the `c.recipe` assertion above.
     for (key, want) in &c.serve_overrides {
-        if FORCED_BY_THE_DRAFTER.contains(&key.as_str()) {
+        if FORCED_BY_THE_DRAFTER.contains(&key.as_str())
+            || FORCED_BY_THE_REPOINT.contains(&key.as_str())
+            || FORCED_BY_THE_LEVER_PROMOTION.contains(&key.as_str())
+        {
             assert_ne!(
                 d.serve_overrides.get(key),
                 Some(want),
-                "{key} is listed as forced apart by the drafter but the two gates agree on \
-                 it — drop it from the exception list rather than leaving a stale excuse"
+                "{key} is listed as forced apart but the two gates agree on it — drop it \
+                 from the exception list rather than leaving a stale excuse"
             );
             continue;
         }
         assert_eq!(
             d.serve_overrides.get(key),
             Some(want),
-            "the two concurrency ladders must differ only in the drafter and the batch cap \
-             it forces, but {key} differs"
+            "the two concurrency ladders may differ only where an exception list says so \
+             and says why, but {key} differs"
         );
     }
 

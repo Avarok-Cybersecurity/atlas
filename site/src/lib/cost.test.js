@@ -360,27 +360,44 @@ describe('two measurements on different instruments are never one series', () =>
     expect(costInstrumentKey(noPeriod)).not.toBe(costInstrumentKey(rec({ metrics: m })));
   });
 
-  test('a cadence change splits the trend into two metric keys, so no line joins them', () => {
+  // The property these two protect has NOT changed: a line may never join two
+  // instruments. What changed is how (owner decision, 2026-09-21, "start fresh
+  // from now on") — the older generation is no longer drawn as a dashed
+  // companion, it is set aside entirely. That is a STRONGER guarantee, so the
+  // assertions move with it rather than being relaxed: one series, and the
+  // older run must not appear under the surviving key.
+
+  test('a cadence change leaves ONE series, and the old run is not in it', () => {
     const t = costTrend(8, [
       rec({ git_sha: 'aaaaaaaaaa', recorded_at: 1, metrics: cell(8) }),
       rec({ git_sha: 'bbbbbbbbbb', recorded_at: 2, metrics: { ...cell(8), [RUN_KEY.periodMs]: 1000 } })
     ]);
-    expect(t.metrics).toHaveLength(2);
-    expect(new Set(t.metrics.map((m) => m.key)).size).toBe(2);
-    expect(t.metrics[1].key).toBe(trendMetricKey(8)); // newest keeps the plain key
-    expect(t.metrics[0].dashed).toBe(true);
-    // Each record carries only its own generation's key: GateChart splits on it.
-    expect(t.records[0].metrics[t.metrics[0].key]).toBeCloseTo(1125, 6);
-    expect(t.records[0].metrics[t.metrics[1].key]).toBeUndefined();
+    expect(t.metrics).toHaveLength(1);
+    expect(t.metrics[0].key).toBe(trendMetricKey(8));
+    expect(t.metrics[0].dashed).toBe(false);
+    // ★ THE REAL RISK OF SETTING A GENERATION ASIDE is that one of its points
+    // leaks into the surviving series and manufactures the exact false
+    // continuity the split existed to prevent. Only the newest run may carry
+    // the plotted key.
+    expect(t.records).toHaveLength(1);
+    expect(t.records[0].git_sha).toBe('bbbbbbbbbb');
+    // and what was dropped is REPORTED, not silent
+    expect(t.superseded).toEqual({ runs: 1, generations: 1, differs: expect.any(String) });
   });
 
-  test('a workload change splits the trend too, and the label says what changed', () => {
+  test('a workload change is set aside too, and `superseded` says what changed', () => {
     const t = costTrend(8, [
       rec({ recorded_at: 1, metrics: cell(8), params: { isls: '128', osl: '1024', prompt_mode: 'essay' } }),
       rec({ recorded_at: 2, metrics: cell(8) })
     ]);
-    expect(t.metrics).toHaveLength(2);
-    expect(t.metrics[0].label).toContain('isl 128 → 512');
+    expect(t.metrics).toHaveLength(1);
+    expect(t.superseded.runs).toBe(1);
+    expect(t.superseded.differs).toContain('isl 128 → 512');
+  });
+
+  test('one instrument throughout leaves `superseded` null — nothing was set aside', () => {
+    const t = costTrend(8, [rec({ recorded_at: 1, metrics: cell(8) }), rec({ recorded_at: 2, metrics: cell(8) })]);
+    expect(t.superseded).toBeNull();
   });
 
   test('runs on ONE instrument are one series', () => {

@@ -6,7 +6,8 @@
 // around it (header tiles, the bridging note over the gate sweep) and the
 // tests cannot disagree about what is being drawn:
 //
-//   published  the frozen campaign PAIR from the subject's manifest (dense);
+//   published  the frozen campaign PAIR from the subject's manifest, drawn
+//              only when NO live record pairs with one of its baselines;
 //   live       the newest passing gate record on main, Atlas on the gate's
 //              instrument — plus any one-shot baseline whose instrument
 //              fingerprint EQUALS the record's (ladder-baselines.js decides,
@@ -24,6 +25,26 @@ import { comparable, describeDiffers } from './ladder-baselines.js';
 
 export const subjectSeriesOf = (ladder) => ladder.series.find((s) => s.role === 'subject') ?? null;
 export const baselineSeriesOf = (ladder) => ladder.series.filter((s) => s.role === 'baseline');
+
+/**
+ * The baselines the CONCURRENCY views may consider. `scope: 'cost'` legs are
+ * energy-instrumented runs that exist for the Cost tab; they are deliberately
+ * NOT part of the throughput comparison, and every concurrency component
+ * already drops them at render time.
+ *
+ * ★ WHY THIS IS A SEPARATE ACCESSOR AND NOT A FILTER INSIDE `baselineSeriesOf`.
+ * cost.js reads `baselineSeriesOf` precisely BECAUSE it wants the cost legs, so
+ * filtering at the source would empty the Cost tab. Two readers, two questions,
+ * one shared list -- so the narrowing belongs to the caller that needs it, once.
+ *
+ * ★ WHY IT MATTERS BEYOND TIDINESS. `comparisonStateOf` returns 'live' when
+ * ANY baseline pairs with the live record. The vLLM energy leg is measured on
+ * exactly the published instrument, so without this it pairs, the tab reports
+ * 'live' -- and then renders nothing, because the components filter that same
+ * series back out. State computed over a series the view excludes.
+ */
+export const concurrencyBaselinesOf = (ladder) =>
+  baselineSeriesOf(ladder).filter((s) => s.scope !== 'cost');
 
 /** The generated ladder of a subject, or null when it has none for THIS checkpoint. */
 export function ladderFor(subject, ladders) {
@@ -48,8 +69,25 @@ export function baselineOnlyFor(subject, ladders) {
 export const liveRecordOf = (records) => records.filter((r) => r.verdict === 'PASS' && !r.branch).at(-1) ?? null;
 
 export function comparisonStateOf(subject, records, ladders) {
+  const live = liveRecordOf(records);
+  const ladder = ladderFor(subject, ladders);
+  // ★ A LIVE ATLAS LEG THAT PAIRS OUTRANKS THE FROZEN PUBLISHED PAIR (owner,
+  // 2026-09-21). The published pair is a campaign snapshot: its Atlas series
+  // is whatever main was in August, and it never moves again. The moment a
+  // gate record fingerprints as one of the SAME ladder's measured vLLM bars,
+  // there is a strictly better thing to draw — the same workload, the same
+  // vLLM number, and an Atlas leg that is this commit's. Falling back to
+  // 'published' is not a preference for the snapshot; it is what is left when
+  // no live record is comparable to any bar, and the alternative would be an
+  // Atlas curve with nothing to read it against.
+  //
+  // This is only reachable because the gate's own instrument was re-pointed
+  // to the published one (kernels/gb10/qwen3.8-27b/BENCH.toml, same day).
+  // Before that, `pairWith` refused every pair on four axes and the dense tab
+  // could never leave 'published' — the ordering below was never the reason.
+  if (live && ladder && pairWith(live, ladder).drawn.length > 0) return 'live';
   if (publishedFor(subject, ladders)) return 'published';
-  if (liveRecordOf(records)) return 'live';
+  if (live) return 'live';
   if (baselineOnlyFor(subject, ladders)) return 'baseline';
   return 'none';
 }
@@ -72,7 +110,7 @@ export const fingerprintOf = (ladder, series) => ({
 export function pairWith(live, ladder) {
   const drawn = [];
   const refused = [];
-  for (const b of baselineSeriesOf(ladder)) {
+  for (const b of concurrencyBaselinesOf(ladder)) {
     const { ok, differs } = comparable(live, fingerprintOf(ladder, b));
     if (ok) drawn.push(b);
     else refused.push({ series: b, differs, why: describeDiffers(differs) });
@@ -91,7 +129,7 @@ export function baselineTileOf(subject, records, ladders) {
   const ladder = ladderFor(subject, ladders);
   if (!ladder) return 'none';
   const dated = (bs) => `one-shot · ${measuredRange(bs.flatMap((b) => b.rungs))}`;
-  if (state === 'baseline') return dated(baselineSeriesOf(ladder));
+  if (state === 'baseline') return dated(concurrencyBaselinesOf(ladder));
   const { drawn, refused } = pairWith(liveRecordOf(records), ladder);
   if (drawn.length) return dated(drawn);
   return refused.length ? 'other instrument' : 'none';
@@ -103,7 +141,7 @@ export function baselineTileOf(subject, records, ladders) {
  * exactly that — never a zero, never a guess.
  */
 export function absentReasonOf(ladder, c) {
-  const listed = baselineSeriesOf(ladder).find((b) => b.unmeasured?.rungs.includes(c));
+  const listed = concurrencyBaselinesOf(ladder).find((b) => b.unmeasured?.rungs.includes(c));
   return listed
     ? `C=${c} · not measured — ${listed.unmeasured.reason}`
     : `C=${c} · not in this manifest: neither measured nor listed as unmeasured`;
