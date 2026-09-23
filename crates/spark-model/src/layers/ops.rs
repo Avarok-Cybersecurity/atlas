@@ -177,6 +177,8 @@ mod q4k_mmq;
 mod qsa;
 #[path = "ops/quant_dispatch.rs"]
 mod quant_dispatch;
+#[path = "ops/gemv_tc.rs"]
+pub mod gemv_tc;
 #[path = "ops/sampling.rs"]
 mod sampling;
 #[path = "ops/ssm_ba_gates_hopper.rs"]
