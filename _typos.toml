@@ -25,6 +25,14 @@ extend-ignore-identifiers-re = [
 ]
 
 [default.extend-words]
+# `arange` — NumPy's `arange()` function, named in doc comments describing the
+# `get_vision_position_ids` meshgrid construction (glm_vit/rope.rs, glm_vit/init.rs).
+# Not a typo of `arrange`.
+arange = "arange"
+# `subtile` — singular of the already-allow-listed `subtiles` below (WMMA n-tile
+# partitioning), used in a static_assert message in the shared MoE W4A16 grouped-GEMM
+# kernel (kernels/gb10/common/moe_w4a16_grouped_gemm.cu). Not a typo of `subtitle`.
+subtile = "subtile"
 # `RETUNED` — past tense of "retune", used in the MODEL.toml sampling-default
 # changelogs (`presence_penalty RETUNED 1.5 -> 1.0`). A real word; the checker
 # reads it as a misspelling of `RETURNED`, which it is not.
