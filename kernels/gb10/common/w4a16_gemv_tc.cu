@@ -48,8 +48,8 @@
 // ── Layout / launch ─────────────────────────────────────────────────────────
 // A:[M,K] BF16, B_packed:[N,K/2], B_scale:[N,K/16] FP8-E4M3, scale2 FP32,
 // C:[M,N] BF16 — the `w4a16_gemv_batchm` contract, argument for argument.
-// Requires K % 128 == 0 and N % 8 == 0 (the launcher checks and otherwise
-// keeps the CUDA-core tier).
+// Requires K % 128 == 0 (the launcher checks and otherwise keeps the
+// CUDA-core tier). Any N: rows past N load zeros and are never stored.
 // Grid: (ceil(N / (8*NT)), 1, 1)  Block: (TC_WARPS*32, 1, 1) = 256
 // (tc8: NT=1 -> ceil(N/8) CTAs; tc16: NT=2 -> ceil(N/16) CTAs).
 // The TC_WARPS warps of a CTA split K (interleaved 128-k blocks) for the same
@@ -93,6 +93,16 @@ __device__ __forceinline__ uint32_t w4tc_scale_x2(uint32_t sb) {
     return u | (u << 16);
 }
 
+__device__ __forceinline__ void w4tc_store2(__nv_bfloat16* p, float a, float b, bool paired,
+                                            bool b_live, bool a_live) {
+    if (paired) {
+        *(__nv_bfloat162*)p = __floats2bfloat162_rn(a, b);
+    } else {
+        if (a_live) p[0] = __float2bfloat16_rn(a);
+        if (b_live) p[1] = __float2bfloat16_rn(b);
+    }
+}
+
 template <int MT, int NT, int KU>
 __device__ __forceinline__ void w4a16_gemv_tc_impl(
     const __nv_bfloat16* __restrict__ A,          // [M, K]
@@ -116,13 +126,15 @@ __device__ __forceinline__ void w4a16_gemv_tc_impl(
     const uint4* a_lo_row = (const uint4*)(A + (unsigned long long)g * K);
     const uint4* a_hi_row = (const uint4*)(A + (unsigned long long)(g + 8u) * K);
 
+    // A weight row past N (the last tile of an N % 8 != 0 matrix, e.g. the
+    // 248077-row lm_head) loads zeros and is never stored.
     bool tile_live[NT];
     const unsigned char* wrow[NT];
     const unsigned char* srow[NT];
     #pragma unroll
     for (int i = 0; i < NT; i++) {
         const unsigned int n = n0 + (unsigned int)i * 8u + g;
-        tile_live[i] = (n0 + (unsigned int)i * 8u) < N;   // N % 8 == 0: whole tile in or out
+        tile_live[i] = n < N;
         wrow[i] = B_packed + (unsigned long long)n * half_K + t * 16u;
         srow[i] = B_scale + (unsigned long long)n * num_groups + t * 2u;
     }
@@ -206,7 +218,7 @@ __device__ __forceinline__ void w4a16_gemv_tc_impl(
 
     const float sfin = scale2 * 0x1p26f;
     for (unsigned int i = warp; i < (unsigned int)NT; i += TC_WARPS) {
-        if (n0 + i * 8u >= N) continue;
+        if (n0 + i * 8u >= N) continue;   // whole tile past N (tc16's second tile)
         float r[4];
         #pragma unroll
         for (int c = 0; c < 4; c++) {
@@ -216,14 +228,11 @@ __device__ __forceinline__ void w4a16_gemv_tc_impl(
             r[c] = v * sfin;
         }
         const unsigned int col = n0 + i * 8u + t * 2u;
-        if (g < M) {
-            *(__nv_bfloat162*)(C + (unsigned long long)g * N + col) =
-                __floats2bfloat162_rn(r[0], r[1]);
-        }
-        if (MT > 8 && g + 8u < M) {
-            *(__nv_bfloat162*)(C + (unsigned long long)(g + 8u) * N + col) =
-                __floats2bfloat162_rn(r[2], r[3]);
-        }
+        // Paired 4-byte store only when it is aligned (N even) and in range.
+        const bool paired = ((N & 1u) == 0u) && (col + 1u < N);
+        if (g < M) w4tc_store2(C + (unsigned long long)g * N + col, r[0], r[1], paired, col + 1u < N, col < N);
+        if (MT > 8 && g + 8u < M)
+            w4tc_store2(C + (unsigned long long)(g + 8u) * N + col, r[2], r[3], paired, col + 1u < N, col < N);
     }
 }
 

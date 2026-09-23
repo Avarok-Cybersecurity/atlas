@@ -58,11 +58,11 @@ impl TcKind {
 
 /// PURE routing decision. `None` keeps the caller's CUDA-core tier.
 ///
-/// The kernel reads each quad's 128 contiguous k per step (so `K % 128`) and
-/// writes whole 8-column tiles (so `N % 8`); anything else declines rather
-/// than guessing at a tail.
+/// The kernel reads each quad's 128 contiguous k per step (so `K % 128`);
+/// anything else declines rather than guessing at a K tail. Any N routes: a
+/// partial last column tile (the 248077-row lm_head) is guarded in-kernel.
 pub fn tc_route(m: u32, n: u32, k: u32, enabled: bool, have8: bool, have16: bool) -> Option<TcKind> {
-    if !enabled || m == 0 || n == 0 || k == 0 || k % 128 != 0 || n % 8 != 0 {
+    if !enabled || m == 0 || n == 0 || k == 0 || k % 128 != 0 {
         return None;
     }
     if m <= TC8_MAX_M && have8 {

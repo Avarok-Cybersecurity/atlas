@@ -4,14 +4,15 @@ use super::*;
 
 // Real 27B projection shapes (N, K): every one must route, or the energy
 // fix silently does not apply to that projection.
-const SHAPES_27B: [(u32, u32); 7] = [
+const SHAPES_27B: [(u32, u32); 8] = [
     (16384, 5120),  // GDN in_proj qkvz
     (12288, 5120),  // attention q + gate
     (1024, 5120),   // attention k / v
     (5120, 6144),   // attention o / GDN out_proj
     (34816, 5120),  // FFN gate+up
     (5120, 17408),  // FFN down
-    (248320, 5120), // lm_head
+    (248320, 5120), // lm_head (padded)
+    (248077, 5120), // lm_head as loaded (vocab 248077, odd)
 ];
 
 #[test]
@@ -33,13 +34,12 @@ fn above_sixteen_rows_declines() {
 }
 
 #[test]
-fn unaligned_shapes_decline_instead_of_dropping_a_tail() {
-    // K: each quad reads 128 contiguous k per step.
+fn k_tail_declines_but_any_n_routes() {
+    // K: each quad reads 128 contiguous k per step; a K tail would be dropped.
     assert_eq!(tc_route(4, 5120, 5120 + 64, true, true, true), None);
-    // N: whole 8-column tiles only (GDN in_proj_a/b are N=48 — aligned — but
-    // a 44-row head would leave 4 columns unwritten).
-    assert_eq!(tc_route(4, 44, 5120, true, true, true), None);
-    assert_eq!(tc_route(4, 48, 5120, true, true, true), Some(TcKind::M8));
+    // N: the real vocab (248077, odd) is guarded in-kernel, so it routes.
+    assert_eq!(tc_route(4, 248077, 5120, true, true, true), Some(TcKind::M8));
+    assert_eq!(tc_route(12, 248077, 5120, true, true, true), Some(TcKind::M16));
 }
 
 #[test]

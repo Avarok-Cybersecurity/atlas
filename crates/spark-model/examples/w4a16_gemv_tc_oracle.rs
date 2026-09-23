@@ -45,7 +45,7 @@ const SHAPES: [(&str, u32, u32); 7] = [
     ("o/out    ", 5120, 6144),
     ("ffn gu   ", 34816, 5120),
     ("ffn down ", 5120, 17408),
-    ("lm_head  ", 248320, 5120),
+    ("lm_head  ", 248077, 5120), // the loaded vocab: odd N, partial tile
 ];
 const MS: [u32; 8] = [1, 2, 3, 4, 5, 8, 12, 16];
 const E2M1: [f64; 16] = [
