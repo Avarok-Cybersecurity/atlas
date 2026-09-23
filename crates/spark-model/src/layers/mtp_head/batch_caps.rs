@@ -141,17 +141,22 @@ impl MtpHead {
     /// batched propose needs are all present. Width is [`Self::propose_batch_max`].
     fn propose_batch_scope_ok(&self) -> bool {
         let bf16_proj = |p: &ProjectionWeight| matches!(p, ProjectionWeight::Bf16(_));
+        // q/o and the dense FFN may also be the weight-only NVFP4 stream of a
+        // dense head under `--mtp-quantization nvfp4` (`forward_batch::proj_rows`).
+        let row_proj = |p: &ProjectionWeight| {
+            matches!(p, ProjectionWeight::Bf16(_) | ProjectionWeight::Nvfp4(_))
+        };
         matches!(self.quant, MtpQuantization::Bf16)
             && self.kv_bf16
             && bf16_proj(&self.fc)
-            && bf16_proj(&self.q_proj)
+            && row_proj(&self.q_proj)
             && bf16_proj(&self.k_proj)
             && bf16_proj(&self.v_proj)
-            && bf16_proj(&self.o_proj)
+            && row_proj(&self.o_proj)
             && self
                 .dense_ffn_generic
                 .as_ref()
-                .is_some_and(|(g, u, d)| bf16_proj(g) && bf16_proj(u) && bf16_proj(d))
+                .is_some_and(|(g, u, d)| row_proj(g) && row_proj(u) && row_proj(d))
             && self.dense_gemm_pipelined_k.0 != 0
             && self.dense_gemv_k.is_some()
             && self.deinterleave_qg_k.is_some()
