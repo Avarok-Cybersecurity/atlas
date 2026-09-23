@@ -75,6 +75,14 @@ bounds and take no noise, same footing as the 35B entry; `iterations` is \
 PINNED at exactly 10 for the same reason stated there — a count bound alone \
 does not describe the run that produced it."""
 
+[benchmarks.serve_overrides]
+# `--w4a4-downcast`: the owner decision of 2026-09-23 (TEP) puts this recipe on
+# W4A4 small-M projections + FFN (FP4 block-scale MMA, per-row NVFP4
+# activations). The bfcl recipe (bfcl-subset, kat-equality-gate) stays
+# W4A16 as the accuracy reference.
+w4a4_downcast = "true"
+
+
 [benchmarks.metrics.followed_directions]
 min = 10.0
 
@@ -265,6 +273,14 @@ instrumentation (real accepted_prediction_tokens in usage); a binary \
 without it reports INCONCLUSIVE by name, which is correct — a floor \
 measured without proof of speculative engagement is the 2026-08-15 decode \
 flip-flop all over again."""
+
+[benchmarks.serve_overrides]
+# `--w4a4-downcast`: the owner decision of 2026-09-23 (TEP) puts this recipe on
+# W4A4 small-M projections + FFN (FP4 block-scale MMA, per-row NVFP4
+# activations). The bfcl recipe (bfcl-subset, kat-equality-gate) stays
+# W4A16 as the accuracy reference.
+w4a4_downcast = "true"
+
 
 [benchmarks.metrics.server_decode_tok_s]
 # Median-of-3 server decode rate. The floor of 25.5 is the bound in force —
@@ -639,6 +655,11 @@ prefill_codispatch = "true"
 # were wrong: nothing ever measured an argmax difference, the published 478.11
 # ladder itself ran with no --lm-head-dtype flag, and the "not a throughput
 # knob" claim was off by 41-53%.
+# `--w4a4-downcast`: the owner decision of 2026-09-23 (TEP) puts this recipe on
+# W4A4 small-M projections + FFN (FP4 block-scale MMA, per-row NVFP4
+# activations). The bfcl recipe (bfcl-subset, kat-equality-gate) stays
+# W4A16 as the accuracy reference.
+w4a4_downcast = "true"
 
 [benchmarks.serve_env]
 # The AVAROK_* levers the ladder is measured under — the published dense
@@ -1405,6 +1426,11 @@ draft_model = "incoai/Qwen3.8-27B-DFlash2"
 # measured 0% accept on every verify step while sizing its pools for twice
 # the block it can use.
 dflash_gamma = "8"
+# `--w4a4-downcast`: the owner decision of 2026-09-23 (TEP) puts this recipe on
+# W4A4 small-M projections + FFN (FP4 block-scale MMA, per-row NVFP4
+# activations). The bfcl recipe (bfcl-subset, kat-equality-gate) stays
+# W4A16 as the accuracy reference.
+w4a4_downcast = "true"
 
 [benchmarks.param_overrides]
 # ★ NO LONGER THE PLAIN GATE'S INSTRUMENT. Until 2026-09-21 this said "isl
@@ -1675,6 +1701,14 @@ video_preprocessor_config.json (unused until video support lands), so it resolve
 16.7M px before the resolver fix as well; clamped to the encoder's 16384-patch \
 ceiling. Run at --max-seq-len 32768 for this record."""
 
+[benchmarks.serve_overrides]
+# `--w4a4-downcast`: the owner decision of 2026-09-23 (TEP) puts this recipe on
+# W4A4 small-M projections + FFN (FP4 block-scale MMA, per-row NVFP4
+# activations). The bfcl recipe (bfcl-subset, kat-equality-gate) stays
+# W4A16 as the accuracy reference.
+w4a4_downcast = "true"
+
+
 [benchmarks.metrics.geometry_matched]
 min = 14.0
 
@@ -1828,6 +1862,14 @@ subset runs (measured: PASS 5/5, 4 skipped)."""
 # the new leg passes BOTH the scorer (13 asserted == 13 passed) and the floor
 # (13 >= 13), and nobody hears about it. Count metrics are the easy half of
 # threshold ratcheting and should never be left behind the instrument.
+
+[benchmarks.serve_overrides]
+# `--w4a4-downcast`: the owner decision of 2026-09-23 (TEP) puts this recipe on
+# W4A4 small-M projections + FFN (FP4 block-scale MMA, per-row NVFP4
+# activations). The bfcl recipe (bfcl-subset, kat-equality-gate) stays
+# W4A16 as the accuracy reference.
+w4a4_downcast = "true"
+
 [benchmarks.metrics.legs_passed]
 min = 14.0
 
