@@ -70,7 +70,7 @@ pub fn tc_route(
     have8: bool,
     have16: bool,
 ) -> Option<TcKind> {
-    if !enabled || m == 0 || n == 0 || k == 0 || k % 128 != 0 {
+    if !enabled || m == 0 || n == 0 || k == 0 || !k.is_multiple_of(128) {
         return None;
     }
     if m <= TC8_MAX_M && have8 {
