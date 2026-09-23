@@ -31,8 +31,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use avarok_plugin::serve_identity::{ServeIdentity, argv_fingerprint, file_sha256};
-use avarok_plugin::{ArtifactStore, TargetEndpoint};
+use avarok_plugin::{ArtifactStore, TargetEndpoint, serve_env};
 
+use super::bench_cause;
 use super::bench_selfstart::SelfServed;
 use super::bench_serve_plan::ServePlan;
 
@@ -49,10 +50,25 @@ pub struct Lease {
     pub recipe_id: String,
     pub argv_sha256: String,
     pub binary_sha256: String,
+    /// `serve_env::fingerprint` of the lever set the server was started
+    /// under — the recipe's declaration, whole (#1242). Defaults to empty for
+    /// a lease written before the field existed; its server is replaced, as
+    /// one from another binary is.
+    #[serde(default)]
+    pub env_sha256: String,
     /// The process that asked for the lease (a campaign driver), or the run
     /// itself when nobody did.
     pub owner_pid: u32,
     pub started_at: u64,
+}
+
+/// What this process would want a reused server to be: its own binary, the
+/// plan's rendering on the leased port, and the plan's lever set.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Expected {
+    pub argv_sha256: String,
+    pub binary_sha256: String,
+    pub env_sha256: String,
 }
 
 pub fn lease_path(store: &ArtifactStore) -> PathBuf {
@@ -89,12 +105,15 @@ fn pid_alive(pid: u32) -> bool {
     cfg!(target_os = "linux") && Path::new(&format!("/proc/{pid}")).exists()
 }
 
-/// What this process would want a reused server to be: the plan's own
-/// rendering on the leased port, from this binary.
-fn expected(plan: &ServePlan, port: u16) -> Result<(String, String)> {
+/// [`Expected`] for `plan` on `port`, from this binary.
+fn expected(plan: &ServePlan, port: u16) -> Result<Expected> {
     let argv = plan.argv(port)?;
     let mine = std::env::current_exe().context("current_exe")?;
-    Ok((argv_fingerprint(&argv[1..]), file_sha256(&mine)?))
+    Ok(Expected {
+        argv_sha256: argv_fingerprint(&argv[1..]),
+        binary_sha256: file_sha256(&mine)?,
+        env_sha256: serve_env::fingerprint(&plan.serve_env),
+    })
 }
 
 /// Why a leased server is not the one this run needs, or `None` when it is.
@@ -103,7 +122,7 @@ fn expected(plan: &ServePlan, port: u16) -> Result<(String, String)> {
 pub fn mismatch(
     lease: &Lease,
     reported: &ServeIdentity,
-    expected: &(String, String),
+    expected: &Expected,
     model: &str,
 ) -> Option<String> {
     if reported.pid != lease.pid {
@@ -112,13 +131,23 @@ pub fn mismatch(
             reported.pid, lease.port, lease.pid
         ));
     }
-    if reported.binary_sha256 != expected.1 {
+    if reported.binary_sha256 != expected.binary_sha256 {
         return Some("it was built from another binary".into());
     }
-    if reported.argv_sha256 != expected.0 {
+    if reported.argv_sha256 != expected.argv_sha256 {
         return Some(format!(
             "it serves {} under another rendering (recipe {}, overrides or hermetic set differ)",
             lease.model, lease.recipe_id
+        ));
+    }
+    // The server's OWN statement of its levers, not the lease's: a server
+    // that predates the field reports an empty digest and is replaced.
+    if reported.env_sha256 != expected.env_sha256 {
+        return Some(format!(
+            "it was started under another AVAROK_* serve environment than recipe {} is \
+             measured under (a server carrying levers this run did not declare, or lacking \
+             ones it did)",
+            lease.recipe_id
         ));
     }
     if lease.model != model {
@@ -130,6 +159,9 @@ pub fn mismatch(
 /// Take the leased server if it is the one `plan` would start, else replace
 /// it. Either way the returned server is left running when dropped.
 pub async fn acquire(plan: ServePlan, owner_pid: Option<u32>) -> Result<SelfServed> {
+    // Before the probe: a harness carrying levers the recipe does not declare
+    // gets no server at all, reused or fresh (#1242).
+    let reconciled = plan.reconcile_env()?;
     let store = ArtifactStore::discover()?;
     if let Some(lease) = read(&store)? {
         if pid_alive(lease.pid) {
@@ -152,6 +184,7 @@ pub async fn acquire(plan: ServePlan, owner_pid: Option<u32>) -> Result<SelfServ
                         plan.recipe_id,
                         plan.requested,
                         resolved,
+                        reconciled.env,
                         plan.entry,
                     ));
                 }
@@ -171,7 +204,13 @@ pub async fn acquire(plan: ServePlan, owner_pid: Option<u32>) -> Result<SelfServ
         }
         let _ = std::fs::remove_file(lease_path(&store));
     }
-    start(&store, plan, owner_pid.unwrap_or_else(std::process::id)).await
+    start(
+        &store,
+        plan,
+        reconciled,
+        owner_pid.unwrap_or_else(std::process::id),
+    )
+    .await
 }
 
 /// Ask the leased server what it is and compare.
@@ -195,7 +234,18 @@ async fn probe(target: &TargetEndpoint, lease: &Lease, plan: &ServePlan) -> Resu
 
 /// Start `spark serve` as a child in its own process group, record the
 /// lease, and wait for the model.
-async fn start(store: &ArtifactStore, plan: ServePlan, owner_pid: u32) -> Result<SelfServed> {
+///
+/// The child inherits this process's environment — toolchain and harness
+/// variables pass as they always did — plus `reconciled.missing`, the
+/// declared levers this process does not carry. After `reconcile` that makes
+/// the child's lever set exactly the declaration, which is what the lease
+/// and the server's own `env_sha256` both fingerprint.
+async fn start(
+    store: &ArtifactStore,
+    plan: ServePlan,
+    reconciled: serve_env::Reconciled,
+    owner_pid: u32,
+) -> Result<SelfServed> {
     let port = avarok_plugin::benchmarks::agentic::score::free_port()?;
     let serve_args = plan.serve_args(port)?;
     super::bench_selfstart::check_box_is_free_enough(
@@ -212,6 +262,7 @@ async fn start(store: &ArtifactStore, plan: ServePlan, owner_pid: u32) -> Result
         .with_context(|| format!("opening {}", log_path(store).display()))?;
     let mut cmd = std::process::Command::new(&exe);
     cmd.args(&argv[1..])
+        .envs(&reconciled.missing)
         .stdin(std::process::Stdio::null())
         .stdout(log.try_clone()?)
         .stderr(log);
@@ -230,6 +281,7 @@ async fn start(store: &ArtifactStore, plan: ServePlan, owner_pid: u32) -> Result
         recipe_id: plan.recipe_id.clone(),
         argv_sha256: argv_fingerprint(&argv[1..]),
         binary_sha256: file_sha256(&exe)?,
+        env_sha256: serve_env::fingerprint(&reconciled.env),
         owner_pid,
         started_at: super::bench_certify::lockfile::now_unix(),
     };
@@ -239,9 +291,31 @@ async fn start(store: &ArtifactStore, plan: ServePlan, owner_pid: u32) -> Result
          after this run — `spark benchmark serve-release` stops it",
         plan.model, plan.recipe_id, lease.pid
     );
+    eprintln!(
+        "gate: the leased server's AVAROK_* serve env is {} ({} handed to the child)",
+        if reconciled.env.is_empty() {
+            "empty".to_string()
+        } else {
+            reconciled
+                .env
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        },
+        reconciled.missing.len()
+    );
     let target = TargetEndpoint::local(port, &plan.model);
     let boot_timeout = Duration::from_secs(plan.limits.timing.boot_timeout_s);
-    if let Err(e) = await_serving(&target, &plan.model, &mut child, boot_timeout).await {
+    if let Err(e) = await_serving(
+        &target,
+        &plan.model,
+        &mut child,
+        boot_timeout,
+        &log_path(store),
+    )
+    .await
+    {
         stop(&lease);
         let _ = std::fs::remove_file(lease_path(store));
         return Err(e);
@@ -253,23 +327,51 @@ async fn start(store: &ArtifactStore, plan: ServePlan, owner_pid: u32) -> Result
         plan.recipe_id,
         plan.requested,
         resolved,
+        reconciled.env,
         plan.entry,
     ))
 }
 
+/// The refusal for a leased serve that died during startup, carrying the end
+/// of its own log — the `Error:` / `Caused by:` block that says WHY ("No
+/// memory left for KV cache …"), which until #1242 stayed in a 126 MB file on
+/// another box while the driver printed "returned no record". The block is
+/// indented so this message's own `Error:` line stays the outermost one a
+/// reader of the child's log finds (`bench_cause::final_error_block`).
+///
+/// Pure over the log's tail, so the shape is testable without a serve.
+pub(super) fn exited_before_serving(status: &str, model: &str, log_tail: &str) -> String {
+    match bench_cause::final_error_block(log_tail) {
+        Some(block) => format!(
+            "the leased server exited ({status}) before it began serving {model:?} — \
+             serve-lease.log ends with:\n{}",
+            bench_cause::indented(&block)
+        ),
+        None => format!(
+            "the leased server exited ({status}) before it began serving {model:?} — see \
+             serve-lease.log (its tail carries no `Error:` block)"
+        ),
+    }
+}
+
 /// Block until `/v1/models` names `model`, watching the child so a serve that
-/// dies during startup reports so instead of timing out.
+/// dies during startup reports so — with the end of `log` — instead of
+/// timing out.
 async fn await_serving(
     target: &TargetEndpoint,
     model: &str,
     child: &mut std::process::Child,
     boot_timeout: Duration,
+    log: &Path,
 ) -> Result<()> {
     let deadline = Instant::now() + boot_timeout;
     loop {
         if let Some(status) = child.try_wait()? {
+            let tail = bench_cause::tail_of_file(log, bench_cause::TAIL_BYTES)
+                .unwrap_or_else(|e| format!("(serve-lease.log could not be read: {e})"));
             bail!(
-                "the leased server exited ({status}) before it began serving {model:?} — see serve-lease.log"
+                "{}",
+                exited_before_serving(&status.to_string(), model, &tail)
             );
         }
         let last = match avarok_plugin::http::list_models(target, Duration::from_secs(5)).await {

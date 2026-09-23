@@ -7,6 +7,7 @@ use clap::Parser;
 pub mod bench_aggregate;
 mod bench_args;
 pub mod bench_card;
+pub(crate) mod bench_cause;
 pub mod bench_certify;
 mod bench_gate_check;
 pub mod bench_lease;

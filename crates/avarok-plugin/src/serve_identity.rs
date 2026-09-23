@@ -47,6 +47,7 @@ pub fn this_process() -> &'static ServeIdentity {
                 .context("current_exe")
                 .and_then(|p| file_sha256(&p))
                 .unwrap_or_else(|e| format!("unavailable: {e:#}")),
+            env_sha256: crate::serve_env::fingerprint(&crate::serve_env::process_levers()),
             pid: std::process::id(),
         }
     })
@@ -57,6 +58,14 @@ pub fn this_process() -> &'static ServeIdentity {
 pub struct ServeIdentity {
     pub argv_sha256: String,
     pub binary_sha256: String,
+    /// The digest of the `AVAROK_*` serve levers in this server's environment
+    /// — `serve_env::fingerprint` over `serve_env::process_levers()`. The
+    /// argv says which recipe rendering the server runs; this says which
+    /// levers it reads beside it (#1242). Defaults to empty for a server that
+    /// predates the field, which never matches what a run expects: a server
+    /// that cannot say what it was started under is not provably this run's.
+    #[serde(default)]
+    pub env_sha256: String,
     pub pid: u32,
 }
 
@@ -76,6 +85,28 @@ mod tests {
             argv_fingerprint(&["serve".into(), "m".into(), "--port".into(), "1".into()])
         );
         assert_eq!(a.len(), 64);
+    }
+
+    /// The identity says which levers the server runs under (#1242), and a
+    /// `/serve-config` from a server that predates the field still parses —
+    /// with a digest that can never equal a real one, so it is replaced, not
+    /// trusted.
+    #[test]
+    fn the_identity_carries_the_lever_digest_and_an_older_server_reports_none() {
+        let id = this_process();
+        assert_eq!(
+            id.env_sha256,
+            crate::serve_env::fingerprint(&crate::serve_env::process_levers())
+        );
+        assert_eq!(id.env_sha256.len(), 64);
+        let old: ServeIdentity =
+            serde_json::from_str(r#"{"argv_sha256":"a","binary_sha256":"b","pid":1}"#).unwrap();
+        assert_eq!(old.env_sha256, "");
+        assert_ne!(
+            old.env_sha256,
+            crate::serve_env::fingerprint(&Default::default()),
+            "even an empty lever set has a digest an old server cannot claim"
+        );
     }
 
     #[test]

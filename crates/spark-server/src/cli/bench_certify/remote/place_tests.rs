@@ -156,6 +156,61 @@ fn the_record_must_be_for_this_unit_at_the_anchor_on_this_class() {
     );
 }
 
+/// #1242: a job that completed without a record — the child died before it
+/// measured — is refused WITH the child's own final `Error:` block, so the
+/// orchestrator prints "No memory left for KV cache" rather than only
+/// "returned no record". A log with no such block adds nothing.
+#[test]
+fn a_missing_record_carries_the_childs_final_error_block() {
+    let root = std::env::temp_dir().join(format!("certify-place-cause-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join(".certify/x")).unwrap();
+    let log = root.join(".certify/x/bfcl-subset.log");
+    std::fs::write(
+        &log,
+        "gate: serving unsloth/Qwen3.8-27B-NVFP4 from recipe qwen3.8/qwen3.8-27b-nvfp4-unsloth-bfcl\n\
+         Error: the leased server exited (exit status: 1) before it began serving \
+         \"unsloth/Qwen3.8-27B-NVFP4\" — serve-lease.log ends with:\n    \
+         Error: Failed to build model\n    \n    Caused by:\n        \
+         No memory left for KV cache: total GPU = 121.7 GB, --gpu-memory-utilization 70% → \
+         budget 85.2 GB, but 69.9 GB already consumed + 23.7 GB inference reserve = \
+         93.7 GB committed.\n",
+    )
+    .unwrap();
+    let f = |rel: &str, path: PathBuf| FetchedFile {
+        name: Path::new(rel)
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned(),
+        relative_path: rel.into(),
+        path,
+        bytes: 0,
+        sha256: String::new(),
+    };
+    let files = [f(".certify/x/bfcl-subset.log", log.clone())];
+    let e = sort_files(&files, "bfcl-subset").unwrap_err().to_string();
+    assert!(
+        e.starts_with("the node returned no record for bfcl-subset"),
+        "{e}"
+    );
+    assert!(e.contains("No memory left for KV cache"), "{e}");
+    assert!(e.contains("Error: the leased server exited"), "{e}");
+    assert!(!e.contains("gate: serving"), "only the error block: {e}");
+    // The same shape reaches `place`, which is what the runner calls.
+    let e = place(&root, &root, &files, &expect("deadbeef")).unwrap_err();
+    assert!(
+        format!("{e:#}").contains("No memory left for KV cache"),
+        "{e:#}"
+    );
+
+    // NEGATIVE CONTROL: a log without an `Error:` block is not quoted.
+    std::fs::write(&log, "gate: serving …\nrun cancelled\n").unwrap();
+    let e = sort_files(&files, "bfcl-subset").unwrap_err().to_string();
+    assert_eq!(e, "the node returned no record for bfcl-subset");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 #[test]
 fn sort_files_wants_exactly_one_record_and_its_own_signature() {
     let f = |rel: &str| FetchedFile {

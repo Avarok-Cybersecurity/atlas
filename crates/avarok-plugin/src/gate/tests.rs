@@ -114,6 +114,7 @@ pub(super) fn baseline_for(model: &str, metrics: BTreeMap<String, Bound>) -> Gat
             metrics,
             serve_overrides: BTreeMap::new(),
             param_overrides: BTreeMap::new(),
+            serve_env: BTreeMap::new(),
         },
     );
     let mut hardware = BTreeMap::new();
