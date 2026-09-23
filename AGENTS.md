@@ -82,7 +82,10 @@ again before reading `stamp status` / `seal status`, committing `.benchmarks/` r
 commenting `/stamp` or `/seal`:
 
 ```
-/oracle_certification_state_check pre --pr <N>     # then: begin → during → post → release
+/oracle_certification_state_check pre --pr <N>
+# legacy shell driver: begin → during → post → release
+# spark bench certify (current):  during → post → release  (certify claims the
+#   lock itself — running `begin` first collides with it; see the skill's ⚠️ note)
 ```
 
 It is a blocking oracle (`.claude/agents/oracle_cert.md`) running fourteen litmus tests —
