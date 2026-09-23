@@ -447,6 +447,11 @@ change but this one — the site's top chart must show the LIVE Atlas against \
 the measured vLLM bar, and that requires the live gate record to fingerprint \
 as the published instrument on every REQUIRED axis (isl, osl, prompt_mode, \
 max_model_len, max_batch_size, kv_cache_dtype). \
+★ RE-CUT 2026-09-23: the nine rung floors and min_completion_tokens now carry \
+bars cut from the first gate record on this instrument plus the same-instrument \
+ladder38 history on all three boxes -- see the derivation block directly \
+above [benchmarks.metrics.c1_aggregate_tok_s]. The paragraph that follows is \
+the 2026-09-21 state, kept so the sequence stays legible. \
 ★ EVERY RUNG FLOOR IS THEREFORE OFF (min = 0.0), NOT LOWERED. The committed \
 floors were cut at the retired instrument and sit 1.15x to 4.3x below what \
 this one produces — published Atlas on it reads C1 23.59, C2 41.02, C4 \
@@ -718,7 +723,74 @@ prompt_mode = "essay"
 # a judgement. `noise` is untouched on every rung, as the 2026-09-11 ratchet
 # left it, so the ratchet is visible in `min` and not hidden in the allowance.
 
+# ── RE-CUT 2026-09-23, THE FIRST CUT ON THE 128/1024 ESSAY INSTRUMENT. Policy
+# as on 2026-09-20 (owner): a FLOOR is the latest measured value x 0.975
+# rounded DOWN to a clean step (0.5 below 100, 10 from 100 to 1000, 50 above),
+# "latest" being ONE named committed record:
+# .benchmarks/concurrency-sweep/2026-09-23-6c75c09da4.json (spark-28c2 = dgx3,
+# 2026-09-23 00:28 UTC, PASS, the only gate record on this instrument), which
+# reads
+#
+#     C1 22.78  C2 41.47  C4 73.58  C8 125.46  C16 199.82
+#     C32 285.74  C64 385.89  C128 478.91  peak 478.91 (at C=128)
+#
+# ★ ONE GATE RECORD IS NOT A REGIME. recut_floors.py exits 3 on this directory
+# ("fewer than three records on this instrument"), and its pure policy bars
+# (22.0 / 40.0 / 71.5 / 120 / 190 / 270 / 370 / 460) would fail a healthy dgx1
+# run at C=2, C=4, C=8 and C=128 outright: the 2026-09-22 dgx1 proof reps read
+# 39.02 / 69.05 / 119.84 / 459.32. So the GUARD is applied against the whole
+# same-instrument history instead. The regime is every clean run of the
+# published build or later, on the ladder38 harness this gate's ESSAY fixture
+# reproduces byte for byte (the gate takes ONE timed rep per cell, so the
+# harness's per-rep values -- not its 3-rep means -- are the right noise
+# model): bench/ladder38 rounds 10 and 11 (dgx2, 2026-08-17; round 11 is the
+# published series), the 2026-08-18 C=2/C=8 hardening runs (dgx2), the
+# 2026-08-20 stack-tip sweeps on dgx1 (idle), dgx2 and dgx3 plus the dgx1
+# C=64/C=128 cross-box run, the 2026-09-22 dense proof on dgx1 (x2), dgx2 and
+# dgx3 (proof/MANIFEST.json, tree 8435a65348), and the gate record. n per rung
+# is 13-31 reps across three boxes. EXCLUDED, with the reason written down:
+# sweep_atlas_stacktip_dgx1_20260820.json, which RESULTS.md (the "dgx1
+# CONTENDED | dgx1 IDLE" table) records as measured minutes after the box had
+# served another session, and which was re-run idle for exactly that reason.
+# Rounds 4-9 are pre-K-ladder and read a different engine (C8 82-111), so they
+# are outside the regime the way pre-#968 records were outside the 09-20 one.
+#
+# ★ THE GUARD, read strictly because the regime is harness reps rather than
+# gate records: the written bar must clear EVERY regime rep by at least the
+# policy's own 2.5%, i.e. floor <= regime-min x 0.975 rounded down. Where the
+# policy bar meets that, it is written; where it does not (it is within 2.5%
+# of, or above, the slowest box's slowest rep), the regime-minimum basis is
+# written instead. Every regime minimum is a dgx1 rep except C=1, where the
+# gate record itself is the minimum.
+#
+#     rung  latest  policy  regime min (rep, box)               n   written  basis
+#     C1    22.78   22.0    22.78 (gate 6c75c09da4, dgx3)       19  22.0     policy
+#     C2    41.47   40.0    39.02 (proof 09-22, dgx1)           22  38.0     regime min (policy fails outright)
+#     C4    73.58   71.5    69.05 (proof 09-22 resample, dgx1)  28  67.0     regime min (policy fails outright)
+#     C8    125.46  120     119.84 (proof 09-22, dgx1)          31  110      regime min (policy fails outright)
+#     C16   199.82  190     192.22 (stack tip idle 08-20, dgx1) 28  180      regime min (policy clears by 1.2% only)
+#     C32   285.74  270     274.68 (stack tip idle 08-20, dgx1) 28  260      regime min (policy clears by 1.7% only)
+#     C64   385.89  370     375.08 (cross-box 08-20, dgx1)      13  360      regime min (policy clears by 1.4% only)
+#     C128  478.91  460     459.32 (cross-box 08-20, dgx1)      13  440      regime min (policy fails outright)
+#     peak  478.91  460     459.32 (same run; peak is C=128)    13  440      = C128, see the peak block
+#
+# The written bars sit 3.5% (C1) to 8.2% (C8, the 10-step rounding) under the
+# slowest clean rep ever measured on this instrument, and 3.4% (C1) to 12.3%
+# (C8) under the gate record. They are BELOW the published vLLM+MTP bars at
+# C=4/8/16/32 (71.61 / 124.48 / 197.03 / 283.48) by construction: Atlas's
+# margin there is 1-3% and a floor at the bar would fail a healthy run one
+# time in several -- the gate guards Atlas against ITSELF; the site's chart is
+# where the vLLM comparison is read. `noise` stays 0.0 on every rung so the
+# bar is the number written. RE-CUT under the pure policy (latest x 0.975,
+# guard over committed PASS records) once >= 3 gate records exist here; the
+# thin-margin rungs (C16/C32/C64) are the ones that will tighten first.
+
 [benchmarks.metrics.c1_aggregate_tok_s]
+# ★ RE-CUT 2026-09-23, 11.5 -> 22.0, on the 128/1024 essay instrument (derivation
+# block above the C1 table): latest 22.78 x 0.975 = 22.21 -> 22.0 (policy). Regime min is the gate
+# record itself (22.78; dgx1 22.90 on the 2026-09-22 proof, dgx2 23.19 on
+# round 10; n=19), 22.0 clears it by 3.5%.
+#
 # ★ RATCHETED 2026-09-20, 20.4 -> 20.5 (effective 20.1 -> 20.2 after the
 # unchanged `noise` of 0.3): 20.5 was the policy floor on the
 # 2026-09-20-43a3c9b202 value 21.21 (x 0.975 = 20.68, rounded down). Guard:
@@ -789,12 +861,18 @@ prompt_mode = "essay"
 # leg ran an August build with its own CLI (fifo, 8 ssm slots, f16-pool,
 # --mtp-gate force), and this gate serves main's recipe. A bar 2x under
 # catches a collapse and cannot be reached by any drift or by noise.
-# RE-CUT under the speed-bound policy (latest x 0.975) once >= 3 records exist
-# on this instrument, with the same GUARD the block above records.
-min = 11.5
+# (The 2026-09-21 basis above is superseded by the 2026-09-23 re-cut at the
+# top of this block.)
+min = 22.0
 noise = 0.0
 
 [benchmarks.metrics.c2_aggregate_tok_s]
+# ★ RE-CUT 2026-09-23, 20.5 -> 38.0, on the 128/1024 essay instrument (derivation
+# block above the C1 table): latest 41.47 x 0.975 = 40.43 -> 40.0 fails the guard outright: dgx1 read
+# 39.02 on the 2026-09-22 proof (n=22, range 39.02-41.69; dgx3 40.57-41.47).
+# Written on the regime-minimum basis, 39.02 x 0.975 = 38.04 -> 38.0. Under
+# the vLLM+MTP bar of 37.11 by 0.9 -- a real C=2 loss still reads on the site.
+#
 # ★ NOT RATCHETED 2026-09-20, deliberately. The policy floor on the latest
 # value (31.66 -> 30.5, effective 29.55) fails the guard outright: three of
 # the fourteen 32-slot-pin records read 26.74 / 27.40 / 27.43
@@ -828,12 +906,19 @@ noise = 0.0
 # leg ran an August build with its own CLI (fifo, 8 ssm slots, f16-pool,
 # --mtp-gate force), and this gate serves main's recipe. A bar 2x under
 # catches a collapse and cannot be reached by any drift or by noise.
-# RE-CUT under the speed-bound policy (latest x 0.975) once >= 3 records exist
-# on this instrument, with the same GUARD the block above records.
-min = 20.5
+# (The 2026-09-21 basis above is superseded by the 2026-09-23 re-cut at the
+# top of this block.)
+min = 38.0
 noise = 0.0
 
 [benchmarks.metrics.c4_aggregate_tok_s]
+# ★ RE-CUT 2026-09-23, 37.0 -> 67.0, on the 128/1024 essay instrument (derivation
+# block above the C1 table): latest 73.58 x 0.975 = 71.74 -> 71.5 fails the guard outright: dgx1 read
+# 69.05 on the 2026-09-22 resample (n=28, range 69.05-75.77; dgx1 alone
+# 69.05-72.22). Regime-minimum basis, 69.05 x 0.975 = 67.32 -> 67.0. Sits
+# 4.6 under the vLLM+MTP bar (71.61): Atlas wins C=4 by 1.03x and a floor at
+# the bar would fail a healthy dgx1 run.
+#
 # ★ RATCHETED 2026-09-20, 37.5 -> 43.5 (effective 35.7 -> 41.7 after the
 # unchanged `noise` of 1.8), on the REGIME-MINIMUM basis, not the policy one. The
 # policy floor on 2026-09-20-43a3c9b202 (53.17 -> 51.5, effective 49.7) fails
@@ -866,12 +951,18 @@ noise = 0.0
 # leg ran an August build with its own CLI (fifo, 8 ssm slots, f16-pool,
 # --mtp-gate force), and this gate serves main's recipe. A bar 2x under
 # catches a collapse and cannot be reached by any drift or by noise.
-# RE-CUT under the speed-bound policy (latest x 0.975) once >= 3 records exist
-# on this instrument, with the same GUARD the block above records.
-min = 37.0
+# (The 2026-09-21 basis above is superseded by the 2026-09-23 re-cut at the
+# top of this block.)
+min = 67.0
 noise = 0.0
 
 [benchmarks.metrics.c8_aggregate_tok_s]
+# ★ RE-CUT 2026-09-23, 62.5 -> 110, on the 128/1024 essay instrument (derivation
+# block above the C1 table): latest 125.46 x 0.975 = 122.32 -> 120 fails the guard outright: dgx1 read
+# 119.84 on the 2026-09-22 proof (n=31, range 119.84-127.85). Regime-
+# minimum basis, 119.84 x 0.975 = 116.84 -> 110 (the 10-step above 100, which
+# is why this lands 8.2% under the minimum rather than 2.5%).
+#
 # ★ RATCHETED 2026-09-20, 48.0 -> 57.0 (effective 45.7 -> 54.7 after the
 # unchanged `noise` of 2.3), on the REGIME-MINIMUM basis. The policy floor on
 # 2026-09-20-43a3c9b202 (64.73 -> 63.0, effective 60.7) clears the fourteen
@@ -905,12 +996,19 @@ noise = 0.0
 # leg ran an August build with its own CLI (fifo, 8 ssm slots, f16-pool,
 # --mtp-gate force), and this gate serves main's recipe. A bar 2x under
 # catches a collapse and cannot be reached by any drift or by noise.
-# RE-CUT under the speed-bound policy (latest x 0.975) once >= 3 records exist
-# on this instrument, with the same GUARD the block above records.
-min = 62.5
+# (The 2026-09-21 basis above is superseded by the 2026-09-23 re-cut at the
+# top of this block.)
+min = 110
 noise = 0.0
 
 [benchmarks.metrics.c16_aggregate_tok_s]
+# ★ RE-CUT 2026-09-23, 100 -> 180, on the 128/1024 essay instrument (derivation
+# block above the C1 table): latest 199.82 x 0.975 = 194.82 -> 190 clears the regime min of 192.22
+# (dgx1 idle stack tip, 2026-08-20; n=28, dgx1 192.22-198.03) by 1.2% only,
+# under the policy's own margin, and the CONTENDED dgx1 run of the same hour
+# read 181.41 -- so the regime-minimum basis is written: 192.22 x 0.975 =
+# 187.41 -> 180.
+#
 # ★ RATCHETED 2026-09-20, 84.0 -> 86.0 (effective 82.55 -> 84.55 after the
 # unchanged `noise` of 1.45), on the REGIME-MINIMUM basis. The policy floor on
 # 2026-09-20-43a3c9b202 (91.76 -> 89.5, effective 88.05) fails the guard by
@@ -943,12 +1041,18 @@ noise = 0.0
 # leg ran an August build with its own CLI (fifo, 8 ssm slots, f16-pool,
 # --mtp-gate force), and this gate serves main's recipe. A bar 2x under
 # catches a collapse and cannot be reached by any drift or by noise.
-# RE-CUT under the speed-bound policy (latest x 0.975) once >= 3 records exist
-# on this instrument, with the same GUARD the block above records.
-min = 100
+# (The 2026-09-21 basis above is superseded by the 2026-09-23 re-cut at the
+# top of this block.)
+min = 180
 noise = 0.0
 
 [benchmarks.metrics.c32_aggregate_tok_s]
+# ★ RE-CUT 2026-09-23, 140 -> 260, on the 128/1024 essay instrument (derivation
+# block above the C1 table): latest 285.74 x 0.975 = 278.60 -> 270 clears the regime min of 274.68
+# (dgx1 idle stack tip, 2026-08-20; n=28, dgx1 274.68-281.95) by 1.7% only;
+# the contended dgx1 run read 261.63. Regime-minimum basis: 274.68 x 0.975 =
+# 267.81 -> 260.
+#
 # ★ RATCHETED 2026-09-20, 98.5 -> 100 (effective 96.8 -> 98.3 after the
 # unchanged `noise` of 1.7): 100 was the policy floor on the
 # 2026-09-20-43a3c9b202 value 104.99 (x 0.975 = 102.37, rounded DOWN to the
@@ -977,12 +1081,19 @@ noise = 0.0
 # leg ran an August build with its own CLI (fifo, 8 ssm slots, f16-pool,
 # --mtp-gate force), and this gate serves main's recipe. A bar 2x under
 # catches a collapse and cannot be reached by any drift or by noise.
-# RE-CUT under the speed-bound policy (latest x 0.975) once >= 3 records exist
-# on this instrument, with the same GUARD the block above records.
-min = 140
+# (The 2026-09-21 basis above is superseded by the 2026-09-23 re-cut at the
+# top of this block.)
+min = 260
 noise = 0.0
 
 [benchmarks.metrics.c64_aggregate_tok_s]
+# ★ RE-CUT 2026-09-23, 190 -> 360, on the 128/1024 essay instrument (derivation
+# block above the C1 table): latest 385.89 x 0.975 = 376.24 -> 370 clears the regime min of 375.08
+# (dgx1 C=64/C=128 cross-box run, 2026-08-20; n=13, dgx1 375.08-379.91) by
+# 1.4% only. Regime-minimum basis: 375.08 x 0.975 = 365.70 -> 360. Note the
+# vLLM+MTP bar here is 361.39: Atlas wins C=64 by 1.07x and the floor sits
+# just under the bar, not above it.
+#
 # ★ RATCHETED 2026-09-20, 109.5 -> 110 (effective 107.6 -> 108.1 after the
 # unchanged `noise` of 1.9): 110 was the policy floor on the
 # 2026-09-20-43a3c9b202 value 116.38 (x 0.975 = 113.47, rounded down to the
@@ -1010,12 +1121,18 @@ noise = 0.0
 # leg ran an August build with its own CLI (fifo, 8 ssm slots, f16-pool,
 # --mtp-gate force), and this gate serves main's recipe. A bar 2x under
 # catches a collapse and cannot be reached by any drift or by noise.
-# RE-CUT under the speed-bound policy (latest x 0.975) once >= 3 records exist
-# on this instrument, with the same GUARD the block above records.
-min = 190
+# (The 2026-09-21 basis above is superseded by the 2026-09-23 re-cut at the
+# top of this block.)
+min = 360
 noise = 0.0
 
 [benchmarks.metrics.c128_aggregate_tok_s]
+# ★ RE-CUT 2026-09-23, 230 -> 440, on the 128/1024 essay instrument (derivation
+# block above the C1 table): latest 478.91 x 0.975 = 466.94 -> 460 fails the guard outright: dgx1 read
+# 459.32 on the 2026-08-20 cross-box run (n=13, range 459.32-482.05; the
+# 2026-09-22 dgx1 proof 468.44-469.14). Regime-minimum basis: 459.32 x 0.975
+# = 447.84 -> 440. Well above the vLLM+MTP bar of 358.57 (Atlas 1.34x).
+#
 # ★ RATCHETED 2026-09-20, 109.5 -> 110 (effective 107.6 -> 108.1 after the
 # unchanged `noise` of 1.9): 110 was the policy floor on the
 # 2026-09-20-43a3c9b202 value 116.26 (x 0.975 = 113.35, rounded down to the
@@ -1043,12 +1160,18 @@ noise = 0.0
 # leg ran an August build with its own CLI (fifo, 8 ssm slots, f16-pool,
 # --mtp-gate force), and this gate serves main's recipe. A bar 2x under
 # catches a collapse and cannot be reached by any drift or by noise.
-# RE-CUT under the speed-bound policy (latest x 0.975) once >= 3 records exist
-# on this instrument, with the same GUARD the block above records.
-min = 230
+# (The 2026-09-21 basis above is superseded by the 2026-09-23 re-cut at the
+# top of this block.)
+min = 440
 noise = 0.0
 
 [benchmarks.metrics.peak_aggregate_tok_s]
+# ★ RE-CUT 2026-09-23, 230 -> 440, on the 128/1024 essay instrument (derivation
+# block above the C1 table): the peak is the C=128 cell in every regime run that measured both top rungs
+# (dgx1 379.8 -> 468.4, dgx2 389.6 -> 482.1, gate 385.9 -> 478.9), so the
+# floor is the C=128 floor, 440, cut in the block above. A sweep whose peak
+# fell under this has lost its top rung whichever C produced it.
+#
 # ★ RATCHETED 2026-09-20, 109.5 -> 110 (effective 107.6 -> 108.1 after the
 # unchanged `noise` of 1.90): 110 was the policy floor on the
 # 2026-09-20-43a3c9b202 peak 116.38 (at C=64; x 0.975 = 113.47, rounded down
@@ -1083,12 +1206,23 @@ noise = 0.0
 # leg ran an August build with its own CLI (fifo, 8 ssm slots, f16-pool,
 # --mtp-gate force), and this gate serves main's recipe. A bar 2x under
 # catches a collapse and cannot be reached by any drift or by noise.
-# RE-CUT under the speed-bound policy (latest x 0.975) once >= 3 records exist
-# on this instrument, with the same GUARD the block above records.
-min = 230
+# (The 2026-09-21 basis above is superseded by the 2026-09-23 re-cut at the
+# top of this block.)
+min = 440
 noise = 0.0
 
 [benchmarks.metrics.min_completion_tokens]
+# ★ RE-CUT 2026-09-23, 260 -> 650, with the nine rung floors and from the same
+# records, as the paragraph below asked. The bar is the per-run minimum
+# completion over ALL requests, so the sample is each regime run's minimum
+# completion_tokens_per_req (n=27 runs plus the gate record): 676 (dgx1
+# C=64/C=128 cross-box run, 2026-08-20), 691, 691 (rounds 10/11 at C=128),
+# 717 (dgx1 proof 2026-09-22), 745, 745, 745, 753, ... and 892 on the gate
+# record. Guard arm as for the rungs: 676 x 0.975 = 659.1 -> 650 on the
+# 10-step. 0.8 x 1024 = 819 (the vacuity majority rule) is NOT written: three
+# clean runs stopped one request under it, deterministically at the widest
+# rungs, and a floor above a measured healthy minimum is a bootstrap.
+#
 # ★ KEPT AT 260 THROUGH THE 2026-09-21 RE-POINT, deliberately, while every
 # rung floor went to 0.0 — this is the one bar the re-point does not
 # invalidate, and it is not redundant with vacuous_cells.
@@ -1112,7 +1246,7 @@ noise = 0.0
 # the nine rung floors from the same first records, not before: 0.8 x 1024 =
 # 819 is the number arithmetic would suggest, and declaring it now would be
 # a bootstrap.
-min = 260.0
+min = 650.0
 
 [benchmarks.metrics.vacuous_cells]
 # Zero, absolutely: the driver already refuses to mint throughput keys from
