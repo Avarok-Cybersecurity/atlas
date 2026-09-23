@@ -89,7 +89,7 @@ pub use record::{
 /// mix — which is exactly what makes crossing them so easy to miss. Each
 /// bench's `BASELINE.json` pins its own model, and a model mismatch is a hard
 /// fail in `check_record`.
-pub const REQUIRED_GATES: [&str; 12] = [
+pub const REQUIRED_GATES: [&str; 13] = [
     coverage::REQUIRED[0].id,
     coverage::REQUIRED[1].id,
     coverage::REQUIRED[2].id,
@@ -102,6 +102,7 @@ pub const REQUIRED_GATES: [&str; 12] = [
     coverage::REQUIRED[9].id,
     coverage::REQUIRED[10].id,
     coverage::REQUIRED[11].id,
+    coverage::REQUIRED[12].id,
 ];
 
 /// The wall-clock timeout a gate run gives the endpoint's `/hardware` fetch.

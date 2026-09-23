@@ -23,7 +23,7 @@ fn every_promotion_candidate_is_a_registered_benchmark() {
             .iter()
             .map(|gate| gate.id)
             .collect::<Vec<_>>(),
-        ["cross-contamination", "concurrency-sweep-moe"],
+        ["cross-contamination"],
         "promotion tracking must not pass vacuously or gain an unreviewed candidate"
     );
     for gate in coverage::PROMOTION_CANDIDATES {
@@ -85,12 +85,12 @@ fn the_contamination_candidate_accrues_debt_for_engine_changes() {
     let owed = coverage::promotion_debt(["crates/spark-server/src/scheduler/mod.rs"]);
     assert_eq!(
         owed,
-        ["cross-contamination", "concurrency-sweep-moe"],
+        ["cross-contamination"],
         "a scheduler change is exactly the kind of edit that can cross-wire \
-         concurrent requests, so the contamination candidate is owed — and it \
-         decides the batch, so the MoE ladder candidate (2026-09-20) is owed too. \
-         kat-equality-gate was the second entry here until 2026-09-10; it is \
-         REQUIRED now, and a required gate is owed as a gate, never as debt — \
+         concurrent requests, so the contamination candidate is owed. \
+         kat-equality-gate was the second entry here until 2026-09-10 and \
+         concurrency-sweep-moe from 2026-09-20 to 2026-09-23; both are REQUIRED \
+         now, and a required gate is owed as a gate, never as debt — \
          `every_promotion_candidate_is_a_registered_benchmark` refuses both at \
          once; got {owed:?}"
     );
@@ -115,48 +115,63 @@ fn the_candidate_is_owed_for_its_own_driver_and_not_for_other_drivers() {
     );
 }
 
-/// ★ The MoE concurrency ladder is a candidate, not yet required, and it must
-/// be OWED exactly where the plain concurrency gate would be invalidated: the
-/// shared driver and the engine (kernels, scheduler, batching) — never by
-/// another benchmark's driver, and never by a `BENCH.toml` edit (`coverage::
-/// NON_COMPILED_KERNEL_FILES`: pinning its instrument and, later, its floors is
-/// campaign-free). The kernel path is owed by BOTH candidates because neither
-/// excludes kernels; the driver path is owed by this one alone because the
-/// contamination candidate excludes the concurrency driver files by name.
+/// ★ PROMOTED 2026-09-23: the MoE concurrency ladder was a candidate from
+/// 2026-09-20 and is REQUIRED since its bootstrap floors landed. What used to
+/// accrue DEBT now INVALIDATES, exactly where the plain concurrency gate is
+/// invalidated: the shared driver and the engine (kernels, scheduler,
+/// batching) — never by another benchmark's driver, and never by a
+/// `BENCH.toml` edit (`coverage::NON_COMPILED_KERNEL_FILES`: pinning its
+/// instrument or re-cutting its floors is campaign-free). Promotion must not
+/// have weakened anything, and it must not have left a debt row behind.
 #[test]
-fn the_moe_concurrency_candidate_is_owed_where_the_plain_gate_reopens() {
+fn the_promoted_moe_gate_invalidates_where_it_used_to_accrue_debt() {
+    assert!(
+        coverage::REQUIRED
+            .iter()
+            .any(|g| g.id == "concurrency-sweep-moe"),
+        "the MoE ladder must be REQUIRED after promotion"
+    );
+    assert!(
+        !coverage::PROMOTION_CANDIDATES
+            .iter()
+            .any(|g| g.id == "concurrency-sweep-moe"),
+        "owed and excused at once is a contradiction"
+    );
+    assert!(
+        !coverage::NOT_REQUIRED
+            .iter()
+            .any(|(n, _)| *n == "concurrency-sweep-moe"),
+        "the MoE ladder must not be excused any more"
+    );
     for path in [
         "crates/avarok-plugin/src/benchmarks/concurrency.rs",
         "crates/avarok-plugin/src/benchmarks/concurrency_verdict.rs",
+        "kernels/gb10/qwen3.6-35b-a3b/nvfp4/moe_grouped_gemm.cu",
+        "crates/spark-server/src/scheduler/mod.rs",
     ] {
-        assert_eq!(
-            coverage::promotion_debt([path]),
-            ["concurrency-sweep-moe"],
-            "{path} is the ladder's own driver; the candidate must be owed for it"
+        let hit = coverage::invalidated_by([path]);
+        assert!(
+            hit.contains(&"concurrency-sweep-moe"),
+            "{path} re-opens the plain ladder, so it must re-open the MoE one: {hit:?}"
+        );
+        assert!(
+            !coverage::promotion_debt([path]).contains(&"concurrency-sweep-moe"),
+            "{path}: a required gate is owed as a gate, never as debt"
         );
     }
-    assert_eq!(
-        coverage::promotion_debt(["kernels/gb10/qwen3.6-35b-a3b/nvfp4/moe_grouped_gemm.cu"]),
-        ["cross-contamination", "concurrency-sweep-moe"],
-        "an engine kernel change is owed by every candidate that does not exclude kernels"
-    );
-    assert_eq!(
-        coverage::promotion_debt(["crates/spark-server/src/scheduler/mod.rs"]),
-        ["cross-contamination", "concurrency-sweep-moe"],
-        "the scheduler decides the batch; both candidates are owed for it"
-    );
     for path in [
         "crates/avarok-plugin/src/benchmarks/bfcl/mod.rs",
         "crates/avarok-plugin/src/benchmarks/ttft/descriptors.rs",
         "crates/avarok-plugin/src/benchmarks/agentic/mod.rs",
     ] {
         assert!(
-            !coverage::promotion_debt([path]).contains(&"concurrency-sweep-moe"),
+            !coverage::invalidated_by([path]).contains(&"concurrency-sweep-moe"),
             "{path} is another benchmark's driver; it cannot change the MoE ladder"
         );
     }
     assert!(
-        coverage::promotion_debt(["kernels/gb10/qwen3.6-35b-a3b/BENCH.toml"]).is_empty(),
+        !coverage::invalidated_by(["kernels/gb10/qwen3.6-35b-a3b/BENCH.toml"])
+            .contains(&"concurrency-sweep-moe"),
         "a BENCH.toml edit is campaign-free — declaring the instrument or a floor owes nothing"
     );
 }
@@ -204,9 +219,13 @@ fn the_promoted_gates_invalidate_where_they_used_to_accrue_debt() {
     ] {
         assert_eq!(
             coverage::invalidated_by([path]),
-            ["concurrency-sweep", "concurrency-sweep-dflash2"],
-            "the flat concurrency driver belongs to the concurrency instruments only — both \
-             of them, since the DFlash2 gate runs the same driver: {path}"
+            [
+                "concurrency-sweep",
+                "concurrency-sweep-dflash2",
+                "concurrency-sweep-moe"
+            ],
+            "the flat concurrency driver belongs to the concurrency instruments only — all \
+             three of them, since the DFlash2 and MoE gates run the same driver: {path}"
         );
     }
     let hit = coverage::invalidated_by(["crates/avarok-plugin/src/benchmarks/bfcl/report.rs"]);

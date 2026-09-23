@@ -201,6 +201,7 @@ descriptor; the agentic figures are from the committed gate record
 |---|---|---|---|
 | `concurrency-sweep` | **required** (promoted 2026-08-15) | ~25–90 min | aggregate throughput at C=1..128 on the pinned instrument, vs per-rung floors |
 | `concurrency-sweep-dflash2` | **required** (added 2026-08-29) | ~25–90 min | the same ladder with the DFlash2 drafter armed — the only gate that exercises speculation |
+| `concurrency-sweep-moe` | **required** (promoted 2026-09-23) | ~10–15 min | the same driver on the 35B MoE flagship at the published instrument (ISL 128 / OSL 1024 essay, C=1..16) — the only gate that reaches the grouped-GEMM expert arm; floors are Atlas's own 2026-09-23 curve, not vLLM parity |
 | `decode-floor` | **required** (promoted 2026-08-15) | ~5–10 min | single-user server decode rate vs a committed floor |
 | `ssm-state-poisoning-gate` | **required** | ~5–10 min | an identical replay must return identical bytes after accumulated SSM/prefix state |
 | `vision-fidelity` | **required** (vision targets) | ~5 min | the served model sees the image it was sent, at its checkpoint's permitted resolution |
@@ -215,7 +216,7 @@ descriptor; the agentic figures are from the committed gate record
 | `bfcl-full` | not required | ~12 h | the unsampled ~3,625-sample BFCL run |
 | `serve-matrix` | not required | ~5–10 min / checkpoint | multi-checkpoint breadth survey for release notes |
 
-The twelve **required** gates are `REQUIRED_GATES`
+The thirteen **required** gates are `REQUIRED_GATES`
 (`crates/avarok-plugin/src/gate/mod.rs`), derived element-by-element from
 `coverage::REQUIRED` so the two lists cannot diverge. (This paragraph said
 "five" and listed `concurrency-sweep` as not required until 2026-08-29; the

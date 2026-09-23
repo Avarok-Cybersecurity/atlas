@@ -395,7 +395,7 @@ gate = "concurrency-sweep-moe"
 recipe = "qwen3.6/qwen3.6-35b-a3b-fp8-nvfp4head"
 label = "Qwen3.6-35B-A3B MoE flagship (FP8), published instrument"
 default = true
-status = "unmeasured"
+status = "measured"
 note = """\
 The MoE half of the concurrency curve. The MoE decode path takes the \
 grouped-GEMM expert arm above the width gate (n >= 16, layers/mod.rs \
@@ -428,30 +428,41 @@ slai, which vLLM has no counterpart for). Each key is justified inline in \
 demanded there by check_record, and together they DECLARE every axis \
 site/src/lib/ladder-baselines.js fingerprints, so a record can be judged \
 against the one-shot axis by axis instead of refused as undeclared. \
-★ NO [benchmarks.metrics] TABLE ON PURPOSE, and no floor may be guessed in: \
-ZERO records of this checkpoint exist under .benchmarks/concurrency-sweep*/ \
-(every one of the 72 concurrency-sweep records is unsloth/Qwen3.8-27B-NVFP4). \
-A guessed threshold a run could clear would report PASS for something nobody \
-measured — this file's header rule. \
-★ BOOTSTRAP, in order (the gate cannot bootstrap itself: baseline_for drops \
-an unmeasured entry, so --pull-request-gate refuses to run it): (1) serve \
-the recipe by hand with EXACTLY the serve_overrides below applied — the same \
-argv a --pull-request-gate self-start would render from recipe defaults + \
-pins; (2) run `spark benchmark run concurrency-sweep-moe --url <it> --model \
-Qwen/Qwen3.6-35B-A3B-FP8 --param prompt_mode=essay --param isls=128 --param \
-osl=1024 --param concurrencies=1,2,4,8,16` at least THREE times on one \
-frozen binary, zero request errors and zero vacuous cells in every rep; (3) \
-commit floors per rung at mean - max(3*sigma, 5%), cut together, never from \
-a best rep (the dense entry's rule), plus peak_aggregate_tok_s at the C=16 \
-bar, vacuous_cells max 0 and min_completion_tokens from the observed \
-minimum, flip status to "measured", and in the SAME PR move the gate from \
-gate::coverage::PROMOTION_CANDIDATES to REQUIRED — the campaign certifying \
-that PR writes the first gated record. (4) Ratchet later only from >= 10 \
-consecutive gate runs AND the committed history split by regime (the C=1 \
-comment in qwen3.8-27b/BENCH.toml is the worked example). \
+★ MEASURED 2026-09-23 — THE BOOTSTRAP THIS ENTRY PRESCRIBED, done in order. \
+Until then it carried NO metrics table on purpose: zero records of this \
+checkpoint existed under .benchmarks/concurrency-sweep*/, and a guessed \
+threshold a run could clear would report PASS for something nobody measured \
+(this file's header rule). The gate cannot bootstrap itself (baseline_for \
+drops an unmeasured entry, so --pull-request-gate refuses to run it), so: \
+(1) the recipe was served by hand on dgx1 (spark-256a) from spark e8a212247c \
+with EXACTLY the serve_overrides below applied — argv sha256 02c9d45ef999… \
+(the server's own /serve-config agreed), binary sha256 2dcef02f15ba…, and NO \
+AVAROK_*/ATLAS_* lever in the serve's environment; (2) `spark benchmark run \
+concurrency-sweep-moe --url <it> --model Qwen/Qwen3.6-35B-A3B-FP8 --param \
+prompt_mode=essay --param isls=128 --param osl=1024 --param \
+concurrencies=1,2,4,8,16` ran THREE times on that one frozen binary, zero \
+request errors and zero vacuous cells in every rep — aggregate tok/s per rep \
+C=1/2/4/8/16: 73.77/85.15/97.56/107.40/107.69, 72.94/84.52/98.42/106.51/107.86, \
+72.67/85.74/96.85/107.30/108.55 (means 73.13/85.14/97.61/107.07/108.03, sample \
+sigma 0.57/0.61/0.79/0.49/0.46); (3) the floors below are mean - max(3*sigma, \
+5%) per rung, cut together, never from a best rep (the dense entry's rule) — \
+5% was the wider band at every rung — plus peak_aggregate_tok_s at the C=16 \
+bar, vacuous_cells at zero and min_completion_tokens at the observed minimum \
+over every request of every rep; status flipped to "measured" and, in the \
+SAME PR, the gate moved from gate::coverage::PROMOTION_CANDIDATES to \
+REQUIRED — the campaign certifying that PR writes the first gated record. \
+(4) Ratchet later only from >= 10 consecutive gate runs AND the committed \
+history split by regime (the C=1 comment in qwen3.8-27b/BENCH.toml is the \
+worked example). \
+★ THESE FLOORS GUARD REGRESSION, NOT PARITY. On this same instrument the \
+vLLM one-shot (published.json, 2026-09-19, dgx2) reads C=1/2/4/8/16 \
+52.11/93.16/145.94/222.08/329.93 tok/s: Atlas wins C=1 (73.13 vs 52.11) and \
+LOSES every rung from C=2 up, by 3.05x at C=16. The bars below are Atlas's \
+own measured curve minus its noise band; clearing them says the MoE engine \
+has not regressed from 2026-09-23, and says nothing about vLLM. \
 bench_override_tree_tests pins this entry BY VALUE — the instrument pins, \
-`status = "unmeasured"` and the absence of metrics — so the bootstrap PR \
-must edit that test to land the floors, which is the review it deserves.\
+the status and every floor — so a re-cut must edit that test, which is the \
+review it deserves.\
 """
 
 [benchmarks.serve_overrides]
@@ -501,8 +512,9 @@ disable_thinking = "true"
 # the wider rungs cold by construction; the recipe's default pool of 16
 # would not hold C=4.
 ssm_cache_slots = "32"
-# lm_head_dtype is deliberately NOT overridden: the recipe's bf16 head is a
-# correctness pin (exact argmax over the 248K vocab), not a throughput knob.
+# lm_head_dtype is deliberately NOT overridden: the nvfp4head recipe's own
+# NVFP4 head is the engine's precision choice (see the recipe note above),
+# and the bootstrap serve rendered `--lm-head-dtype nvfp4` from it.
 
 [benchmarks.param_overrides]
 # The published instrument — see the note. Values are parsed by each
@@ -512,6 +524,52 @@ concurrencies = "1,2,4,8,16"
 isls = "128"
 osl = "1024"
 prompt_mode = "essay"
+
+# ── Floors cut 2026-09-23 from 3 hand-measured reps on the pinned instrument
+# (dgx1, spark e8a212247c, argv sha 02c9d45e…; the note has every rep), each
+# rung mean - max(3*sigma, 5% of mean), sample sigma (n-1), truncated to 0.01,
+# cut together. 5% was the wider band at every rung, so each bar sits 5%
+# under its mean. No `noise` key: the band is already in the bar, and this
+# entry has no run-to-run history yet to size one from.
+[benchmarks.metrics.c1_aggregate_tok_s]
+# Mean 73.13, sigma 0.57; the floor of 69.47 = 73.13 x 0.95.
+min = 69.47
+
+[benchmarks.metrics.c2_aggregate_tok_s]
+# Mean 85.14, sigma 0.61; the floor of 80.88 = 85.14 x 0.95.
+min = 80.88
+
+[benchmarks.metrics.c4_aggregate_tok_s]
+# Mean 97.61, sigma 0.79; the floor of 92.72 = 97.61 x 0.95.
+min = 92.72
+
+[benchmarks.metrics.c8_aggregate_tok_s]
+# Mean 107.07, sigma 0.49; the floor of 101.71 = 107.07 x 0.95.
+min = 101.71
+
+[benchmarks.metrics.c16_aggregate_tok_s]
+# Mean 108.03, sigma 0.46; the floor of 102.63 = 108.03 x 0.95. The top rung,
+# and the one that takes the grouped-GEMM expert arm the dense ladder never
+# reaches (see the note).
+min = 102.63
+
+[benchmarks.metrics.peak_aggregate_tok_s]
+# The peak landed at C=16 in all three reps (107.69 / 107.86 / 108.55), so
+# the floor of 102.63 is the C=16 bar: a sweep whose peak fell below it has
+# lost its top rung whichever C produced it.
+min = 102.63
+
+[benchmarks.metrics.min_completion_tokens]
+# The observed minimum over every request of every rep: 914 (reps 1 and 2;
+# rep 3's minimum was the full 1024 budget). Denies a degenerate early-EOS
+# minority the floor that the vacuity rule (cell occupancy + a majority over
+# 0.8 x osl) alone would not — the dense entry's argument, verbatim.
+min = 914
+
+[benchmarks.metrics.vacuous_cells]
+# The vacuity guarantee: every cell of every bootstrap rep was non-vacuous,
+# and the ceiling of 0 keeps it so.
+max = 0
 
 [[benchmarks]]
 quant = "nvfp4"

@@ -300,11 +300,15 @@ fn the_flat_concurrency_driver_invalidates_only_its_own_gate() {
     ] {
         assert_eq!(
             coverage::invalidated_by([path]),
-            ["concurrency-sweep", "concurrency-sweep-dflash2"],
-            "{path} must re-open exactly the instruments it implements — BOTH \
+            [
+                "concurrency-sweep",
+                "concurrency-sweep-dflash2",
+                "concurrency-sweep-moe"
+            ],
+            "{path} must re-open exactly the instruments it implements — all THREE \
              concurrency gates run this driver, and a driver change that \
-             re-opened only the no-drafter one would leave the speculative \
-             ladder certified by a record it never measured"
+             re-opened only the no-drafter dense one would leave the speculative \
+             and MoE ladders certified by records they never measured"
         );
     }
 
