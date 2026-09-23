@@ -451,6 +451,11 @@ impl Qwen3SsmLayer {
                 "w8a16_gemm_pipelined",
                 "w8a16_gemm_pipelined",
             ),
+            w8a16_gemm_pipelined_m32_k: super::super::try_target_kernel(
+                gpu,
+                "w8a16_gemm_pipelined_m32",
+                "w8a16_gemm_pipelined_m32",
+            ),
             w8a16_gemv_batch4_k: super::super::try_kernel(
                 gpu,
                 "w8a16_gemv_batch4",

@@ -332,6 +332,10 @@ name = "native_fp8_oproj_batch_microtest"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]
+name = "native_fp8_gdn_proj_m32_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
 name = "native_fp8_ffn_m16_tc_microtest"
 required-features = ["cuda", "gpu-examples"]
 

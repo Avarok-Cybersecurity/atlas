@@ -422,6 +422,12 @@ pub struct Qwen3SsmLayer {
     // KernelHandle(0) when not linked into the image. Gated ON only when
     // AVAROK_W8A16_PIPELINED=1 (default OFF — production dispatch unchanged).
     pub(super) w8a16_gemm_pipelined_k: KernelHandle,
+    // 32-row M-tile twin of w8a16_gemm_pipelined (G18 lever B): the batched
+    // verify's in_proj_qkvz / out_proj at 17..=32 rows ran the 128-row tile
+    // (75% padding; out_proj 64 CTAs on 48 SMs). Selected by M through
+    // `ops::w8a16_gemm_pipelined_by_m`; bit-identical to the 128 tile.
+    // KernelHandle(0) on a target without the module keeps the 128 tile.
+    pub(super) w8a16_gemm_pipelined_m32_k: KernelHandle,
     // M<=4 weight-streaming block-scaled FP8 GEMV. Replaces the M-padded
     // w8a16_gemm_pipelined for n<=4 batched decode (qkvz + out_proj): pipelined
     // pads M=4 to a 128-row MMA tile (32× compute over-provision, issue-bound);

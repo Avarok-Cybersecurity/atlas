@@ -39,6 +39,10 @@ const PINS: &[(&str, &str, usize)] = &[
     ("w4a16_v3", "w4a16_gemm_t_m128_v3", 8),
     // Load-time transpose (quantized.rs GPU path) — 4-arg launch.
     ("transpose_u8", "transpose_u8", 4),
+    // The 32-row M-tile W8A16 twin (G18): the 128-tile's 7 params plus `lda`
+    // and `ldc`. Its one launcher, `ops::w8a16_gemm_pipelined_m32_strided`,
+    // packs 9; the contiguous entry derives the pitches from K and N.
+    ("w8a16_gemm_pipelined_m32", "w8a16_gemm_pipelined_m32", 9),
 ];
 
 /// Targets whose copy of a kernel legitimately differs in arity from the

@@ -295,9 +295,13 @@ impl Qwen3SsmLayer {
             // path uses (`trait_prefill_proj.rs` — pipelined twin preferred,
             // bit-identical to `w8a16_gemm`).
             if self.w8a16_gemm_pipelined_k.0 != 0 {
-                ops::w8a16_gemm_pipelined(
+                // Tile by M (G18 lever B): 17..=32 rows take the 32-row
+                // twin — same bits, a quarter of the MMA work and no 96-row
+                // zero fill; above 32 the 128 tile as before.
+                ops::w8a16_gemm_pipelined_by_m(
                     ctx.gpu,
                     self.w8a16_gemm_pipelined_k,
+                    self.w8a16_gemm_pipelined_m32_k,
                     normed,
                     fp8.weight,
                     fp8.row_scale,
@@ -1039,9 +1043,14 @@ impl Qwen3SsmLayer {
             // CUDA_ERROR_ILLEGAL_ADDRESS the QKVZ dispatch above hits first.
             // Same block-scaled W8A16 GEMM pair as the prefill path.
             if self.w8a16_gemm_pipelined_k.0 != 0 {
-                ops::w8a16_gemm_pipelined(
+                // Tile by M (G18 lever B), out_proj twin of the QKVZ arm:
+                // the 32-row tile runs K/128 barrier steps per CTA instead
+                // of K/32 — the 64-CTA, 128-step latency chain this
+                // projection measured as 166 us for 8.4 MB.
+                ops::w8a16_gemm_pipelined_by_m(
                     ctx.gpu,
                     self.w8a16_gemm_pipelined_k,
+                    self.w8a16_gemm_pipelined_m32_k,
                     normed_out_buf,
                     fp8.weight,
                     fp8.row_scale,

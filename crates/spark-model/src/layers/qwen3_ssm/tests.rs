@@ -238,13 +238,15 @@ fn native_fp8_gdn_batched_verify_r7_dispatches_batch16_gemv() {
 
 /// NEGATIVE for the new arm: a shadow WITHOUT the MAX_M=16 entry point must
 /// land exactly where R=7 landed before #927 — the pipelined tile GEMM — and
-/// not on a zero handle or a NULL slot.
+/// not on a zero handle or a NULL slot. Without the 32-row twin as well
+/// (G18 lever B; its own cases are `tests_m32_tile.rs`), that is the 128-row tile.
 #[test]
 fn native_fp8_gdn_batched_verify_r7_without_batch16_keeps_the_tile_gemm() {
     let config = ModelConfig::qwen3_next_80b_nvfp4();
     let gpu = MockGpuBackend::new();
     let mut layer = native_fp8_gdn_layer(&gpu, &config, true, true);
     layer.w8a16_gemv_batch16_k = spark_runtime::gpu::KernelHandle(0);
+    layer.w8a16_gemm_pipelined_m32_k = spark_runtime::gpu::KernelHandle(0);
     run_batched_verify(&gpu, &config, &layer, &[4, 3]).unwrap();
     let qkvz = layer.qkvz_fp8w.as_ref().unwrap();
     let out = layer.out_proj_fp8w.as_ref().unwrap();
@@ -427,3 +429,8 @@ fn qkvz_verify_declines_without_the_fp8_copy() {
         );
     }
 }
+
+/// The 32-row M-tile twin's cases (G18 lever B) — a child module (500-line
+/// cap) sharing this file's layer/verify harness.
+#[path = "tests_m32_tile.rs"]
+mod m32_tile;
