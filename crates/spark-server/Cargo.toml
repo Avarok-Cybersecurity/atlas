@@ -91,7 +91,7 @@ avarok-closure = { path = "../avarok-closure" }
 # ratatui pins its own crossterm; the version here MUST match ratatui 0.29's
 # (crossterm 0.28) or two raw-mode stacks fight over the terminal.
 ratatui = "0.29"
-crossterm = "0.28"
+crossterm = "0.29"
 # Single/multi-line inputs (log filter, library search, REPL, chat). MIT.
 tui-textarea = "0.7"
 unicode-width = "0.2"
