@@ -4,9 +4,13 @@
 //
 // The confusion this module exists to make impossible: the published ladder
 // (bench/ladder38) measured vLLM at ISL 128 / OSL 1024, ctx 2048, batch 128,
-// and the live gate measures Atlas at ISL 512 / OSL 320, ctx 4096, batch 128.
-// Same checkpoint, ~478 vs ~116 tok/s, and readers who saw both on one chart
-// concluded the engine was inconsistent. Nothing here is allowed to say "same
+// and until 2026-09-21 the live gate measured Atlas at ISL 512 / OSL 320, ctx
+// 4096, batch 128. Same checkpoint, ~478 vs ~116 tok/s, and readers who saw
+// both on one chart concluded the engine was inconsistent. The gate has since
+// been re-pointed onto the published axes (#1220), so the two DO pair now --
+// but only because this module says so axis by axis, and a record from the
+// retired instrument still in .benchmarks/ must keep failing to. Nothing here
+// is allowed to say "same
 // instrument" from a name or a checkpoint: it is decided axis by axis, and a
 // mismatch names every axis that differs so the page can print them.
 //

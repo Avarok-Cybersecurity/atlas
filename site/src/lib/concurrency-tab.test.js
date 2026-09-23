@@ -104,6 +104,15 @@ const DENSE = byId('qwen38-27b');
 const MOE = byId('qwen36-35b-a3b');
 const DFLASH = byId('qwen38-27b-dflash');
 const denseLatest = recordsFor('concurrency-sweep').at(-1);
+// ★ THE PUBLISHED-PAIR STATE IS NOW A FALLBACK, NOT WHAT SHIPS. Since #1220 the
+// gate measures the published instrument and its newest passing record on
+// main PAIRS with the vLLM+MTP bar (the 'live' state below). The fallback is
+// still reachable — every record on the retired 512/320 instrument refuses
+// to pair — and `recordsFor` filtered to those records is how it is rendered
+// here, so the fallback's wording stays under test without a second fixture.
+const onRetiredInstrument = (r) => r.benchmark_id !== 'concurrency-sweep' || r.params?.prompt_mode !== 'essay';
+const rfRetired = (bench) => recordsFor(bench).filter(onRetiredInstrument);
+const retiredLatest = rfRetired('concurrency-sweep').at(-1);
 
 // A passing main-branch record for any subject, shaped like the real ones.
 const fakeRecord = (subject, cs, over = {}) => ({
@@ -333,8 +342,77 @@ describe('the DFlash tab today: Atlas only, absent rungs answered in place', () 
   });
 });
 
-describe('the dense tab today: the published pair over the live gate', () => {
+describe('the dense tab today: the live gate record paired with the published vLLM bar', () => {
+  // ★ WHAT SHIPS SINCE #1220. The newest passing concurrency-sweep record on
+  // main is on the published instrument (ISL 128 / OSL 1024 / essay / ctx
+  // 2048 / batch 128 / fp8 KV), so the top chart draws IT against the
+  // vLLM+MTP one-shot instead of the frozen August Atlas series, and the two
+  // charts are one instrument. Every expected string below is derived from
+  // the record or the manifest; the only typed prose is the component's own.
   const page = renderTab('qwen38-27b');
+  const live = liveRecordOf(recordsFor('concurrency-sweep'));
+  const mtp = publishedLadder.series.find((s) => s.id === 'vllm-mtp');
+  const nospec = publishedLadder.series.find((s) => s.id === 'vllm-nospec');
+  const days = (s) => s.rungs.map((r) => r.measured_utc.slice(0, 10)).sort();
+  const range = (s) => (days(s)[0] === days(s).at(-1) ? days(s)[0] : `${days(s)[0]} → ${days(s).at(-1)}`);
+  const instrument = 'ISL 128 / OSL 1024 · essay fixture · batch cap 128 · fp8 KV';
+
+  test('the live record is on the published instrument and the state is live', () => {
+    expect(live).toBe(denseLatest);
+    expect(live.params.prompt_mode).toBe('essay');
+    expect(Comparison.comparisonStateOf(DENSE, recordsFor('concurrency-sweep'))).toBe('live');
+  });
+
+  test('both charts are titled with ONE instrument', () => {
+    expect(page).toContain(`class="gate-panel-title">Atlas vs vLLM · gate instrument · ${instrument}</span>`);
+    expect(page).toContain(`class="gate-panel-title">latest gate sweep · ${instrument}<`);
+    expect(tile(page, 'vLLM baseline')).toBe(`one-shot · ${range(mtp)}`);
+    expect(tile(page, 'rungs declared')).toBe(`${rungs.length} of ${rungs.length}`);
+  });
+
+  test('the bridge says the charts share an instrument and names the record — never the old 4x sentence', () => {
+    expect(page).toContain(
+      `Same instrument as the chart above, which draws the newest passing run on main (${fmtDate(live.recorded_at)} · ${live.git_sha}); this chart adds the run history around it.`
+    );
+    expect(page).not.toContain("Not the chart above's instrument");
+    expect(page).not.toContain('never one against the other');
+  });
+
+  test('the gate record\'s numbers are drawn on the comparison chart; the frozen August Atlas series is not', () => {
+    const svg = comparisonSvg(page);
+    const gateC128 = (+live.metrics.c128_aggregate_tok_s).toFixed(1);
+    expect(svg).toContain(`<title>Atlas · C=128 · ${gateC128} tok/s · gate record ${fmtDate(live.recorded_at)} · ${live.git_sha} · click for record</title>`);
+    expect(svg).not.toContain('478.11');
+    expect(svg.match(/class="gc-mark"/g)).toHaveLength(ladderPoints(live).length);
+    expect(svg.match(/class="cmp-sq"/g)).toHaveLength(mtp.rungs.length);
+    expect(gateSvg(page)).toContain(gateC128);
+    expect(page).not.toContain('<figure class="cl-panel">');
+  });
+
+  test('legend chips: Atlas is the live record, vLLM+MTP a dated one-shot, the no-speculation leg refused by name', () => {
+    expect(page).toContain(`Atlas · live · latest gate ${fmtDate(live.recorded_at)} · ${live.git_sha}`);
+    expect(page).toContain(`${mtp.label} · one-shot · measured ${range(mtp)} · not re-run`);
+    expect(page).toContain(`${nospec.label} · other instrument · not drawn`);
+  });
+
+  test('the caption says "once" in bold, names engine, build, box, the instrument and the record, and why nospec is not drawn', () => {
+    inOrder(
+      page,
+      `vLLM was measured <strong>once</strong>, on ${range(mtp)}`,
+      `<code>${mtp.engine} (${mtp.build})</code> on ${publishedLadder.box.name}`,
+      `on this instrument (${instrument})`,
+      'not re-measured when Atlas moves',
+      `Atlas is the newest passing run on main (${fmtDate(live.recorded_at)} · <code>${live.git_sha}</code>)`,
+      `The ${nospec.label} one-shot of ${range(nospec)} is on another instrument and is not drawn: max_model_len`
+    );
+  });
+});
+
+describe('the dense tab FALLBACK: the published pair when no live record pairs', () => {
+  // Rendered on the retired-instrument records only (rfRetired): the state the
+  // tab shipped in until #1220, and the state it returns to if the live series
+  // ever stops pairing. Nothing here is typed from the live record.
+  const page = renderTab('qwen38-27b', rfRetired);
   // ★ WHAT THE LADDER DRAWS, not every series in the manifest. A leg with
   // `scope: 'cost'` (vllm-mtp-energy: same engine and instrument as vllm-mtp,
   // re-measured with power sampling) is read by cost.js and deliberately NOT
@@ -366,7 +444,7 @@ describe('the dense tab today: the published pair over the live gate', () => {
 
   test('neither instrument\'s number is drawn on the other\'s axes', () => {
     const ladder = ladderFigure(page);
-    const gateC128 = (+denseLatest.metrics.c128_aggregate_tok_s).toFixed(1);
+    const gateC128 = (+retiredLatest.metrics.c128_aggregate_tok_s).toFixed(1);
     expect(ladder).toContain('478.11');
     expect(ladder).not.toContain(gateC128);
     const gate = gateSvg(page);
@@ -450,7 +528,10 @@ describe('the comparison state, decided once', () => {
   });
 
   test('instrument, range and batch-cap readers print only what is recorded', () => {
-    expect(instrumentLabel(denseLatest)).toBe('ISL 512 / OSL 320 · natural fixture · batch cap 128 · fp8 KV');
+    // The newest dense record is on the re-pointed (published) instrument; the
+    // retired one is still in the record set and still labels itself honestly.
+    expect(instrumentLabel(denseLatest)).toBe('ISL 128 / OSL 1024 · essay fixture · batch cap 128 · fp8 KV');
+    expect(instrumentLabel(retiredLatest)).toBe('ISL 512 / OSL 320 · natural fixture · batch cap 128 · fp8 KV');
     expect(instrumentLabel({ params: { isls: '512', osl: '320' } })).toBe('ISL 512 / OSL 320');
     expect(instrumentLabel({})).toBe('');
     expect(measuredRange([{ measured_utc: '2026-08-18T15:20:55Z' }, { measured_utc: '2026-08-17T01:36:35Z' }])).toBe('2026-08-17 → 2026-08-18');
@@ -486,7 +567,7 @@ describe('the dashboard wires the hash to the subject', () => {
   test('an unknown subject in the link lands on the first subject, never a blank panel', () => {
     const page = open('#bench=concurrency&subject=nvidia-35b');
     expect(page).toMatch(/id="cs-tab-qwen38-27b"[^>]*aria-selected="true"/);
-    expect(page).toContain('Atlas vs vLLM · published campaign');
+    expect(page).toContain('Atlas vs vLLM · gate instrument · ISL 128 / OSL 1024');
   });
 
   test('other tabs keep the model select and the per-bench sections', () => {
@@ -505,7 +586,9 @@ describe('the dashboard wires the hash to the subject', () => {
 // SSR cannot see a stylesheet, so the table check here proves only that every
 // rung is in the markup, never that it is on screen.
 describe('the published pair: series pills and the ladder they drive', () => {
-  const page = renderTab('qwen38-27b');
+  // The published card is the FALLBACK state now (see rfRetired above); the
+  // pills and the ladder they drive are unchanged and still ship in it.
+  const page = renderTab('qwen38-27b', rfRetired);
   // ★ WHAT THE LADDER DRAWS, not every series in the manifest. A leg with
   // `scope: 'cost'` (vllm-mtp-energy: same engine and instrument as vllm-mtp,
   // re-measured with power sampling) is read by cost.js and deliberately NOT
