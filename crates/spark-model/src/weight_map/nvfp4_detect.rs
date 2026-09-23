@@ -367,6 +367,34 @@ pub(crate) fn quantized_from_fp8(
     let result = quantize_to_nvfp4(&bf16, n, k, gpu, absmax_k, quantize_k, stream)?;
     // Free the BF16 intermediate — only the NVFP4 result is needed.
     gpu.free(bf16.weight)?;
+    // …and the FP8 SOURCE too, when nothing downstream can still read it.
+    //
+    // Mirrors the `Bf16Raw` arm above, which frees its source for the same
+    // reason, and matters for the same class of checkpoint: a mixed-precision
+    // NVFP4 net whose FP8 half is 11.56 GB (unsloth/Qwen3.8-27B-NVFP4). Holding
+    // those sources alongside their 5.78 GB of NVFP4 copies put the dense load
+    // loop at 29.2 GB instead of 17.6 GB — measured with AVAROK_MEM_PROFILE=1 on
+    // gfx1151, where the GPU allocates from the same 64 GB the OS uses and the
+    // practical ceiling is ~55 GB. It is the difference between serving and
+    // `cuMemAlloc_v2 failed` at model build.
+    //
+    // TWO readers can still want the FP8 copy after this returns, so the
+    // reclaim is refused unless BOTH are known to be off:
+    //
+    //   * the GDN native-FP8 prefill precision policy (qwen35_dense.rs) reads
+    //     linear_attn in_proj_qkv / out_proj as FP8 — live unless
+    //     AVAROK_NO_GDN_FP8_PREFILL is set;
+    //   * the dense FP8 attention overlay (`dense_fp8_enabled`) reads
+    //     self_attn q/k/v/o as FP8 — live only when AVAROK_DENSE_FP8=1.
+    //
+    // Both off ⇒ the NVFP4 result is the only consumer of these bytes.
+    // Deliberately conservative: this frees ALL FP8 sources or NONE, rather
+    // than guessing per-tensor from `prefix`.
+    let gdn_fp8_prefill_on = std::env::var_os("AVAROK_NO_GDN_FP8_PREFILL").is_none();
+    let dense_fp8_on = std::env::var("AVAROK_DENSE_FP8").as_deref() == Ok("1");
+    if !gdn_fp8_prefill_on && !dense_fp8_on {
+        store.reclaim(gpu, &format!("{prefix}.weight"))?;
+    }
     Ok(result)
 }
 
@@ -419,59 +447,11 @@ pub(crate) fn load_quantized_proj_qwen35(
     quantized_v2(store, prefix, gpu)
 }
 
+// The `#[path]` is not decoration: `weight_map.rs` is a FILE module with a
+// `weight_map/` directory beside it, so a bare `mod ep_detection_tests;` here
+// resolves to `weight_map/ep_detection_tests.rs`, one level too high --
+// rustfmt says so outright ("failed to resolve mod"). `ssm_qwen35.rs:13` hit
+// the same thing and fixed it the same way.
 #[cfg(test)]
-mod ep_detection_tests {
-    use super::*;
-    use avarok_core::config::ModelConfig;
-    use spark_runtime::weights::WeightStore;
-
-    /// A store holding only the FP8 attention marker at a given layer, which is
-    /// what the detector sniffs for. Names are all the detector reads.
-    fn store_with(names: &[String]) -> WeightStore {
-        use std::collections::HashMap;
-        let map: HashMap<String, spark_runtime::weights::WeightTensor> = names
-            .iter()
-            .map(|n| {
-                (
-                    n.clone(),
-                    spark_runtime::weights::WeightTensor {
-                        ptr: spark_runtime::gpu::DevicePtr::NULL,
-                        shape: vec![1],
-                        dtype: spark_runtime::weights::WeightDtype::FP8E4M3,
-                    },
-                )
-            })
-            .collect();
-        WeightStore::from_map(map)
-    }
-
-    #[test]
-    fn alternate_layer0_fp8_dtype_is_detected_on_every_ep_rank() {
-        let mut cfg = ModelConfig::qwen3_next_80b_nvfp4();
-        cfg.quantization_config = None;
-        let store =
-            store_with(&["model.language_model.layers.0.self_attn.q_proj.weight".to_string()]);
-
-        cfg.ep_world_size = 2;
-        for ep_rank in 0..2 {
-            cfg.ep_rank = ep_rank;
-            assert_eq!(
-                detect_nvfp4_variant(&store, &cfg),
-                Nvfp4Variant::Fp8Dequanted,
-                "EP rank {ep_rank} must inspect the same layer-zero checkpoint marker"
-            );
-        }
-    }
-
-    #[test]
-    fn scale_inv_suffix_fallback_detects_an_unexpected_prefix() {
-        let mut cfg = ModelConfig::qwen3_next_80b_nvfp4();
-        cfg.quantization_config = None;
-        let store =
-            store_with(&["third_party.transformer.blocks.17.attn.q.weight_scale_inv".to_string()]);
-        assert_eq!(
-            detect_nvfp4_variant(&store, &cfg),
-            Nvfp4Variant::Fp8Dequanted
-        );
-    }
-}
+#[path = "nvfp4_detect/ep_detection_tests.rs"]
+mod ep_detection_tests;

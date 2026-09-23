@@ -59,6 +59,14 @@ __device__ __forceinline__ int __all_sync(unsigned long long, int pred) { return
 
 // CUDA returns a 32-bit lane mask; AMD wavefronts are 64-wide, so __ballot(1)
 // (the full active-lane mask) is the faithful analogue.
+// HIP 7.x on Windows (HIP SDK 7.0+) DOES declare __activemask() itself, in
+// hip/amd_detail/amd_warp_functions.h, so an unguarded definition here is a hard
+// "redefinition of '__activemask'" error and four kernels fail to build. 6.4 and
+// earlier did not declare it. Guard on the HIP version rather than the platform:
+// hip/hip_runtime.h is force-included before this header (build_target.rs), so
+// HIP_VERSION_MAJOR is already defined at this point.
+#if !defined(HIP_VERSION_MAJOR) || (HIP_VERSION_MAJOR < 7)
 __device__ __forceinline__ unsigned long long __activemask() { return __ballot(1); }
+#endif
 
 #endif  // __HIP_PLATFORM_AMD__ || __HIP__
