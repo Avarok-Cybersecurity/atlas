@@ -308,7 +308,15 @@ fn the_trees_serve_pins_sit_on_the_gates_that_need_them() {
     // OVERRIDES disclosure only prints for a non-empty merged set) while the
     // NEXT decode-floor run would have served batch 32, a different
     // instrument than its floor describes.
-    for id in ["bfcl-subset", "decode-floor"] {
+    // ttft-warm/cold stay unpinned (the recipe's 0.90) until re-measured at
+    // 0.85: their Speed ceilings were cut there. TODO(owner-acknowledged
+    // 2026-09-23): move them to the util-pinned list below after that run.
+    for id in [
+        "bfcl-subset",
+        "decode-floor",
+        "ttft-warm-gate",
+        "ttft-cold-gate",
+    ] {
         let b = baseline_for(&root, id).unwrap();
         let (_, entry) = b.resolve("gb10", None).unwrap();
         assert!(
@@ -317,36 +325,49 @@ fn the_trees_serve_pins_sit_on_the_gates_that_need_them() {
             entry.serve_overrides
         );
     }
-    // These keep the recipe's config too, EXCEPT its 0.90 util: their default
-    // subject is the 35B FP8 on the bf16head recipe, and every FP8 entry pins
-    // the GB10 ceiling (owner decision 2026-09-23; 0.90 froze dgx2 once).
-    for id in ["ttft-warm-gate", "ttft-cold-gate", "agentic-webserver"] {
-        let b = baseline_for(&root, id).unwrap();
-        let (checkpoint, entry) = b.resolve("gb10", None).unwrap();
-        assert_eq!(checkpoint, "Qwen/Qwen3.6-35B-A3B-FP8", "{id}");
-        assert_eq!(
-            entry.serve_overrides,
-            std::collections::BTreeMap::from([(
-                "gpu_memory_utilization".to_string(),
-                GB10_UTIL_CEILING.to_string()
-            )]),
-            "{id} pins only the GB10 util ceiling"
-        );
-    }
+    // This keeps the recipe's config too, EXCEPT its 0.90 util: its default
+    // subject is the 35B FP8 on the bf16head recipe, which pins the GB10
+    // ceiling (owner decision 2026-09-23; 0.90 froze dgx2 once).
+    let agentic = baseline_for(&root, "agentic-webserver").unwrap();
+    let (checkpoint, entry) = agentic.resolve("gb10", None).unwrap();
+    assert_eq!(checkpoint, "Qwen/Qwen3.6-35B-A3B-FP8");
+    assert_eq!(
+        entry.serve_overrides,
+        std::collections::BTreeMap::from([(
+            "gpu_memory_utilization".to_string(),
+            GB10_UTIL_CEILING.to_string()
+        )]),
+        "agentic-webserver pins only the GB10 util ceiling"
+    );
 }
 
 /// The util every FP8 35B entry pins on GB10 (qwen3.6-35b-a3b/BENCH.toml).
 const GB10_UTIL_CEILING: &str = "0.85";
 
+/// FP8 35B entries left at the recipe's 0.90 until re-measured at 0.85.
+const UNPINNED_UNTIL_REMEASURED: [&str; 2] = ["ttft-cold-gate", "ttft-warm-gate"];
+
 /// ★ No entry serving the 35B FP8 checkpoint on GB10 may run above the util
 /// ceiling: the bf16head recipe's own default is 0.90, which froze dgx2 and
 /// needed a powercycle, and an entry without the pin inherits it silently.
+/// The ONE listed exception is the two ttft Speed gates, whose ceilings were
+/// measured at 0.90 (TODO(owner-acknowledged 2026-09-23): pin after a 0.85
+/// measurement) — listed, so a new unpinned entry cannot slip in beside them,
+/// and asserted unpinned, so the exception cannot outlive its cause.
 #[test]
 fn every_gb10_fp8_moe_entry_pins_the_util_ceiling() {
     let root = repo_root();
     let mut seen = Vec::new();
     for (target, entry) in load_all(&root).expect("tree loads") {
         if target.hardware != "gb10" || entry.checkpoint != "Qwen/Qwen3.6-35B-A3B-FP8" {
+            continue;
+        }
+        if UNPINNED_UNTIL_REMEASURED.contains(&entry.gate.as_str()) {
+            assert!(
+                !entry.serve_overrides.contains_key("gpu_memory_utilization"),
+                "{} is pinned now: drop it from UNPINNED_UNTIL_REMEASURED",
+                entry.gate
+            );
             continue;
         }
         assert_eq!(
@@ -370,8 +391,6 @@ fn every_gb10_fp8_moe_entry_pins_the_util_ceiling() {
             "concurrency-sweep-moe",
             "mlperf-agentic-subset",
             "ssm-state-poisoning-gate",
-            "ttft-cold-gate",
-            "ttft-warm-gate",
             "video-fidelity",
             "vision-fidelity",
         ],

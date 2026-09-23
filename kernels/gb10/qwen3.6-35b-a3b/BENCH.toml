@@ -267,9 +267,10 @@ still be read against these before its first record is called a regression. \
 these committed values are the only ABSOLUTE bound and must be re-cut whenever the path gets \
 materially faster."""
 
-[benchmarks.serve_overrides]
-# GB10 ceiling, owner decision 2026-09-23: see the concurrency-sweep-moe pin.
-gpu_memory_utilization = "0.85"
+# TODO(owner-acknowledged 2026-09-23): pin gpu_memory_utilization = "0.85"
+# here, as every other FP8 entry does, in a follow-up AFTER a measurement at
+# 0.85 — the ceilings below were measured at the bf16head recipe's 0.90, and
+# a Speed ceiling must not change serve config under an unmeasured campaign.
 
 [benchmarks.metrics.median_ms]
 # The ceiling of 950 is the owner's stated bound (2026-09-20). Measured 908.07
@@ -362,9 +363,10 @@ called a regression. `update_baseline = true` means the gate ALSO compares each 
 previous one at +3%/+5%; these committed values are the only ABSOLUTE bound and must be re-cut \
 whenever the path gets materially faster."""
 
-[benchmarks.serve_overrides]
-# GB10 ceiling, owner decision 2026-09-23: see the concurrency-sweep-moe pin.
-gpu_memory_utilization = "0.85"
+# TODO(owner-acknowledged 2026-09-23): pin gpu_memory_utilization = "0.85"
+# here, as every other FP8 entry does, in a follow-up AFTER a measurement at
+# 0.85 — the ceilings below were measured at the bf16head recipe's 0.90, and
+# a Speed ceiling must not change serve config under an unmeasured campaign.
 
 [benchmarks.metrics.median_ms]
 # The ceiling of 210 is the owner's stated bound (2026-09-20), and equals the
@@ -498,10 +500,11 @@ max_batch_size = "128"
 kv_cache_dtype = "bf16"
 # GB10 unified memory: 0.90 froze dgx2 and needed a powercycle. 0.85 is the
 # one-shot's `--gpu-memory-utilization 0.85` and, by owner decision
-# 2026-09-23, the ceiling every FP8 entry in this file pins: until then the
+# 2026-09-23, the ceiling the FP8 entries in this file pin: until then the
 # bf16head entries served that recipe's default 0.90 (the dense 27B recipes
-# already sit at 0.85 or below). The NVFP4-checkpoint ttft entries serve
-# their own recipe's 0.88 and are NOT pinned here.
+# already sit at 0.85 or below). Two exceptions, both ttft Speed gates: the
+# FP8 ttft-cold/warm entries stay at 0.90 until re-measured at 0.85 (TODO on
+# each), and the NVFP4-checkpoint ttft entries serve their recipe's 0.88.
 gpu_memory_utilization = "0.85"
 # The recipe defaults to slai (SLO-aware). vLLM has no counterpart, so the
 # parity oracle pinned Atlas to fifo for the MoE ladder; a scheduling policy
