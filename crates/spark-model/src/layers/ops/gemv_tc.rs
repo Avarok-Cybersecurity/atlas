@@ -23,8 +23,9 @@
 //!
 //! # Kill switch
 //!
-//! `AVAROK_NO_W4A16_TC=1` (presence-checked, read once) restores the
-//! CUDA-core tiers bit-for-bit — the A/B lever for the energy campaign.
+//! `AVAROK_NO_W4A16_TC=1` (any non-empty value, read once) restores the
+//! CUDA-core tiers bit-for-bit — the A/B lever for the energy campaign. Gate
+//! records disclose it in `perf_env`.
 
 use std::sync::{Mutex, OnceLock};
 
@@ -61,7 +62,14 @@ impl TcKind {
 /// The kernel reads each quad's 128 contiguous k per step (so `K % 128`);
 /// anything else declines rather than guessing at a K tail. Any N routes: a
 /// partial last column tile (the 248077-row lm_head) is guarded in-kernel.
-pub fn tc_route(m: u32, n: u32, k: u32, enabled: bool, have8: bool, have16: bool) -> Option<TcKind> {
+pub fn tc_route(
+    m: u32,
+    n: u32,
+    k: u32,
+    enabled: bool,
+    have8: bool,
+    have16: bool,
+) -> Option<TcKind> {
     if !enabled || m == 0 || n == 0 || k == 0 || k % 128 != 0 {
         return None;
     }
@@ -74,11 +82,14 @@ pub fn tc_route(m: u32, n: u32, k: u32, enabled: bool, have8: bool, have16: bool
     }
 }
 
-/// `AVAROK_NO_W4A16_TC` absent? Read once: the predicate sits on the decode
-/// path and a graph-captured launch must see a stable choice.
+/// `AVAROK_NO_W4A16_TC` unset (or exported empty)? Any non-empty value,
+/// `0` included, turns the tensor-core path off, and gate records disclose it
+/// as `unset` otherwise (`avarok-plugin` `PERF_CONTROLS`). Read once: the
+/// predicate sits on the decode path and a graph-captured launch must see a
+/// stable choice.
 pub fn tc_enabled() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("AVAROK_NO_W4A16_TC").is_none())
+    *ON.get_or_init(|| std::env::var_os("AVAROK_NO_W4A16_TC").is_none_or(|v| v.is_empty()))
 }
 
 /// Resolved handles, cached per backend. A `KernelHandle` is a function in

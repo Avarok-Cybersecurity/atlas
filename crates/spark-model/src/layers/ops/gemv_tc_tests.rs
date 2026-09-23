@@ -19,10 +19,18 @@ const SHAPES_27B: [(u32, u32); 8] = [
 fn every_27b_shape_routes_at_every_row_count() {
     for (n, k) in SHAPES_27B {
         for m in 1..=8 {
-            assert_eq!(tc_route(m, n, k, true, true, true), Some(TcKind::M8), "m={m} n={n} k={k}");
+            assert_eq!(
+                tc_route(m, n, k, true, true, true),
+                Some(TcKind::M8),
+                "m={m} n={n} k={k}"
+            );
         }
         for m in 9..=16 {
-            assert_eq!(tc_route(m, n, k, true, true, true), Some(TcKind::M16), "m={m} n={n} k={k}");
+            assert_eq!(
+                tc_route(m, n, k, true, true, true),
+                Some(TcKind::M16),
+                "m={m} n={n} k={k}"
+            );
         }
     }
 }
@@ -38,8 +46,14 @@ fn k_tail_declines_but_any_n_routes() {
     // K: each quad reads 128 contiguous k per step; a K tail would be dropped.
     assert_eq!(tc_route(4, 5120, 5120 + 64, true, true, true), None);
     // N: the real vocab (248077, odd) is guarded in-kernel, so it routes.
-    assert_eq!(tc_route(4, 248077, 5120, true, true, true), Some(TcKind::M8));
-    assert_eq!(tc_route(12, 248077, 5120, true, true, true), Some(TcKind::M16));
+    assert_eq!(
+        tc_route(4, 248077, 5120, true, true, true),
+        Some(TcKind::M8)
+    );
+    assert_eq!(
+        tc_route(12, 248077, 5120, true, true, true),
+        Some(TcKind::M16)
+    );
 }
 
 #[test]
@@ -57,7 +71,10 @@ fn kill_switch_declines() {
 #[test]
 fn missing_entries_fall_back_correctly() {
     // A target without tc8 still serves narrow rows on tc16 (it covers M<=16).
-    assert_eq!(tc_route(4, 5120, 5120, true, false, true), Some(TcKind::M16));
+    assert_eq!(
+        tc_route(4, 5120, 5120, true, false, true),
+        Some(TcKind::M16)
+    );
     // Without tc16 the wide rows keep the CUDA-core tier.
     assert_eq!(tc_route(12, 5120, 5120, true, true, false), None);
     // Nothing loaded: CUDA-core tier.

@@ -76,3 +76,44 @@ fn the_record_discloses_the_applied_serve_env_and_reads_perf_env_through_it() {
     assert_eq!(back.serve_env, applied);
     assert_eq!(back.perf_env, record.perf_env);
 }
+
+/// `AVAROK_NO_W4A16_TC` is a PRESENCE kill switch: `0` still disables the
+/// tensor-core small-M GEMV, so the record must carry the value the server saw
+/// verbatim, never a normalised on/off.
+#[test]
+fn a_set_tc_kill_switch_is_disclosed_verbatim() {
+    for v in ["1", "0"] {
+        let resolved =
+            super::resolve_perf_env(|k| (k == "AVAROK_NO_W4A16_TC").then(|| v.to_string()));
+        assert_eq!(
+            resolved.get("AVAROK_NO_W4A16_TC").map(String::as_str),
+            Some(v)
+        );
+    }
+}
+
+/// The record's `unset` default is right only while the lever treats unset AND
+/// exported-empty as ON (`resolve_perf_env` maps an empty value to the
+/// default) and any other value as OFF. Read the lever's own source so a rule
+/// change there fails here instead of silently mislabelling every record.
+#[test]
+fn tc_kill_switch_default_matches_the_lever() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let path = root.join("crates/spark-model/src/layers/ops/gemv_tc.rs");
+    let src = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let at = src
+        .find("pub fn tc_enabled()")
+        .expect("the tensor-core lever SSOT is gone; PERF_CONTROLS discloses a dead variable");
+    let body: String = src[at..].chars().take(260).collect();
+    assert!(
+        body.contains("std::env::var_os(\"AVAROK_NO_W4A16_TC\").is_none_or(|v| v.is_empty())"),
+        "the tc kill-switch rule changed; the record's \"unset\" default assumes unset or \
+         empty means the tensor-core path ran: {body}"
+    );
+    assert_eq!(
+        super::resolve_perf_env(|_| None)
+            .get("AVAROK_NO_W4A16_TC")
+            .map(String::as_str),
+        Some("unset")
+    );
+}

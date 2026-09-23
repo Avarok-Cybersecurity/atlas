@@ -212,6 +212,11 @@ fn an_unset_control_is_recorded_as_the_default_the_scheduler_would_apply() {
             .map(String::as_str),
         Some("10")
     );
+    // The tensor-core small-M GEMV kill switch: unset means the tc path ran.
+    assert_eq!(
+        resolved.get("AVAROK_NO_W4A16_TC").map(String::as_str),
+        Some("unset")
+    );
 }
 
 #[test]

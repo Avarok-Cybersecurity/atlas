@@ -75,10 +75,16 @@ fn bf(b: u16) -> f64 {
     f32::from_bits((b as u32) << 16) as f64
 }
 fn bf_ulp(v: f64) -> f64 {
-    if v == 0.0 { 0.0 } else { 2f64.powi(v.abs().log2().floor() as i32 - 7) }
+    if v == 0.0 {
+        0.0
+    } else {
+        2f64.powi(v.abs().log2().floor() as i32 - 7)
+    }
 }
 fn to_u16(b: &[u8]) -> Vec<u16> {
-    b.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect()
+    b.chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .collect()
 }
 
 struct Case<'a> {
@@ -118,14 +124,25 @@ impl Case<'_> {
         })
     }
     /// The PRODUCTION launcher, which routes to the tensor-core kernel.
-    fn routed(&self, kh: KernelHandle, m_launch: u32, m_buf: u32, w: &QuantizedWeight) -> Result<Vec<u16>> {
-        self.run(m_buf, |c| ops::w4a16_gemv_batchm(self.g, kh, self.a, w, c, m_launch, self.n, self.k, 0))
+    fn routed(
+        &self,
+        kh: KernelHandle,
+        m_launch: u32,
+        m_buf: u32,
+        w: &QuantizedWeight,
+    ) -> Result<Vec<u16>> {
+        self.run(m_buf, |c| {
+            ops::w4a16_gemv_batchm(self.g, kh, self.a, w, c, m_launch, self.n, self.k, 0)
+        })
     }
 }
 
 /// Check 3 + 4. Returns the number of violating elements.
 fn compare(tc: &[u16], tier: &[u16], m: usize, n: usize) -> usize {
-    let absmax = tier[..m * n].iter().map(|&b| bf(b).abs()).fold(0.0, f64::max);
+    let absmax = tier[..m * n]
+        .iter()
+        .map(|&b| bf(b).abs())
+        .fold(0.0, f64::max);
     let mut bad = 0;
     for i in 0..m * n {
         let (x, y) = (bf(tc[i]), bf(tier[i]));
@@ -145,7 +162,15 @@ fn main() -> Result<()> {
         eprintln!("batch tiers not in this target's module set");
         std::process::exit(2);
     };
-    let tier_for = |m: u32| if m <= 4 { b4 } else if m <= 8 { b8 } else { b16 };
+    let tier_for = |m: u32| {
+        if m <= 4 {
+            b4
+        } else if m <= 8 {
+            b8
+        } else {
+            b16
+        }
+    };
 
     let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
     let a_host: Vec<u16> = (0..16 * 17408)
@@ -169,17 +194,29 @@ fn main() -> Result<()> {
             .map(|i| {
                 let r = (rng.next() >> 32) as u8;
                 // valid E4M3, exp 1..14, plus a subnormal every 97th group
-                if i % 97 == 0 { r & 0x87 } else { (r & 0x87) | ((1 + (r >> 3) % 14) << 3) }
+                if i % 97 == 0 {
+                    r & 0x87
+                } else {
+                    (r & 0x87) | ((1 + (r >> 3) % 14) << 3)
+                }
             })
             .collect();
         let wp = g.alloc(wb.len())?;
         g.copy_h2d(&wb, wp)?;
         let sp = g.alloc(sb.len())?;
         g.copy_h2d(&sb, sp)?;
-        let w = QuantizedWeight { weight: wp, weight_scale: sp, weight_scale_2: SCALE2, ..QuantizedWeight::null() };
+        let w = QuantizedWeight {
+            weight: wp,
+            weight_scale: sp,
+            weight_scale_2: SCALE2,
+            ..QuantizedWeight::null()
+        };
         let case = Case { g, a, w, c, n, k };
 
-        let rows: Vec<usize> = (0..64).map(|r| (r * 2654435761usize) % nu).chain([0, nu - 1]).collect();
+        let rows: Vec<usize> = (0..64)
+            .map(|r| (r * 2654435761usize) % nu)
+            .chain([0, nu - 1])
+            .collect();
         for m in MS {
             if ops::gemv_tc::tc_kernel(g, m, n, k).is_none() {
                 eprintln!("NOT ARMED: tensor-core kernel did not resolve at m={m} n={n} k={k}");
@@ -196,7 +233,9 @@ fn main() -> Result<()> {
                     for kk in 0..ku {
                         let byte = wb[row * ku / 2 + kk / 2];
                         let nib = if kk & 1 == 1 { byte >> 4 } else { byte & 0xF };
-                        acc += bf(a_host[r * ku + kk]) * E2M1[nib as usize] * e4m3(sb[row * ku / 16 + kk / 16]);
+                        acc += bf(a_host[r * ku + kk])
+                            * E2M1[nib as usize]
+                            * e4m3(sb[row * ku / 16 + kk / 16]);
                     }
                     acc *= SCALE2 as f64;
                     range = range.max(acc.abs());
@@ -208,7 +247,11 @@ fn main() -> Result<()> {
             let bad = compare(&tc, &tv, mu, nu);
             // LEVER MOVED: the routed result must differ from the CUDA-core
             // tier somewhere (summation order), or the tier ran, not tc.
-            let differ = tc[..mu * nu].iter().zip(&tv[..mu * nu]).filter(|(x, y)| x != y).count();
+            let differ = tc[..mu * nu]
+                .iter()
+                .zip(&tv[..mu * nu])
+                .filter(|(x, y)| x != y)
+                .count();
             lever_moved |= differ > 0;
             let ok = cpu_ok && bad == 0;
             failures += usize::from(!ok);
@@ -240,12 +283,19 @@ fn main() -> Result<()> {
         controls_ok &= this_ok;
         println!(
             "{label} CONTROLS  scale-byte-changed trips={ctl_a}  short-M trips={ctl_b}  {}",
-            if this_ok { "CONTROLS-FIRE" } else { "CONTROL-SILENT (gate is blind)" }
+            if this_ok {
+                "CONTROLS-FIRE"
+            } else {
+                "CONTROL-SILENT (gate is blind)"
+            }
         );
         g.free(wp)?;
         g.free(sp)?;
     }
     let pass = failures == 0 && controls_ok && lever_moved;
-    println!("\nORACLE {} (legs failed: {failures}, controls fire: {controls_ok}, lever moved: {lever_moved})", if pass { "PASS" } else { "FAIL" });
+    println!(
+        "\nORACLE {} (legs failed: {failures}, controls fire: {controls_ok}, lever moved: {lever_moved})",
+        if pass { "PASS" } else { "FAIL" }
+    );
     std::process::exit(if pass { 0 } else { 1 });
 }
