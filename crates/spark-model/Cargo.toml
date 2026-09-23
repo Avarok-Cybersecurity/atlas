@@ -301,6 +301,10 @@ name = "w4a16_gemv_tc_oracle"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]
+name = "dense_gemv_bf16_tc_oracle"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
 name = "bf16_batch_bitparity_microtest"
 required-features = ["cuda", "gpu-examples"]
 

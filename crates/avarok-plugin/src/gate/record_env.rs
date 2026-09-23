@@ -40,11 +40,18 @@ use super::record::GateRecord;
 /// `layers/ops/gemv_tc.rs`. The W4A4 activation downcast is NOT here: it is
 /// the `--w4a4-downcast` flag, disclosed in `serve_resolved`
 /// (`record_serve::W4A4_DOWNCAST`).
-const PERF_CONTROLS: [(&str, &str); 4] = [
+///
+/// `AVAROK_NO_MTP_TC` is the same kind of PRESENCE kill switch as
+/// `AVAROK_NO_W4A16_TC`, for the MTP drafter's tensor-core BF16 GEMV: default
+/// `unset` (the path ran), any set value disclosed verbatim.
+/// `tc_mtp_switch_default_matches_the_lever` pins that rule against
+/// `layers/ops/dense_gemv_tc.rs`.
+const PERF_CONTROLS: [(&str, &str); 5] = [
     ("AVAROK_PREFILL_CODISPATCH_WINDOW_MS", "100"),
     ("AVAROK_PREFILL_CODISPATCH_SETTLE_MS", "10"),
     ("AVAROK_NO_W4A16_TC", "unset"),
     ("AVAROK_W4A16_TC_WIDE", "unset"),
+    ("AVAROK_NO_MTP_TC", "unset"),
 ];
 
 /// Resolve the `PERF_CONTROLS` table through `lookup`, substituting each

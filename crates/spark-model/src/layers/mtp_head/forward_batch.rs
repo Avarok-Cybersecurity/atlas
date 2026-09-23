@@ -77,6 +77,14 @@ impl MtpHead {
         k: u32,
         stream: u64,
     ) -> Result<()> {
+        // The tensor-core BF16 GEMV takes every width it covers (2..=32)
+        // ahead of the CUDA-core table below. Under the kill switch
+        // `AVAROK_NO_MTP_TC` nothing is launched here and the table is
+        // unchanged.
+        if ops::dense_gemv_tc::try_dense_gemv_tc(gpu, input, w, output, m as u32, n, k, n, stream)?
+        {
+            return Ok(());
+        }
         match row_dispatch::drafter_row_kernel(
             m,
             n,
@@ -517,7 +525,8 @@ impl MtpHead {
         // bitwise vs the GEMV (tile accumulation order); drafts are verified
         // by the main head, so accepted output is unaffected — only the
         // accept rate can move. Kill: AVAROK_NO_MTP_LMHEAD_TGEMM (presence).
-        if n >= 5
+        if !self.mtp_tc_lm_head(gpu, n, v, h as u32)
+            && n >= 5
             && self.w4a16_gemm_t_k.0 != 0
             && let Some((ref nvfp4_t, ldb)) = self.lm_head_nvfp4_t
         {
@@ -622,12 +631,38 @@ impl MtpHead {
         Ok(())
     }
 
+    /// The tensor-core drafter path (on unless `AVAROK_NO_MTP_TC`) keeps the
+    /// drafter LM head on the tensor-core
+    /// `w4a16_gemv_tc8/16` (via `w4a16_gemv_batchm`) at EVERY width it covers,
+    /// instead of switching to the tile twin at n >= 5: the tile twin is the
+    /// W4A8 dequant GEMM (per-k-step LUT dequant + barriers, issue-bound on
+    /// GB10), and one tensor-core GEMV pass reads the head once at any n <= 16.
+    /// Shared by the dispatch and its log line so the two cannot disagree.
+    fn mtp_tc_lm_head(
+        &self,
+        gpu: &dyn spark_runtime::gpu::GpuBackend,
+        n: usize,
+        v: u32,
+        h: u32,
+    ) -> bool {
+        ops::dense_gemv_tc::mtp_tc_enabled()
+            && ops::gemv_tc::tc_kernel(gpu, n as u32, v, h).is_some()
+    }
+
     /// The arm the large-N projections (fc/q/o/ffn) actually take at this
     /// propose width — logged once per distinct `n` so a 0-handle or
     /// kill-switch fallback cannot hide behind a green "propose_batch active"
     /// line. The N=1024 K/V pair follows the same arm except under
     /// `AVAROK_MTP_KV_GEMV`.
-    fn propose_proj_arm(&self, n: usize, h: usize) -> &'static str {
+    fn propose_proj_arm(
+        &self,
+        gpu: &dyn spark_runtime::gpu::GpuBackend,
+        n: usize,
+        h: usize,
+    ) -> &'static str {
+        if ops::dense_gemv_tc::kernel_for(gpu, n as u32, h as u32, (2 * h) as u32).is_some() {
+            return "TC-GEMV (kill: AVAROK_NO_MTP_TC)";
+        }
         // Probed at the `fc` shape (N = h, K = 2h) — the first weight-bearing
         // projection of every draft position. All the other large-N ones
         // route identically; only the N < 4096 K/V pair can split off, and
@@ -678,7 +713,13 @@ impl MtpHead {
             // `lm_head=` names the arm the forward will actually take at this
             // n (same predicate as the dispatch), so a handle-0 / twin-absent
             // fallback cannot hide behind a green line.
-            if n >= 5
+            let v = if self.mtp_vocab_size > 0 {
+                self.mtp_vocab_size.min(ctx.config.vocab_size as u32)
+            } else {
+                ctx.config.vocab_size as u32
+            };
+            if !self.mtp_tc_lm_head(ctx.gpu, n, v, ctx.config.hidden_size as u32)
+                && n >= 5
                 && self.w4a16_gemm_t_k.0 != 0
                 && let Some((_, ldb)) = self.lm_head_nvfp4_t
             {
@@ -686,7 +727,7 @@ impl MtpHead {
                     "MTP propose_batch active: n={n} proj={} pipelined_gemm={:#x} \
                      gemv_batchm={:#x} lm_head=TILE-TWIN (handle {:#x}, ldb={ldb}) \
                      — kill switch AVAROK_NO_MTP_LMHEAD_TGEMM (presence)",
-                    self.propose_proj_arm(n, ctx.config.hidden_size),
+                    self.propose_proj_arm(ctx.gpu, n, ctx.config.hidden_size),
                     self.dense_gemm_pipelined_k.0,
                     self.dense_gemv_batchm_k.0,
                     self.w4a16_gemm_t_k.0,
@@ -695,7 +736,7 @@ impl MtpHead {
                 tracing::info!(
                     "MTP propose_batch active: n={n} proj={} pipelined_gemm={:#x} \
                      gemv_batchm={:#x} lm_head_batchm={:#x}",
-                    self.propose_proj_arm(n, ctx.config.hidden_size),
+                    self.propose_proj_arm(ctx.gpu, n, ctx.config.hidden_size),
                     self.dense_gemm_pipelined_k.0,
                     self.dense_gemv_batchm_k.0,
                     self.lm_head_batch_kernel(n).0

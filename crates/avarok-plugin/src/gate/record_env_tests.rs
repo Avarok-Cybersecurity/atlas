@@ -133,3 +133,46 @@ fn tc_kill_switch_default_matches_the_lever() {
         assert_eq!(resolved.get(var).map(String::as_str), Some("unset"));
     }
 }
+
+/// `AVAROK_NO_MTP_TC` is a PRESENCE kill switch like `AVAROK_NO_W4A16_TC`.
+/// The record's `unset` default is right only while the lever treats unset
+/// AND exported-empty as ON and any other value, `0` included, as OFF. Read
+/// the lever's own source so a rule change there fails here instead of
+/// silently mislabelling every record; a set value is disclosed verbatim.
+#[test]
+fn tc_mtp_switch_default_matches_the_lever() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let path = root.join("crates/spark-model/src/layers/ops/dense_gemv_tc.rs");
+    let src = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let rule = src
+        .find("pub fn mtp_tc_from(")
+        .map(|at| src[at..].chars().take(200).collect::<String>())
+        .expect("the drafter tc rule is gone; PERF_CONTROLS discloses a dead variable");
+    assert!(
+        rule.contains("kill.is_none_or(|v| v.is_empty())"),
+        "the AVAROK_NO_MTP_TC rule changed; the record's \"unset\" default assumes unset or \
+         empty means the tensor-core path ran: {rule}"
+    );
+    let read = src
+        .find("pub fn mtp_tc_enabled()")
+        .map(|at| src[at..].chars().take(300).collect::<String>())
+        .expect("the drafter tc lever is gone");
+    assert!(
+        read.contains("mtp_tc_from(std::env::var_os(\"AVAROK_NO_MTP_TC\")"),
+        "the lever no longer reads AVAROK_NO_MTP_TC through mtp_tc_from: {read}"
+    );
+    assert_eq!(
+        super::resolve_perf_env(|_| None)
+            .get("AVAROK_NO_MTP_TC")
+            .map(String::as_str),
+        Some("unset")
+    );
+    for v in ["1", "0"] {
+        let resolved =
+            super::resolve_perf_env(|k| (k == "AVAROK_NO_MTP_TC").then(|| v.to_string()));
+        assert_eq!(
+            resolved.get("AVAROK_NO_MTP_TC").map(String::as_str),
+            Some(v)
+        );
+    }
+}
