@@ -26,6 +26,10 @@ const ALL: &[&BenchmarkDescriptor] = &[
     &decode_floor::DESCRIPTOR,
     &concurrency::DESCRIPTOR,
     &concurrency::DFLASH2_DESCRIPTOR,
+    // The MoE flagship's ladder at the published instrument. A promotion
+    // candidate (`gate::coverage::PROMOTION_CANDIDATES`) until its first
+    // measured floors land; see `concurrency::MOE_DESCRIPTOR`.
+    &concurrency::MOE_DESCRIPTOR,
     &ttft::WARM_DESCRIPTOR,
     &ttft::COLD_DESCRIPTOR,
     &contamination::DESCRIPTOR,

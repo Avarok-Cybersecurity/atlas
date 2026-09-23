@@ -30,7 +30,9 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use avarok_plugin::serve_identity::{ServeIdentity, argv_fingerprint, file_sha256};
+use avarok_plugin::serve_identity::{
+    ServeIdentity, argv_fingerprint, engine_env_fingerprint, engine_env_is_unknown, file_sha256,
+};
 use avarok_plugin::{ArtifactStore, TargetEndpoint};
 
 use super::bench_selfstart::SelfServed;
@@ -90,11 +92,21 @@ fn pid_alive(pid: u32) -> bool {
 }
 
 /// What this process would want a reused server to be: the plan's own
-/// rendering on the leased port, from this binary.
-fn expected(plan: &ServePlan, port: u16) -> Result<(String, String)> {
+/// rendering on the leased port, from this binary, under THIS environment.
+///
+/// The environment is included because a serve's `AVAROK_*` levers do not
+/// appear in its argv: the same rendering under a different environment is a
+/// different engine, and reusing it makes the record name a config that never
+/// ran. A child spawned by this process inherits this environment, so the
+/// digest computed here is exactly what a server started now would report.
+fn expected(plan: &ServePlan, port: u16) -> Result<(String, String, String)> {
     let argv = plan.argv(port)?;
     let mine = std::env::current_exe().context("current_exe")?;
-    Ok((argv_fingerprint(&argv[1..]), file_sha256(&mine)?))
+    Ok((
+        argv_fingerprint(&argv[1..]),
+        file_sha256(&mine)?,
+        engine_env_fingerprint(std::env::vars()),
+    ))
 }
 
 /// Why a leased server is not the one this run needs, or `None` when it is.
@@ -103,7 +115,7 @@ fn expected(plan: &ServePlan, port: u16) -> Result<(String, String)> {
 pub fn mismatch(
     lease: &Lease,
     reported: &ServeIdentity,
-    expected: &(String, String),
+    expected: &(String, String, String),
     model: &str,
 ) -> Option<String> {
     if reported.pid != lease.pid {
@@ -119,6 +131,27 @@ pub fn mismatch(
         return Some(format!(
             "it serves {} under another rendering (recipe {}, overrides or hermetic set differ)",
             lease.model, lease.recipe_id
+        ));
+    }
+    // ★ THE ENVIRONMENT IS PART OF THE CONFIG, owner 2026-09-22: "we only allow
+    // server re-use IF the recipes the bench uses are the SAME". The recipe is
+    // already covered above — it renders to flags — but the `AVAROK_*` levers
+    // never reach argv, so a server carrying the wrong one is byte-identical
+    // here and used to pass. Refused separately from the rendering so the
+    // message says WHICH half differs; a reader chasing a surprising number
+    // needs that distinction.
+    if engine_env_is_unknown(&reported.engine_env_sha256) {
+        return Some(
+            "it does not report its engine environment (a server older than the \
+             engine_env digest), so its levers cannot be verified"
+                .into(),
+        );
+    }
+    if reported.engine_env_sha256 != expected.2 {
+        return Some(format!(
+            "it serves {} under another engine environment (an AVAROK_* lever differs; \
+             argv and binary match, so this is env-only)",
+            lease.model
         ));
     }
     if lease.model != model {

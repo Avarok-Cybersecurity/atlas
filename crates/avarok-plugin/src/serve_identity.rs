@@ -4,10 +4,30 @@
 //!
 //! A benchmark that reuses a server somebody else started has to know it is
 //! measuring what it would have started itself — the same build, the same
-//! recipe rendering, the same overrides — or its record names a config it
-//! never ran. The server publishes both as digests (`GET /serve-config`),
-//! never as the arguments themselves: an argv can carry `--auth-token`.
-//! The digests are what both sides compute, one spelling, here.
+//! recipe rendering, the same overrides, the same ENGINE ENVIRONMENT — or its
+//! record names a config it never ran. The server publishes them as digests
+//! (`GET /serve-config`), never as the arguments themselves: an argv can carry
+//! `--auth-token`. The digests are what both sides compute, one spelling, here.
+//!
+//! ## Why the environment is part of the identity (owner, 2026-09-22)
+//!
+//! "If the server config has to change to be accurate, we should NOT reuse the
+//! server." The recipe half of that was already enforced — a recipe renders to
+//! flags, so a different recipe is a different `argv_sha256`. The environment
+//! half was NOT: `AVAROK_PREFILL_CODISPATCH=1` and `=0` produce byte-identical
+//! argv, so a leased server carrying the wrong lever passed the reuse check and
+//! the run measured a config it did not declare. That lever is worth +4.78% on
+//! warm TTFT, about 107x the control spread, so this is not a hypothetical.
+//!
+//! The digest covers EVERY `AVAROK_*` variable rather than a curated list.
+//! `gate::record::PERF_CONTROLS` would have been the tempting SSOT, but it
+//! holds only the three codispatch keys — fingerprinting it would silently miss
+//! `AVAROK_FP8_ROWWISE`, `AVAROK_MTP_DCUT_RATIO` and `AVAROK_MTP_K_LADDER`,
+//! which the published recipe also sets, and a safety check that misses three
+//! of four levers is worse than none because it gets trusted. The failure
+//! directions are not symmetric: refusing a reusable server costs one server
+//! start, while reusing a wrong one silently corrupts a record, so this errs
+//! toward refusing.
 
 use std::path::Path;
 
@@ -47,6 +67,7 @@ pub fn this_process() -> &'static ServeIdentity {
                 .context("current_exe")
                 .and_then(|p| file_sha256(&p))
                 .unwrap_or_else(|e| format!("unavailable: {e:#}")),
+            engine_env_sha256: engine_env_fingerprint(std::env::vars()),
             pid: std::process::id(),
         }
     })
@@ -57,7 +78,43 @@ pub fn this_process() -> &'static ServeIdentity {
 pub struct ServeIdentity {
     pub argv_sha256: String,
     pub binary_sha256: String,
+    /// Digest of every `AVAROK_*` variable this server was started with.
+    ///
+    /// `serde(default)` so a server built before this field existed still
+    /// PARSES — it then reports the empty string, which
+    /// [`crate::serve_identity::engine_env_is_unknown`] treats as UNKNOWN and
+    /// the reuse check refuses on. An old server is exactly the case where the
+    /// environment cannot be verified, so "cannot tell" must not read as
+    /// "matches".
+    #[serde(default)]
+    pub engine_env_sha256: String,
     pub pid: u32,
+}
+
+/// The digest of the engine-relevant environment: every `AVAROK_*` variable,
+/// sorted by name, NUL-separated so `A=1,B=` and `A=1B,=` cannot collide.
+///
+/// Pure over the iterator so it is testable without mutating the process
+/// environment — `set_var` is unsafe and process-global.
+#[must_use]
+pub fn engine_env_fingerprint(vars: impl Iterator<Item = (String, String)>) -> String {
+    let mut kept: Vec<(String, String)> = vars.filter(|(k, _)| k.starts_with("AVAROK_")).collect();
+    kept.sort();
+    let mut h = Sha256::new();
+    for (k, v) in kept {
+        h.update(k.as_bytes());
+        h.update([0u8]);
+        h.update(v.as_bytes());
+        h.update([0u8]);
+    }
+    format!("{:x}", h.finalize())
+}
+
+/// Whether a reported digest carries no information — an empty string, which is
+/// what a server predating [`ServeIdentity::engine_env_sha256`] reports.
+#[must_use]
+pub fn engine_env_is_unknown(reported: &str) -> bool {
+    reported.is_empty()
 }
 
 #[cfg(test)]

@@ -194,7 +194,20 @@ fn a_baseline_declared_serve_pin_reaches_the_rendered_serve_args_without_cli_fla
     let baseline = gate::read_baseline(&root, "concurrency-sweep").expect("baseline assembles");
     let resolved = crate::cli::bench_resolve::resolve(&baseline, "concurrency-sweep", None, None)
         .expect("the default variant resolves");
-    assert_eq!(resolved.recipe_id, "qwen3.8/qwen3.8-27b-nvfp4-unsloth");
+    // ★ DERIVED, NOT RE-TYPED. This was the literal
+    // "qwen3.8/qwen3.8-27b-nvfp4-unsloth" until 2026-09-22, when the gate was
+    // re-pointed at the THROUGHPUT recipe and this assertion failed for a
+    // config change it has no opinion about. Which recipe the ladder serves is
+    // asserted where it is decided -- gate::bench_serve_pin_tests -- and
+    // restating it here was an SSOT duplicate that this file's own comment
+    // below already admitted to. What belongs here is that resolution AGREES
+    // with the manifest, which is a property of the resolver and survives any
+    // future re-point.
+    assert_eq!(
+        Some(resolved.recipe_id.as_str()),
+        resolved.entry.recipe.as_deref(),
+        "resolution must serve the recipe the baseline declares"
+    );
 
     // No CLI overrides — the whole point of the repro.
     let merged =
@@ -227,10 +240,40 @@ fn a_baseline_declared_serve_pin_reaches_the_rendered_serve_args_without_cli_fla
         merged["max_batch_size"],
         "the batching pin reached the serve"
     );
-    assert_eq!(args.kv_cache_dtype.as_deref(), Some("fp8"));
-    // Marconi pinned at 32 slots (2026-09-13): the sweep's warm rule holds
-    // only while `slots > 3·C` — see the BENCH.toml serve_overrides comment
-    // and `concurrency::warm_cache_capable`.
-    assert_eq!(args.ssm_cache_slots, 32);
-    assert_eq!(args.max_seq_len, 4096);
+    assert_eq!(
+        args.kv_cache_dtype.as_deref(),
+        Some(merged["kv_cache_dtype"].as_str()),
+        "the KV pin reached the serve"
+    );
+    // ★ THE NEGATIVE CONTROL, and the reason this fixture is the right one to
+    // render through: it declares `max_batch_size: 1`, `kv_cache_dtype: bf16`
+    // and `ssm_cache_slots: 128`, so each positive assertion above is only
+    // satisfiable by the pin ACTUALLY reaching argv -- the recipe's own value
+    // would fail it. `ssm_cache_slots` is the other direction: the gate stopped
+    // pinning it on 2026-09-22 (the throughput recipe's 8 is the published
+    // leg's own value), so an unpinned key must come through as the RECIPE's
+    // number and not be invented by the merge. Asserted against the fixture
+    // rather than a literal so it tracks the fixture.
+    assert!(
+        !merged.contains_key("ssm_cache_slots"),
+        "the ladder inherits the recipe's pool; re-pinning it re-opens the last \
+         disagreement with the published leg"
+    );
+    assert_eq!(
+        args.ssm_cache_slots,
+        recipe.defaults["ssm_cache_slots"]
+            .parse::<usize>()
+            .expect("the fixture declares a numeric pool size"),
+        "an unpinned key must render the recipe's own value"
+    );
+    // ★ Read from the committed pin, not re-typed — the same convention the
+    // batch assertion above already follows, and applying it here is why this
+    // line no longer has to be edited when the instrument moves. It was a
+    // hardcoded 4096 until 2026-09-21, when the gate's context went to 2048
+    // with the re-point to the published ladder's instrument.
+    assert_eq!(
+        args.max_seq_len.to_string(),
+        merged["max_model_len"],
+        "the context pin reached the serve"
+    );
 }

@@ -132,6 +132,69 @@ pub const DFLASH2_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
 
 const DFLASH2_SUMMARY: &str = "Latency/throughput curve across concurrency 1 → 128, DFlash2 armed";
 
+/// The same ladder on the 35B MoE flagship, at the PUBLISHED instrument.
+///
+/// A THIRD gate id, for the reason the DFlash2 one exists. A required gate
+/// has ONE declared subject per box class (`check::record_is_required_subject`)
+/// and `bench::baseline_for` refuses two `default = true` checkpoints on one
+/// gate — so the MoE can never be a second subject of `concurrency-sweep`,
+/// only a non-default variant, and a variant is never run by `bench certify`
+/// (it spawns each REQUIRED id with no `--checkpoint`) and its floors gate
+/// nothing. The requirement is the opposite: the MoE curve re-measured on
+/// every campaign, with a floor per rung that fails the gate.
+///
+/// Born on the published instrument (ISL 128 / OSL 1024, the harness's essay
+/// request, C=1..16) rather than the dense gate's ISL 512 / OSL 320 natural
+/// fixture: it has no history on any instrument, so nothing is lost; the only
+/// vLLM measurement of this checkpoint
+/// (`bench/baselines/qwen36-35b-a3b/published.json`) was taken there and
+/// stops at C=16 by design; and the `essay` fixture exists precisely so a
+/// gate cell can be read against that ladder. Its tok/s are ~4x the dense
+/// gate's and MUST NOT share an axis with them — each concurrency gate is
+/// scored against its own history, and the site's instrument fingerprint
+/// refuses a cross-instrument pair by name.
+///
+/// Registered as a PROMOTION CANDIDATE (`gate::coverage`), not REQUIRED,
+/// until its first measured floors land: `sweep_verdict` says PASS only when
+/// a floor is populated, `check_record` demands PASS, and `baseline_for`
+/// drops an unmeasured entry — so a REQUIRED entry with no floors would block
+/// every PR while refusing to run under `--pull-request-gate`. The promotion
+/// is the PR that commits the floors; the BENCH.toml entry says what that
+/// takes.
+pub const MOE_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
+    id: "concurrency-sweep-moe",
+    name: "Concurrency Sweep (MoE)",
+    summary: MOE_SUMMARY,
+    detail: "The concurrency ladder on the Qwen3.6-35B-A3B MoE flagship, pinned by the \
+             variant's param_overrides to the PUBLISHED instrument the vLLM one-shot for \
+             this checkpoint was measured on: ISL 128 / OSL 1024, the ladder38 essay \
+             request byte for byte, C=1..16. Same driver, same rungs-and-floors shape and \
+             same vacuity rule as `concurrency-sweep`; the MoE decode path takes the \
+             grouped-GEMM expert arm above the width gate that the dense ladder never \
+             reaches, which is why a dense record cannot speak for it. Its numbers are \
+             NOT comparable to the dense gates' (a different checkpoint on a different \
+             instrument, ~4x apart) and each is read against its own history only.",
+    duration_hint: "~5–15 min",
+    // A DECLARED estimate: two passes (warm-up + measured) over five rungs at
+    // OSL 1024 on a ~3B-active MoE, plus the serve. The first record measures
+    // it (`Estimate::Measured`); nothing here is quoted as a result.
+    expected_secs: 600,
+    updated: "2026-09-20",
+    needs_confirmation: false,
+    intended_for: Some(crate::benchmark::ModelExpectation {
+        families: &["qwen3.6-35b-a3b"],
+        note: "The MoE ladder is defined on the Qwen3.6-35B-A3B family (the FP8 flagship \
+               is its declared subject). Pointing it at the dense 27B measures the dense \
+               FFN path under the MoE's instrument — a number with no history and no floor.",
+    }),
+    threshold_params: GATE_THRESHOLD_PARAMS,
+    sensitivity: Sensitivity::Speed,
+    ctor: || Box::new(ConcurrencySweep::default()),
+};
+
+const MOE_SUMMARY: &str =
+    "Latency/throughput curve across concurrency 1 → 16 on the 35B MoE, published instrument";
+
 /// The gated ladder, declared ONCE: `(C, floor param, metric key, label)`.
 ///
 /// Three things are derived from this and nothing else — the descriptor's
@@ -357,13 +420,47 @@ fn warm_cache_capable(conc: usize, slots: Option<usize>, earlier: &[usize]) -> b
     slots.is_none_or(|slots| slots > slots_needed(conc, earlier))
 }
 
+/// A cell's cache state is UNCONTROLLED when its requests disagree about it.
+///
+/// ★ UNIFORMLY COLD IS CONTROLLED. This used to fail any cell that requested a
+/// warm-up and then observed less than `WARM_CACHE_FLOOR` cached — testing
+/// INTENT against OUTCOME. That is the wrong invariant, and on the published
+/// ladder's own instrument it fails a correct run: at isl 128 the prompt is
+/// ~200 tokens, `marconi_min_tokens()` declines a snapshot restore below
+/// `DEFAULT_MARCONI_MIN_TOKENS = 256`, and so EVERY request of EVERY cell
+/// reports 0 cached (`prefix_reuse.rs` names that path). The published Atlas leg
+/// ran the same threshold with no override and was uniformly cold too — and
+/// still set the bar this gate is drawn against.
+///
+/// What actually makes a cell's tok/s unreadable is a MIXTURE: a warm request
+/// skips prefill work, so a cell holding both warm and cold requests is two
+/// measurements reported as one. Coldness is not the defect; disagreement is.
+///
+/// Per-cell is the right scope, not a narrowed one — the sweep already declares
+/// whole cells cold by construction above the warm-capacity bound
+/// (`warm_cache_capable`), so cross-cell mixture is intended and only WITHIN a
+/// cell does a mixture corrupt a single number.
+///
+/// ★ WHAT THIS GIVES UP, deliberately: it no longer reports "you asked for a
+/// warm-up and got nothing". That is real operator information, and it survives
+/// because the record still carries `min_cached_prompt_pct` and
+/// `min_cached_prompt_tokens` on every run — the evidence line prints the
+/// per-request `cached [a/b, ...]` too. What is lost is the automatic FAIL, and
+/// that is the point: the engine declining a restore it has measured as a loss
+/// must not be reported as an operator error.
 fn cache_is_uncontrolled(requests: &[RequestEvidence], warmup: usize) -> bool {
-    warmup > 0
-        && requests.iter().any(|request| {
-            request.prompt_tokens == 0
-                || (request.cached_prompt_tokens as f64)
-                    < WARM_CACHE_FLOOR * request.prompt_tokens as f64
-        })
+    if warmup == 0 {
+        return false;
+    }
+    // A request with no usage at all says nothing about the cache state, so the
+    // cell cannot be claimed as controlled in either direction.
+    if requests.iter().any(|request| request.prompt_tokens == 0) {
+        return true;
+    }
+    let warm = |request: &RequestEvidence| {
+        (request.cached_prompt_tokens as f64) >= WARM_CACHE_FLOOR * request.prompt_tokens as f64
+    };
+    requests.iter().any(&warm) != requests.iter().all(&warm)
 }
 
 /// The prompt identities one cell executes before and during measurement.
@@ -1230,3 +1327,7 @@ mod concurrency_verdict_tests;
 #[cfg(test)]
 #[path = "concurrency_vacuity_tests.rs"]
 mod concurrency_vacuity_tests;
+
+#[cfg(test)]
+#[path = "concurrency_moe_tests.rs"]
+mod concurrency_moe_tests;

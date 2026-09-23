@@ -1,5 +1,5 @@
 {
-  "generated_utc": "2026-09-21T18:46:52Z",
+  "generated_utc": "2026-09-21T20:22:57Z",
   "manifest": "bench/ladder38/published.json",
   "title": "Qwen3.8-27B NVFP4 concurrency ladder",
   "subtitle": "Atlas vs vLLM 0.27.1, C=1..128, every workload axis matched",
@@ -29,8 +29,8 @@
     "6412b12d4d": "vLLM legs. Does not send the penalty keys.",
     "1c77e1d8e9": "Atlas legs (rounds 7-11). Adds explicit presence_penalty/frequency_penalty = 0.0.",
     "1f10d4887b": "The 2026-08-18 C=2 hardening pair (c2_atlas_dgx2_20260818.json and c2_vllm_mtp_dgx2_20260818.json). Both raw files carry this one driver sha, which is what makes them a pair: same harness revision, same day, same box.",
-    "equivalence": "The only difference is those two keys. vLLM already defaults both to 0.0, so its sampling is byte-identical either way; the keys exist to stop Atlas's non_thinking preset injecting presence_penalty=1.5. Both engines therefore ran identical sampling.",
-    "664302439b": "The ENERGY leg (vllm-mtp-energy), 2026-09-21. harness_w56_conc_ladder.py -- the w55 harness plus power_window.py, which is the half that records gpu_rail_energy_j; w55 has no power sampling at all, which is why the throughput-only legs above carry no joules. This is the sha256 of the copy committed at bench/ladder38/harness_w56_conc_ladder.py and asserted equal to the raw file's driver_sha256 at the time it was added, so the two are checkable against each other -- and gen-ladder.mjs re-hashes that file at every build as harness_repo_sha256."
+    "664302439b": "The ENERGY leg (vllm-mtp-energy), 2026-09-21. harness_w56_conc_ladder.py -- the w55 harness plus power_window.py, which is the half that records gpu_rail_energy_j; w55 has no power sampling at all, which is why the throughput-only legs above carry no joules. This is the sha256 of the copy committed at bench/ladder38/harness_w56_conc_ladder.py and asserted equal to the raw file's driver_sha256 at the time it was added, so the two are checkable against each other -- and gen-ladder.mjs re-hashes that file at every build as harness_repo_sha256.",
+    "equivalence": "The only difference is those two keys. vLLM already defaults both to 0.0, so its sampling is byte-identical either way; the keys exist to stop Atlas's non_thinking preset injecting presence_penalty=1.5. Both engines therefore ran identical sampling."
   },
   "harness_repo_sha256": "41e242c072a1b90be55acc8ba60cd751b66ec0d68e59bd1c0fe1e6d29c62a400",
   "concurrencies": [
@@ -169,6 +169,7 @@
       "instrument": {
         "isl": 128,
         "osl": 1024,
+        "prompt_mode": "essay",
         "max_model_len": 2048,
         "max_batch_size": 128,
         "kv_cache_dtype": "fp8",
@@ -177,6 +178,7 @@
         "temperature": 0,
         "seed": 42
       },
+      "instrument_note": "prompt_mode essay, ADDED 2026-09-21 so the live gate record can be drawn against this bar: ladder-baselines.js treats an undeclared REQUIRED axis as a DIFFERENCE, never a match, so without it an Atlas run measured on exactly this instrument could never be paired with it. HOW MUCH OF THIS IS FACT: the harness reads PROMPT_MODE = os.environ.get('W55_PROMPT_MODE', 'essay') and appends SUFFIX_ESSAY unless it is 'count'. Two of the four driver revisions behind this manifest are recoverable from this repo's own history and both read exactly that -- 1f10d4887b is bench/ladder38/harness_w55_conc_ladder.py at 60370b953 (the 2026-08-18 C=2 pair, BOTH legs) and 41e242c072 is the copy committed today at 452493a35 -- and SUFFIX_ESSAY is byte-identical between them. For those rungs this is a FACT, read from the source that ran. The other two revisions (6412b12d4d, the vLLM reference legs; 1c77e1d8e9, Atlas rounds 7-11) were never committed at this path, so for their rungs it is DERIVED: the recorded env does not set W55_PROMPT_MODE, and the raw files carry isl/osl/reps/warmup/temperature/seed and chat_template_kwargs but no prompt_mode. The completion distributions corroborate it -- the count fixture stops far short of the budget, while these runs sit at the 1024 budget with deterministic minima of 691 (C=128) and 753 (C=64). Re-check if a raw file is ever replaced; a harness that RECORDED the mode would make the whole manifest a fact.",
       "source_note": "The apples-to-apples reference: ctx 2048, batch cap 128, util 0.85, fp8 KV, prefix caching, thinking off and MTP K=4 -- every axis matched to Atlas. vLLM at its best, not a handicapped baseline.",
       "rungs": [
         {
@@ -295,6 +297,7 @@
       "instrument": {
         "isl": 128,
         "osl": 1024,
+        "prompt_mode": "essay",
         "max_model_len": 4096,
         "max_batch_size": 128,
         "kv_cache_dtype": "bf16",
@@ -303,7 +306,7 @@
         "temperature": 0,
         "seed": 42
       },
-      "instrument_note": "kv_cache_dtype bf16 is the command's `--kv-cache-dtype bfloat16`, spelled as an Atlas gate record spells serve_overrides.kv_cache_dtype, which is what this fingerprint is compared against.",
+      "instrument_note": "kv_cache_dtype bf16 is the command's `--kv-cache-dtype bfloat16`, spelled as an Atlas gate record spells serve_overrides.kv_cache_dtype, which is what this fingerprint is compared against. prompt_mode essay, ADDED 2026-09-21 so the live gate record can be drawn against this bar: ladder-baselines.js treats an undeclared REQUIRED axis as a DIFFERENCE, never a match, so without it an Atlas run measured on exactly this instrument could never be paired with it. HOW MUCH OF THIS IS FACT: the harness reads PROMPT_MODE = os.environ.get('W55_PROMPT_MODE', 'essay') and appends SUFFIX_ESSAY unless it is 'count'. Two of the four driver revisions behind this manifest are recoverable from this repo's own history and both read exactly that -- 1f10d4887b is bench/ladder38/harness_w55_conc_ladder.py at 60370b953 (the 2026-08-18 C=2 pair, BOTH legs) and 41e242c072 is the copy committed today at 452493a35 -- and SUFFIX_ESSAY is byte-identical between them. For those rungs this is a FACT, read from the source that ran. The other two revisions (6412b12d4d, the vLLM reference legs; 1c77e1d8e9, Atlas rounds 7-11) were never committed at this path, so for their rungs it is DERIVED: the recorded env does not set W55_PROMPT_MODE, and the raw files carry isl/osl/reps/warmup/temperature/seed and chat_template_kwargs but no prompt_mode. The completion distributions corroborate it -- the count fixture stops far short of the budget, while these runs sit at the 1024 budget with deterministic minima of 691 (C=128) and 753 (C=64). Re-check if a raw file is ever replaced; a harness that RECORDED the mode would make the whole manifest a fact.",
       "source_note": "Unmatched fingerprint: bf16 KV, ctx 4096, no speculation. It beats vLLM+MTP at C=128 (390.42 vs 358.57) because MTP verification costs vLLM more than it gains 128-wide. Plotted for completeness. The published ratio uses the matched MTP leg, not this one.",
       "rungs": [
         {

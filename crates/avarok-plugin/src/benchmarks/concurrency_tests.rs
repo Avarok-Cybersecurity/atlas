@@ -297,7 +297,7 @@ fn the_warm_rule_applies_only_where_the_snapshot_pool_can_hold_the_cell() {
 }
 
 #[test]
-fn a_requested_warm_path_requires_observed_cached_tokens() {
+fn a_requested_warm_path_requires_a_uniform_cache_state() {
     let osl = 128;
     let mut missed = row(4, 100.0, Some(50.0), vec![evidence(128); 4], osl);
     missed.requests[2].cached_prompt_tokens = 0;
@@ -314,12 +314,31 @@ fn a_requested_warm_path_requires_observed_cached_tokens() {
     assert!(!cache_is_uncontrolled(&missed.requests, 0));
     assert!(!cache_is_uncontrolled(&[evidence(128), evidence(128)], 1));
 
+    // The floor still decides WHICH SIDE a request is on, and it is still
+    // exclusive at 0.8 — but a cell that is entirely on one side is controlled
+    // whichever side that is. So the boundary is asserted through a MIXTURE,
+    // which is the only thing the cell-level rule can be wrong about.
     let mut boundary = evidence(128);
     boundary.prompt_tokens = 100;
     boundary.cached_prompt_tokens = 80;
+    let mut cold = boundary.clone();
+    cold.cached_prompt_tokens = 79;
     assert!(!cache_is_uncontrolled(&[boundary.clone()], 1));
-    boundary.cached_prompt_tokens = 79;
-    assert!(cache_is_uncontrolled(&[boundary], 1));
+    assert!(cache_is_uncontrolled(&[boundary.clone(), cold.clone()], 1));
+    assert!(cache_is_uncontrolled(&[cold.clone(), boundary], 1));
+
+    // ★ THE CHANGE, 2026-09-22: uniformly COLD is controlled. This asserted the
+    // opposite until the published ladder's own instrument proved it wrong — at
+    // isl 128 the ~200-token prompt sits below `marconi_min_tokens()`, so the
+    // engine declines every snapshot restore ON PURPOSE (its A/B: 99 tokens
+    // -9.7%, 219 +9.8%) and every request reports 0 cached. The published leg
+    // ran that same threshold and was cold too. A run where nothing disagrees
+    // is not an uncontrolled run.
+    assert!(!cache_is_uncontrolled(&[cold.clone()], 1));
+    assert!(!cache_is_uncontrolled(
+        &[cold.clone(), cold.clone(), cold],
+        1
+    ));
 
     let mut missing_usage = evidence(128);
     missing_usage.prompt_tokens = 0;

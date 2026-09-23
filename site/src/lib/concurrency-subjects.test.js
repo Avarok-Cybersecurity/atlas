@@ -42,8 +42,13 @@ describe('the subject list', () => {
     expect(SUBJECTS.some((s) => /35B.*NVFP4/i.test(s.checkpoint))).toBe(false);
   });
 
-  test('dense and MoE share a gate; dense and DFlash share a checkpoint', () => {
-    expect(byId('qwen38-27b').gate).toBe(byId('qwen36-35b-a3b').gate);
+  test('the MoE has its own gate id; dense and DFlash share a checkpoint', () => {
+    // A required gate has ONE declared subject per box class (`record_is_required_subject`
+    // in crates/avarok-plugin/src/gate/check.rs), so the MoE ladder cannot be a second
+    // subject of `concurrency-sweep`: it is `concurrency-sweep-moe`, the mechanism the
+    // DFlash2 ladder already uses, and its records land in their own directory.
+    expect(byId('qwen38-27b').gate).toBe('concurrency-sweep');
+    expect(byId('qwen36-35b-a3b').gate).toBe('concurrency-sweep-moe');
     expect(byId('qwen38-27b').checkpoint).toBe(byId('qwen38-27b-dflash').checkpoint);
   });
 });
@@ -85,8 +90,8 @@ describe('assertSubjects', () => {
 describe('subjectOf', () => {
   test('assigns on gate AND checkpoint — the two shared fields cannot mislead it', () => {
     expect(subjectOf(rec('concurrency-sweep', DENSE, 'a'))?.id).toBe('qwen38-27b');
-    // Same gate as dense, different checkpoint: MoE, not dense.
-    expect(subjectOf(rec('concurrency-sweep', MOE, 'b'))?.id).toBe('qwen36-35b-a3b');
+    // The MoE's own gate id with its checkpoint: MoE.
+    expect(subjectOf(rec('concurrency-sweep-moe', MOE, 'b'))?.id).toBe('qwen36-35b-a3b');
     // Same checkpoint as dense, different gate: DFlash, not dense.
     expect(subjectOf(rec('concurrency-sweep-dflash2', DENSE, 'c'))?.id).toBe('qwen38-27b-dflash');
   });
@@ -95,12 +100,18 @@ describe('subjectOf', () => {
     expect(subjectOf(rec('concurrency-sweep', 'nvidia/Qwen3.6-35B-A3B-NVFP4', 'd'))).toBeNull();
     expect(subjectOf(rec('concurrency-sweep-dflash2', MOE, 'e'))).toBeNull();
     expect(subjectOf(rec('decode-floor', DENSE, 'f'))).toBeNull();
+    // A MoE run filed under the DENSE gate id is unassigned — listed in the
+    // footer, never quietly folded into the MoE tab as if the gate were shared.
+    expect(subjectOf(rec('concurrency-sweep', MOE, 'g'))).toBeNull();
+    // And the dense checkpoint under the MoE gate id is not the dense subject.
+    expect(subjectOf(rec('concurrency-sweep-moe', DENSE, 'h'))).toBeNull();
   });
 });
 
 describe('recordsOf', () => {
   const recordsFor = store({
-    'concurrency-sweep': [rec('concurrency-sweep', DENSE, 'd1'), rec('concurrency-sweep', MOE, 'm1'), rec('concurrency-sweep', DENSE, 'd2')],
+    'concurrency-sweep': [rec('concurrency-sweep', DENSE, 'd1'), rec('concurrency-sweep', MOE, 'stray'), rec('concurrency-sweep', DENSE, 'd2')],
+    'concurrency-sweep-moe': [rec('concurrency-sweep-moe', MOE, 'm1')],
     'concurrency-sweep-dflash2': [rec('concurrency-sweep-dflash2', DENSE, 'f1')]
   });
 
@@ -172,7 +183,10 @@ describe('unassignedRecords', () => {
   });
 
   test('is empty when every record has a subject', () => {
-    const recordsFor = store({ 'concurrency-sweep': [rec('concurrency-sweep', DENSE, 'a'), rec('concurrency-sweep', MOE, 'b')] });
-    expect(unassignedRecords(['concurrency-sweep'], recordsFor)).toEqual([]);
+    const recordsFor = store({
+      'concurrency-sweep': [rec('concurrency-sweep', DENSE, 'a')],
+      'concurrency-sweep-moe': [rec('concurrency-sweep-moe', MOE, 'b')]
+    });
+    expect(unassignedRecords(['concurrency-sweep', 'concurrency-sweep-moe'], recordsFor)).toEqual([]);
   });
 });

@@ -267,11 +267,43 @@ fn perf_env_defaults_match_the_scheduler() {
         "the scheduler's co-dispatch SETTLE default moved; PERF_CONTROLS in record.rs still \
          says 10"
     );
-    let enable = resolution("AVAROK_PREFILL_CODISPATCH");
+    // ★ THE ENABLE READ MOVED, 2026-09-22, and this assertion followed it to the
+    // SSOT rather than being deleted. `AVAROK_PREFILL_CODISPATCH` became the
+    // `--prefill-codispatch` flag, so mod_helpers.rs no longer reads the
+    // variable at all — it asks `prefill_codispatch_enabled()`, which resolves
+    // the flag first and falls back to the variable. The CONTRACT is unchanged
+    // and is what matters here: the record's "0" default is correct only while
+    // an UNSET variable still means off. Asserting that where it is now decided
+    // is the point; asserting it in mod_helpers.rs would now pass on prose.
+    let ssot = repo_root().join("crates/spark-model/src/layers/ops/dispatch_helpers.rs");
+    let ssot_src =
+        std::fs::read_to_string(&ssot).unwrap_or_else(|e| panic!("{}: {e}", ssot.display()));
+    let at = ssot_src
+        .find("pub fn prefill_codispatch_enabled()")
+        .expect("the codispatch SSOT is gone; PERF_CONTROLS has nothing to agree with");
+    let body: String = ssot_src[at..].chars().take(260).collect();
     assert!(
-        enable.contains("unwrap_or(false)"),
-        "the scheduler's co-dispatch ENABLE default moved; the record's \"0\" default is only \
-         correct while an unset variable means off"
+        body.contains("std::env::var(\"AVAROK_PREFILL_CODISPATCH\")"),
+        "the env FALLBACK is gone, so an operator setting the documented variable \
+         gets nothing while the record still discloses it: {body}"
+    );
+    assert!(
+        body.contains("bool_value_enabled"),
+        "the truthiness rule changed; the record's \"0\" default assumes unset means off: {body}"
+    );
+    // And the rule itself, executed rather than read: unset MUST be off.
+    assert!(
+        crate::gate::record::resolve_perf_env(|_| None)
+            .get("AVAROK_PREFILL_CODISPATCH")
+            .is_none_or(|v| v != "1"),
+        "an unset codispatch must resolve to off"
+    );
+    // The scheduler must no longer read the variable behind the SSOT's back —
+    // two readers of one lever is what made this lever hard to reason about.
+    assert!(
+        !src.contains("std::env::var(\"AVAROK_PREFILL_CODISPATCH\")"),
+        "mod_helpers.rs reads the codispatch variable directly again, bypassing the \
+         flag: a --prefill-codispatch that the scheduler ignores is worse than no flag"
     );
 }
 
