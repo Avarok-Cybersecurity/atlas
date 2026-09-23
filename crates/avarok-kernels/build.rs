@@ -259,9 +259,7 @@ fn main() {
     let hw_toml: toml::Value = {
         let content = std::fs::read_to_string(&hw_toml_path)
             .unwrap_or_else(|_| panic!("Cannot read {}", hw_toml_path.display()));
-        content
-            .parse()
-            .unwrap_or_else(|e| panic!("Invalid HARDWARE.toml: {e}"))
+        toml::from_str(&content).unwrap_or_else(|e| panic!("Invalid HARDWARE.toml: {e}"))
     };
     let vendor_str = hw_toml
         .get("hardware")

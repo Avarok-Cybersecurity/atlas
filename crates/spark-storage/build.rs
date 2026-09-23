@@ -209,6 +209,6 @@ fn resolve_predictor_arch() -> String {
 /// `[hardware].arch` from a `HARDWARE.toml`, or `None` if it cannot be read.
 fn hardware_arch(path: &Path) -> Option<String> {
     let text = std::fs::read_to_string(path).ok()?;
-    let doc: toml::Value = text.parse().ok()?;
+    let doc: toml::Value = toml::from_str(&text).ok()?;
     Some(doc.get("hardware")?.get("arch")?.as_str()?.to_string())
 }

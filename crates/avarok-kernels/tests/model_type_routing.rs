@@ -40,8 +40,7 @@ fn claims() -> Claims {
     let mut out: Claims = BTreeMap::new();
     for (target, manifest) in manifests() {
         let text = std::fs::read_to_string(&manifest).expect("manifest is readable");
-        let parsed: toml::Value = text
-            .parse()
+        let parsed: toml::Value = toml::from_str(&text)
             .unwrap_or_else(|e| panic!("{} is not valid TOML: {e}", manifest.display()));
         let Some(entries) = parsed.get("model_types").and_then(|v| v.as_array()) else {
             continue;
@@ -164,7 +163,7 @@ fn claimed_hidden_size_matches_documented_hidden_dim() {
     let mut violations: Vec<String> = Vec::new();
     for (_, manifest) in manifests() {
         let text = std::fs::read_to_string(&manifest).expect("manifest is readable");
-        let parsed: toml::Value = text.parse().expect("MODEL.toml parses");
+        let parsed: toml::Value = toml::from_str(&text).expect("MODEL.toml parses");
         let Some(hidden_dim) = parsed
             .get("model")
             .and_then(|m| m.get("hidden_dim"))

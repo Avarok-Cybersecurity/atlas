@@ -17,7 +17,7 @@ description = "Atlas: plugin + benchmark abstraction and registry driven by the 
 avarok-governance = { path = "../avarok-governance" }
 avarok-closure = { path = "../avarok-closure" }
 # BENCH.toml — a model's benchmarks and thresholds, beside the model.
-toml = "0.8"
+toml = "1.1"
 anyhow = { workspace = true }
 # Full-file dataset hashing + draw fingerprints for the MLPerf agentic leg —
 # the same workspace pin avarok-closure already uses, so nothing new is vendored.
