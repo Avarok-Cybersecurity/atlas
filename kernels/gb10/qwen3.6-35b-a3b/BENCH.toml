@@ -448,7 +448,8 @@ sigma 0.57/0.61/0.79/0.49/0.46); (3) the floors below are mean - max(3*sigma, \
 5%) per rung, cut together, never from a best rep (the dense entry's rule) — \
 5% was the wider band at every rung — plus peak_aggregate_tok_s at the C=16 \
 bar, vacuous_cells at zero and min_completion_tokens at the observed minimum \
-over every request of every rep; status flipped to "measured" and, in the \
+over every request of every rep (re-cut 2026-09-23 to 820, banded — see its \
+comment); status flipped to "measured" and, in the \
 SAME PR, the gate moved from gate::coverage::PROMOTION_CANDIDATES to \
 REQUIRED — the campaign certifying that PR writes the first gated record. \
 (4) Ratchet later only from >= 10 consecutive gate runs AND the committed \
@@ -560,11 +561,18 @@ min = 102.63
 min = 102.63
 
 [benchmarks.metrics.min_completion_tokens]
-# The observed minimum over every request of every rep: 914 (reps 1 and 2;
-# rep 3's minimum was the full 1024 budget). Denies a degenerate early-EOS
-# minority the floor that the vacuity rule (cell occupancy + a majority over
-# 0.8 x osl) alone would not — the dense entry's argument, verbatim.
-min = 914
+# ★ RE-CUT 2026-09-23, 914 -> 820, banded by the dense entry's own rule
+# (qwen3.8-27b/BENCH.toml min_completion_tokens: lowest healthy minimum x 0.975,
+# down to the 10-step). 914 was the bootstrap's observed minimum with NO band:
+# reps 914 / 914 / 1024, and the first gate record (2026-09-23 09:15Z) met it
+# at EQUALITY, 914 vs 914. A lever-branch ladder run the same day (rep 1)
+# ended one C=8 request on a natural essay EOS at 846 with zero vacuous cells:
+# a healthy stop, not a degenerate one, that a 5% band (868) would still fail.
+# 846 x 0.975 = 824.9 -> 820, which still sits above 0.8 x osl = 819.2 (the
+# vacuity majority rule), so the bar keeps denying a degenerate early-EOS
+# minority the floor the vacuity rule alone would not. Ratchet only as the
+# note says: >= 10 consecutive gate runs, split by regime.
+min = 820
 
 [benchmarks.metrics.vacuous_cells]
 # The vacuity guarantee: every cell of every bootstrap rep was non-vacuous,
