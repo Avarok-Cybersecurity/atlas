@@ -35,6 +35,7 @@ use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
 
 mod vision;
+mod vision_sync;
 
 impl TransformerModel {
     pub(super) fn prefill_dispatch(

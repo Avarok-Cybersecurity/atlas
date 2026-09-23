@@ -228,3 +228,36 @@ extern "C" __global__ void glm5next_moe_combine(
         out[(size_t)t * hidden + d] = __float2bfloat16(acc);
     }
 }
+
+// ── glm5next_moe_combine_indexed ──
+// The grouped-GEMM prefill twin of `glm5next_moe_combine`.
+//
+// Identical arithmetic — same slot order, same single FP32 accumulator, same one
+// rounding to BF16, shared added raw and NOT routed-scaled. The ONLY difference is
+// where a slot's routed output lives: the grouped prefill path's down GEMM writes
+// rows in EXPERT-SORTED order, so slot k of token t is at sorted row
+// `token_to_perm[t * top_k + k]` instead of at `t * top_k + k`.
+//
+// 🪤 Keeping the accumulation identical is the point: it makes the grouped-vs-GEMV
+// A/B a difference in the expert GEMM alone, not in the combine.
+// Grid: (T,1,1)  Block: (256,1,1).
+extern "C" __global__ void glm5next_moe_combine_indexed(
+    const __nv_bfloat16* __restrict__ expert_out, // [total_expanded, H] expert-sorted
+    const int* __restrict__ token_to_perm,        // [T, K] -> sorted row of that slot
+    const float* __restrict__ weights,            // [T, K]
+    const __nv_bfloat16* __restrict__ shared,     // [T, H]
+    __nv_bfloat16* __restrict__ out,              // [T, H]
+    const unsigned int hidden,
+    const unsigned int top_k
+) {
+    const unsigned int t = blockIdx.x;
+    const int* __restrict__ perm = token_to_perm + (size_t)t * top_k;
+    const float* w = weights + (size_t)t * top_k;
+    for (unsigned int d = threadIdx.x; d < hidden; d += blockDim.x) {
+        float acc = 0.0f;
+        for (unsigned int k = 0; k < top_k; ++k)
+            acc += w[k] * (float)expert_out[(size_t)perm[k] * hidden + d];
+        acc += (float)shared[(size_t)t * hidden + d];  // NOT routed-scaled
+        out[(size_t)t * hidden + d] = __float2bfloat16(acc);
+    }
+}

@@ -11,6 +11,7 @@ use anyhow::{Result, bail};
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kernel_args::KernelLaunch;
 
+use super::forward_prefill_gemm;
 use super::weights::{Glm5NextDenseMlpWeights, Glm5NextMoeWeights, Nvfp4Proj};
 use super::{Glm5NextMlpConfig, Glm5NextMlpKernels};
 
@@ -148,6 +149,22 @@ fn w4a16(
 }
 
 /// `out = silu(min(gate, limit)) * clamp(up, -limit, limit)` over `n` elements.
+///
+/// Re-exported to the grouped-prefill module as [`swiglu_rows`]: the clamp is asymmetric and
+/// model-specific, so that path must run THIS activation, never `moe_silu_mul`.
+pub(super) fn swiglu_rows(
+    gpu: &dyn GpuBackend,
+    k: KernelHandle,
+    gate: DevicePtr,
+    up: DevicePtr,
+    out: DevicePtr,
+    n: usize,
+    limit: f32,
+    stream: u64,
+) -> Result<()> {
+    swiglu(gpu, k, gate, up, out, n, limit, stream)
+}
+
 fn swiglu(
     gpu: &dyn GpuBackend,
     k: KernelHandle,
@@ -193,9 +210,82 @@ pub struct Glm5NextMlpWorkspace {
     u_eid: DevicePtr,
     /// `[rows * top_k, rows]` I32 slot per union entry per row, `-1` = row absent.
     u_slot: DevicePtr,
+    /// `[rows * top_k]` I32 — sorted row → original token. Grouped prefill GEMM only.
+    sorted_token_ids: DevicePtr,
+    /// `[rows * top_k]` I32 — sorted row → expert id. Grouped prefill GEMM only.
+    sorted_expert_ids: DevicePtr,
+    /// `[num_experts + 1]` I32 prefix sum over the expert-sorted rows.
+    expert_offsets: DevicePtr,
+    /// `[rows, top_k]` I32 — a slot's row in the expert-sorted output. Read by the grouped
+    /// GEMM's paired `glm5next_moe_combine_indexed`.
+    token_to_perm: DevicePtr,
     max_inter: usize,
     /// Widest verify this scratch can serve. `1` on the serial decode path.
     max_rows: usize,
+    /// `max_rows * top_k` — the routed-slot extent every grouped-path buffer is sized for.
+    max_total_expanded: usize,
+}
+
+/// Per-buffer device byte sizes of one [`Glm5NextMlpWorkspace`], in allocation order.
+///
+/// 🔴 Split out of `new` so the sizing can be unit-tested and LOGGED without a GPU. The load
+/// path prints the total per workspace and the stack total: the whole point of the shared
+/// workspace is a number that used to be multiplied by 45, and a number nobody can read is a
+/// number nobody checks. Every term here must stay in lockstep with `new` — the test
+/// `ws_sizing_matches_new` walks both.
+pub fn mlp_ws_bytes(cfg: &Glm5NextMlpConfig, max_rows: usize) -> [usize; 14] {
+    let rows = max_rows.max(1);
+    let max_inter = cfg
+        .local_dense_intermediate
+        .max(cfg.moe_intermediate)
+        .max(cfg.local_shared_intermediate)
+        .max(1);
+    let act_elems = (rows * max_inter)
+        .max(rows * cfg.top_k * cfg.moe_intermediate)
+        .max(1);
+    [
+        act_elems * 2,                     // a_gate
+        act_elems * 2,                     // a_up
+        act_elems * 2,                     // a_act
+        rows * cfg.num_experts * 4,        // logits
+        rows * cfg.top_k * 4,              // ids
+        rows * cfg.top_k * 4,              // wts
+        rows * cfg.top_k * cfg.hidden * 2, // expert_out
+        rows * cfg.hidden * 2,             // shared_out
+        rows * cfg.top_k * 4,              // u_eid
+        rows * cfg.top_k * rows * 4,       // u_slot — 🔴 QUADRATIC in rows
+        rows * cfg.top_k * 4,              // sorted_token_ids
+        rows * cfg.top_k * 4,              // sorted_expert_ids
+        (cfg.num_experts + 1) * 4,         // expert_offsets
+        rows * cfg.top_k * 4,              // token_to_perm
+    ]
+}
+
+/// Total device bytes one MLP workspace of `max_rows` costs.
+pub fn mlp_ws_total_bytes(cfg: &Glm5NextMlpConfig, max_rows: usize) -> usize {
+    mlp_ws_bytes(cfg, max_rows).iter().sum()
+}
+
+/// ONE MLP scratch for the whole layer stack; `AVAROK_GLM_MLP_WS_SHARED=0` restores one per layer.
+///
+/// 🔴 Default ON. The scratch is per-call — every buffer is fully written before it is read
+/// inside a single `mlp_forward`, and the whole stack runs on ONE stream (there is no side
+/// stream on this path), so a later layer can never observe an earlier layer's bytes. What 45
+/// private copies DID buy was ≈2.1 GB of unified memory at `AVAROK_GLM_PREFILL_ROWS=256` and
+/// ≈9.5 GB at 1024, allocated during weight LOAD — the measured cause of the host-memory-guard
+/// kills in ANOMALIES A124/A127. The `=0` arm exists so the saving can be measured in ONE image.
+pub fn mlp_ws_shared() -> bool {
+    static S: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *S.get_or_init(|| {
+        let shared = std::env::var("AVAROK_GLM_MLP_WS_SHARED").as_deref() != Ok("0");
+        if !shared {
+            tracing::warn!(
+                "GLM MLP workspace: PER-LAYER (AVAROK_GLM_MLP_WS_SHARED=0) — the pre-P2 \
+                 allocation, one scratch per layer"
+            );
+        }
+        shared
+    })
 }
 
 impl Glm5NextMlpWorkspace {
@@ -228,9 +318,55 @@ impl Glm5NextMlpWorkspace {
             shared_out: gpu.alloc(rows * cfg.hidden * 2)?,
             u_eid: gpu.alloc(rows * cfg.top_k * 4)?,
             u_slot: gpu.alloc(rows * cfg.top_k * rows * 4)?,
+            // 🪤 A59: the grouped-prefill routing tables are allocated HERE, at load, with
+            // every other pool — never on the first prefill. They are tiny (a 256-row
+            // sub-chunk at top_k = 8 is 8 KB each, plus 1.2 KB of offsets), so they are
+            // allocated unconditionally rather than behind the env lever: a conditional
+            // pool is a pool that is missing exactly when a fallback needs it.
+            sorted_token_ids: gpu.alloc(rows * cfg.top_k * 4)?,
+            sorted_expert_ids: gpu.alloc(rows * cfg.top_k * 4)?,
+            expert_offsets: gpu.alloc((cfg.num_experts + 1) * 4)?,
+            token_to_perm: gpu.alloc(rows * cfg.top_k * 4)?,
             max_inter,
             max_rows: rows,
+            max_total_expanded: rows * cfg.top_k,
         })
+    }
+
+    /// Widest row group this scratch serves.
+    pub(super) fn max_rows(&self) -> usize {
+        self.max_rows
+    }
+    /// `max_rows * top_k` — the routed-slot extent the grouped buffers were sized for.
+    pub(super) fn max_total_expanded(&self) -> usize {
+        self.max_total_expanded
+    }
+    pub(super) fn ids(&self) -> DevicePtr {
+        self.ids
+    }
+    pub(super) fn a_gate(&self) -> DevicePtr {
+        self.a_gate
+    }
+    pub(super) fn a_up(&self) -> DevicePtr {
+        self.a_up
+    }
+    pub(super) fn a_act(&self) -> DevicePtr {
+        self.a_act
+    }
+    pub(super) fn expert_out(&self) -> DevicePtr {
+        self.expert_out
+    }
+    pub(super) fn sorted_token_ids(&self) -> DevicePtr {
+        self.sorted_token_ids
+    }
+    pub(super) fn sorted_expert_ids(&self) -> DevicePtr {
+        self.sorted_expert_ids
+    }
+    pub(super) fn expert_offsets(&self) -> DevicePtr {
+        self.expert_offsets
+    }
+    pub(super) fn token_to_perm(&self) -> DevicePtr {
+        self.token_to_perm
     }
 }
 
@@ -503,6 +639,44 @@ fn announce_row_batch(batched: bool, rows: usize) {
     }
 }
 
+/// Say once PER ROW COUNT whether the routed experts took the grouped GEMM.
+///
+/// 🪤 A silent fallback here is the expensive kind: a missing `moe_sort_by_expert` or
+/// `moe_w4a16_grouped_gemm_ptrtable` handle sends prefill straight back to the 8-row GEMV
+/// and the only symptom is the TTFT. Latch one bit per row count, like `announce_row_batch`.
+fn announce_grouped_prefill(on: bool, rows: usize) {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static SEEN: AtomicU32 = AtomicU32::new(0);
+    if rows <= MOE_ROW_BATCH_MAX_ROWS {
+        return; // the narrow paths never consider it; saying so every step is noise
+    }
+    let bit = 1u32 << (rows.min(31));
+    if SEEN.fetch_or(bit, Ordering::Relaxed) & bit != 0 {
+        return;
+    }
+    if on {
+        // 🔴 The tile is part of the path, not a detail: two arms of a WS1/P3b A/B differ
+        // ONLY by this string, and an arm that silently fell back to the base tile would
+        // read as "no difference". Announce which kernel actually ran.
+        let t = super::forward_prefill_gemm::gemm_tile();
+        tracing::info!(
+            "GLM MoE prefill: grouped tensor-core W4A16 GEMM, {rows} rows in ONE launch \
+             per projection, tile `{}` (M_TILE {}, N_TILE {}, {} threads) \
+             (AVAROK_GLM_MOE_PREFILL_GEMM=0 to restore the GEMV path; \
+             AVAROK_GLM_MOE_GEMM_TILE=base for the prior tile)",
+            t.name,
+            t.m_tile,
+            t.n_tile,
+            t.threads
+        );
+    } else {
+        tracing::info!(
+            "GLM MoE prefill: row-batched GEMV, {rows} rows split into \
+             {MOE_ROW_BATCH_MAX_ROWS}-row sweeps"
+        );
+    }
+}
+
 /// Kill switch for the grouped path: `AVAROK_GLM_MOE_HOST_DISPATCH=1` restores the
 /// read-ids-to-host expert loop. Read once — this sits on the per-layer decode path.
 fn host_dispatch_forced() -> bool {
@@ -593,7 +767,37 @@ pub fn forward_moe(
     // Sub-groups the routed sweep runs at. `rows` may exceed the widest tier — the prefill
     // sub-chunk is 16 wide since the dense tier widened — so every gate below is PER GROUP.
     let groups = moe_row_groups(rows, row_batch_max());
-    let batched = rows >= 2
+    // ── PREFILL ONLY: the whole row group through the tensor-core grouped GEMM ──
+    //
+    // 🔴 `rows > MOE_ROW_BATCH_MAX_ROWS` IS the prefill test. Decode is 1 row and a
+    // speculative verify is capped at `DENSE_GEMV_BATCHM_MAX_M` (= 8 = this constant), so the
+    // only caller that can be wider is `Glm5NextLayer::prefill`'s sub-chunk. Both of the
+    // narrow paths therefore keep the bit-identical GEMV arm, unchanged, and prefill — which
+    // has never been bit-identical to decode anyway, since the dense projections leave the
+    // batched GEMV above the same width — takes the GEMM.
+    //
+    // 🪤 The same test is why this is safe under CUDA graph capture: only decode is captured,
+    // and decode can never reach here, so the host read of `expert_offsets` inside
+    // `forward_moe_grouped_prefill` cannot land inside a capture.
+    //
+    // 🔴 The width FLOOR is load-bearing, not caution. MEASURED at 5,400 tokens, matched
+    // arms on one binary — GEMV / grouped GEMM tok/s: 16 rows 63.05 / 25.14 (0.40x),
+    // 64 rows 77.79 / 57.71 (0.74x), 128 rows 80.73 / 88.17 (1.09x), 256 rows 82.14 /
+    // 128.10 (1.56x). The crossover is between 64 and 128. Without the floor, "default ON"
+    // would have regressed the shipping serve 2.5x, because PREFILL_ROWS defaults to 16.
+    let grouped_prefill = rows > MOE_ROW_BATCH_MAX_ROWS
+        && rows >= forward_prefill_gemm::prefill_gemm_min_rows()
+        && forward_prefill_gemm::prefill_gemm_enabled()
+        && !host_dispatch_forced()
+        // The route trace reads `ids` back PER ROW; the grouped path never materialises a
+        // per-row id list. Leave tracing on the arm that can serve it.
+        && !profile::trace_on()
+        && k.moe_sort_by_expert.0 != 0
+        && k.moe_grouped_gemm.0 != 0
+        && k.combine_indexed.0 != 0
+        && rows * cfg.top_k <= ws.max_total_expanded();
+    let batched = !grouped_prefill
+        && rows >= 2
         && !host_dispatch_forced()
         && !row_batch_disabled()
         && !profile::trace_on()
@@ -606,6 +810,7 @@ pub fn forward_moe(
                 && k.w4a16_gemv_sw_moe_batchm[w - 2].0 != 0
         });
     announce_row_batch(batched, rows);
+    announce_grouped_prefill(grouped_prefill, rows);
 
     // ── router: FULL expert set, FP32 logits, replicated on every rank ──
     let t = profile::start();
@@ -680,7 +885,7 @@ pub fn forward_moe(
     gpu.memset_async(ws.expert_out, 0, rows * cfg.top_k * cfg.hidden * 2, stream)?;
 
     for r in 0..rows {
-        if batched {
+        if batched || grouped_prefill {
             break; // the experts run once for ALL rows, after this loop
         }
         let xr = x.offset(r * cfg.hidden * 2);
@@ -872,6 +1077,15 @@ pub fn forward_moe(
         }
     }
 
+    if grouped_prefill {
+        // ONE launch per projection over the WHOLE row group — the 8-row cap does not apply.
+        // Leaves the routed outputs in `ws.expert_out` in EXPERT-SORTED order; the combine
+        // below reads them through `ws.token_to_perm`.
+        let t = profile::start();
+        forward_prefill_gemm::forward_moe_grouped_prefill(gpu, k, cfg, w, x, rows, ws, stream)?;
+        profile::end(profile::MOE_EXPERTS, t, gpu, stream);
+    }
+
     if batched {
         let t = profile::start();
         let mi = cfg.moe_intermediate;
@@ -990,16 +1204,35 @@ pub fn forward_moe(
     let t = profile::start();
     // ONE combine for every row: `glm5next_moe_combine` takes the row on `blockIdx.x` and
     // strides all four buffers by it. Was K `grid [1,1,1]` launches — 1.50 ms of a K=3 step.
-    KernelLaunch::new(gpu, k.combine)
-        .grid([rows as u32, 1, 1])
-        .block([ACT_BLOCK, 1, 1])
-        .arg_ptr(ws.expert_out)
-        .arg_ptr(ws.wts)
-        .arg_ptr(ws.shared_out)
-        .arg_ptr(out)
-        .arg_u32(cfg.hidden as u32)
-        .arg_u32(cfg.top_k as u32)
-        .launch(stream)?;
+    //
+    // 🪤 The grouped path's routed rows are EXPERT-SORTED, so it takes the `_indexed` twin —
+    // same accumulation order, same single rounding, one extra indirection through
+    // `token_to_perm`. Reading the sorted buffer with the plain kernel would silently combine
+    // whichever tokens happened to land at `t * top_k + k`.
+    if grouped_prefill {
+        KernelLaunch::new(gpu, k.combine_indexed)
+            .grid([rows as u32, 1, 1])
+            .block([ACT_BLOCK, 1, 1])
+            .arg_ptr(ws.expert_out)
+            .arg_ptr(ws.token_to_perm)
+            .arg_ptr(ws.wts)
+            .arg_ptr(ws.shared_out)
+            .arg_ptr(out)
+            .arg_u32(cfg.hidden as u32)
+            .arg_u32(cfg.top_k as u32)
+            .launch(stream)?;
+    } else {
+        KernelLaunch::new(gpu, k.combine)
+            .grid([rows as u32, 1, 1])
+            .block([ACT_BLOCK, 1, 1])
+            .arg_ptr(ws.expert_out)
+            .arg_ptr(ws.wts)
+            .arg_ptr(ws.shared_out)
+            .arg_ptr(out)
+            .arg_u32(cfg.hidden as u32)
+            .arg_u32(cfg.top_k as u32)
+            .launch(stream)?;
+    }
     profile::end(profile::MOE_COMBINE, t, gpu, stream);
     Ok(())
 }
@@ -1040,5 +1273,94 @@ mod tests {
         assert_eq!(moe_row_groups(16, 8), vec![(0, 8), (8, 8)]);
         assert_eq!(moe_row_groups(8, 8), vec![(0, 8)]);
         assert_eq!(moe_row_groups(9, 8), vec![(0, 5), (5, 4)]);
+    }
+
+    mod ws_sizing {
+        use crate::layers::glm5next_mlp::Glm5NextMlpConfig;
+        use crate::layers::glm5next_mlp::forward::{mlp_ws_bytes, mlp_ws_total_bytes};
+
+        /// The campaign shape: GLM-5.3-Flash at TP=2/EP=2, the topology every WS1 number is on.
+        fn cfg() -> Glm5NextMlpConfig {
+            Glm5NextMlpConfig {
+                hidden: 4096,
+                local_dense_intermediate: 12288 / 2,
+                moe_intermediate: 2048,
+                local_shared_intermediate: 2048 / 2,
+                num_experts: 288,
+                local_experts: 144,
+                ep_rank: 0,
+                top_k: 8,
+                routed_scale: 2.5,
+                renormalize: true,
+                swiglu_limit: 10.0,
+                router_bf16_ladder: false,
+                tp_world_size: 2,
+                ep_world_size: 2,
+            }
+        }
+
+        /// 🔴 The number the shared workspace exists to stop multiplying by 45. Hand-checked
+        /// term by term against `Glm5NextMlpWorkspace::new`, so a future edit to `new` that
+        /// forgets `mlp_ws_bytes` (or vice versa) fails here instead of silently under-reporting
+        /// the load-time footprint the host-memory guard is measured against (A124/A127).
+        #[test]
+        fn matches_the_hand_computed_campaign_footprint() {
+            let c = cfg();
+            // act_elems = max(rows*6144, rows*8*2048) = rows*16384 at every row count.
+            for rows in [16usize, 64, 128, 256, 512, 1024] {
+                let b = mlp_ws_bytes(&c, rows);
+                assert_eq!(b[0], rows * 16384 * 2, "a_gate at {rows}");
+                assert_eq!(b[1], b[0], "a_up at {rows}");
+                assert_eq!(b[2], b[0], "a_act at {rows}");
+                assert_eq!(b[3], rows * 288 * 4, "logits at {rows}");
+                assert_eq!(b[6], rows * 8 * 4096 * 2, "expert_out at {rows}");
+                assert_eq!(b[7], rows * 4096 * 2, "shared_out at {rows}");
+                // 🔴 QUADRATIC. At 1024 rows u_slot alone is 33.5 MB — a third of the growth
+                // between 512 and 1024, and the term a linear mental model misses.
+                assert_eq!(b[9], rows * 8 * rows * 4, "u_slot at {rows}");
+                assert_eq!(b[12], 289 * 4, "expert_offsets is row-independent");
+                // Linear part + quadratic part, derived once and checked at every width.
+                assert_eq!(
+                    mlp_ws_total_bytes(&c, rows),
+                    rows * 173_376 + 32 * rows * rows + 1156
+                );
+            }
+        }
+
+        /// The saving the ticket is about, stated as a number rather than an adjective.
+        #[test]
+        fn sharing_one_workspace_saves_44_of_45_copies() {
+            let c = cfg();
+            // 🪤 DECIMAL MB/GB, the same unit the load-path log prints — so a figure read off a
+            // rank-0 log can be checked against this test without a silent MiB/MB conversion.
+            let mb = |n: usize| n as f64 / 1e6;
+            // 45 layers is GLM-5.3-Flash's `num_hidden_layers`.
+            for (rows, per_layer_mb, stack_gb) in [
+                (256usize, 46.48, 2.092),
+                (512, 97.16, 4.372),
+                (1024, 211.09, 9.499),
+            ] {
+                let one = mlp_ws_total_bytes(&c, rows);
+                assert!(
+                    (mb(one) - per_layer_mb).abs() < 0.05,
+                    "rows={rows}: {:.2} MB per workspace, expected ≈{per_layer_mb}",
+                    mb(one)
+                );
+                assert!(
+                    (mb(one * 45) / 1000.0 - stack_gb).abs() < 0.01,
+                    "rows={rows}: {:.3} GB for 45 private copies, expected ≈{stack_gb}",
+                    mb(one * 45) / 1000.0
+                );
+            }
+        }
+
+        /// A zero row count must not produce a zero-byte pool: `new` clamps to 1, and a pool of
+        /// nothing is a pool that faults the first time anything touches it.
+        #[test]
+        fn zero_rows_clamps_to_one() {
+            let c = cfg();
+            assert_eq!(mlp_ws_total_bytes(&c, 0), mlp_ws_total_bytes(&c, 1));
+            assert!(mlp_ws_bytes(&c, 0).iter().all(|&b| b > 0));
+        }
     }
 }

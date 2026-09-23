@@ -9,7 +9,7 @@ use spark_runtime::weights::WeightStore;
 use super::{ModelWeightLoader, WeightFormat};
 use crate::layer::TransformerLayer;
 use crate::layers::vision_encoder::{MergerLayer, ViTBlock};
-use crate::layers::{FfnComponent, MoeLayer, Qwen3AttentionLayer, VisionEncoder};
+use crate::layers::{FfnComponent, MoeLayer, Qwen3AttentionLayer, VisionEncoder, VisionTower};
 use crate::tp_shard::{TpShardKind, load_qkvo_tp, shard_quantized_nvfp4};
 use crate::weight_map::{
     AttentionWeights, DenseWeight, MtpWeights, dense, detect_nvfp4_variant, load_kv_scales,
@@ -214,7 +214,7 @@ impl ModelWeightLoader for Qwen3VLWeightLoader {
         store: &WeightStore,
         config: &ModelConfig,
         gpu: &dyn GpuBackend,
-    ) -> Result<Option<VisionEncoder>> {
+    ) -> Result<Option<VisionTower>> {
         let vcfg = match &config.vision {
             Some(v) => v.clone(),
             None => return Ok(None),
@@ -298,6 +298,6 @@ impl ModelWeightLoader for Qwen3VLWeightLoader {
             vcfg.num_heads,
             vcfg.deepstack_visual_indexes,
         );
-        Ok(Some(ve))
+        Ok(Some(VisionTower::qwen(ve)))
     }
 }

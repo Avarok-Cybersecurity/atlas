@@ -277,11 +277,19 @@ pub fn preprocess_image_with_max_pixels(
     let (orig_w, orig_h) = (img.width(), img.height());
 
     let grid_unit = (vcfg.patch_size * vcfg.spatial_merge_size) as u32;
-    let (th, tw) = target_size_with_max_pixels(orig_h, orig_w, grid_unit, max_pixels);
 
-    // Resize with CatmullRom — closest BICUBIC match in the `image` crate,
-    // matching HF's `Qwen2VLImageProcessor` which uses PIL resample=3 (BICUBIC).
-    let img = image::imageops::resize(&img, tw, th, image::imageops::FilterType::CatmullRom);
+    // Two resize POLICIES, selected by the checkpoint rather than by a flag.
+    // GLM fits the content inside a `smart_resize` canvas and zero-pads the
+    // remainder; the Qwen family resizes straight onto the snapped canvas.
+    let img = if vcfg.block_major_patches {
+        crate::vision_preprocess_glm::resize_and_pad(&img, vcfg, max_pixels)
+    } else {
+        let (th, tw) = target_size_with_max_pixels(orig_h, orig_w, grid_unit, max_pixels);
+        // Resize with CatmullRom — closest BICUBIC match in the `image` crate,
+        // matching HF's `Qwen2VLImageProcessor` which uses PIL resample=3 (BICUBIC).
+        image::imageops::resize(&img, tw, th, image::imageops::FilterType::CatmullRom)
+    };
+    let (th, tw) = (img.height(), img.width());
 
     let ps = vcfg.patch_size;
     let tp = vcfg.temporal_patch_size;
@@ -292,11 +300,32 @@ pub fn preprocess_image_with_max_pixels(
     let patch_dim = 3 * tp * ps * ps;
     let mut pixels = vec![0.0f32; num_patches * patch_dim];
 
+    // Normalization stats come from the checkpoint. They default to SigLIP's
+    // 0.5/0.5/0.5, which is what every Qwen-family config resolves to and what
+    // this constant pair used to be; GLM declares CLIP-style values that differ
+    // by roughly 2x on std, and feeding its tower SigLIP pixels is a scale
+    // error on every channel of every patch.
+    let (mean, std) = (vcfg.image_mean, vcfg.image_std);
+
     // Build patches. The temporal dimension is handled by duplicating the image `tp` times.
     // Layout: [P, C, T, Hp, Wp] → stored as [P, C*T*Hp*Wp] in row-major order.
+    //
+    // The PATCH ORDER is the checkpoint's, not this loop's: GLM's processor and
+    // its position-id builder both emit 2x2-block-major, and its 2x2 conv
+    // downsample folds four CONSECUTIVE tokens into one output row — raster
+    // order through that tower is silently wrong, not an error.
     for ph in 0..grid_h {
         for pw in 0..grid_w {
-            let patch_idx = ph * grid_w + pw;
+            let patch_idx = if vcfg.block_major_patches {
+                crate::vision_preprocess_glm::block_major_patch_index(
+                    ph,
+                    pw,
+                    grid_w,
+                    vcfg.spatial_merge_size,
+                )
+            } else {
+                ph * grid_w + pw
+            };
             for c in 0..3usize {
                 for t in 0..tp {
                     for py in 0..ps {
@@ -305,7 +334,7 @@ pub fn preprocess_image_with_max_pixels(
                             let pixel_x = pw * ps + px;
                             let raw =
                                 img.get_pixel(pixel_x as u32, pixel_y as u32)[c] as f32 / 255.0;
-                            let norm = (raw - MEAN[c]) / STD[c];
+                            let norm = (raw - mean[c]) / std[c];
                             // Offset into patch_dim: c*(T*Hp*Wp) + t*(Hp*Wp) + py*Wp + px
                             let off = c * (tp * ps * ps) + t * (ps * ps) + py * ps + px;
                             pixels[patch_idx * patch_dim + off] = norm;

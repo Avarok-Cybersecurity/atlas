@@ -41,6 +41,7 @@ pub use dflash_loader::{
 };
 pub mod glm5_next_load;
 mod glm5_next_mtp;
+pub mod glm5_next_vision;
 pub use gemma4::Gemma4WeightLoader;
 pub use glm5_next_load::Glm5NextWeightLoader;
 pub(crate) use glm5_next_mtp::{Glm5NextMtpModule, load_glm5next_mtp_module};
@@ -70,7 +71,7 @@ use spark_runtime::kv_cache::KvCacheDtype;
 use spark_runtime::weights::{DeferHook, WeightStore};
 
 use crate::layer::TransformerLayer;
-use crate::layers::VisionEncoder;
+use crate::layers::VisionTower;
 use crate::weight_map::{DenseWeight, MtpWeights, Nvfp4Variant, detect_nvfp4_variant};
 
 /// Can this box hold the transposed `[K/2, N]` MoE prefill copies for EVERY
@@ -425,7 +426,7 @@ pub trait ModelWeightLoader {
         _store: &WeightStore,
         _config: &ModelConfig,
         _gpu: &dyn GpuBackend,
-    ) -> Result<Option<VisionEncoder>> {
+    ) -> Result<Option<VisionTower>> {
         Ok(None)
     }
 }

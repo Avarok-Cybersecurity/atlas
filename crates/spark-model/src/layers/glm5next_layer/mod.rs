@@ -116,7 +116,14 @@ pub struct Glm5NextLayer {
     pub mlp: Glm5NextMlpSite,
     pub mlp_cfg: Glm5NextMlpConfig,
     pub mlp_kernels: Glm5NextMlpKernels,
-    pub mlp_ws: Glm5NextMlpWorkspace,
+    /// 🔴 SHARED, ONE allocation for the whole stack — not one per layer. This scratch scales
+    /// with the prefill sub-chunk width (≈46 MB at 256 rows, ≈211 MB at 1024), and 45 private
+    /// copies of it are what made a wide-prefill LOAD dip under the host-memory guard's floor
+    /// (ANOMALIES A124/A127). It is pure per-call scratch on ONE stream — every buffer is
+    /// written before it is read inside a single `mlp_forward`, and nothing in it survives the
+    /// call — so the layers can share it exactly the way `Glm5NextKdaWorkspace` already does.
+    /// `AVAROK_GLM_MLP_WS_SHARED=0` restores one workspace per layer.
+    pub mlp_ws: Arc<Glm5NextMlpWorkspace>,
     /// `None` only for a layer with no hyper-connection — i.e. the MTP layer, which carries zero
     /// `hc_*` tensors. Every text layer has one.
     pub mhc: Option<Glm5NextMhc>,

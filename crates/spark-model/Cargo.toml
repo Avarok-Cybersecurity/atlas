@@ -124,6 +124,13 @@ required-features = ["cuda", "gpu-examples"]
 name = "glm5next_moe_microtest"
 required-features = ["cuda", "gpu-examples"]
 
+# The routed-MoE PREFILL grouped-GEMM layout gate: the tensor-core grouped
+# W4A16 GEMM and the production software-dequant GEMV, scored against one FP32
+# host reference over the same NVFP4 bytes.
+[[example]]
+name = "glm5next_moe_grouped_prefill_microtest"
+required-features = ["cuda", "gpu-examples"]
+
 [[example]]
 name = "gdn_cdh_vblock_microtest"
 required-features = ["cuda", "gpu-examples"]

@@ -326,6 +326,10 @@ pub(super) fn resume_preempted_seq(model: &dyn Model, p: PreemptedSeq) -> Result
         model.ep_broadcast_cmd(0)?;
         model.ep_broadcast_cmd(tokens.len() as u32)?;
         model.ep_broadcast_tokens(&tokens)?;
+        // A resume re-prefills without re-running the ViT, so rank 0 has no
+        // staged encoder output and this sends a zero count — which is exactly
+        // what keeps the two ranks in step through it.
+        model.ep_sync_vision_embeds(&tokens)?;
         model.prefill(&tokens, &mut seq, 0)?;
         Ok(())
     })();
