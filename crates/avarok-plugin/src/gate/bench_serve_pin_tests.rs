@@ -93,7 +93,13 @@ fn the_trees_serve_pins_sit_on_the_gates_that_need_them() {
         e.serve_overrides.get("ssm_cache_slots").map(String::as_str),
         Some("256")
     );
-    assert_eq!(e.serve_overrides.len(), 1, "{:?}", e.serve_overrides);
+    assert_eq!(
+        e.serve_overrides
+            .get("gpu_memory_utilization")
+            .map(String::as_str),
+        Some(GB10_UTIL_CEILING)
+    );
+    assert_eq!(e.serve_overrides.len(), 2, "{:?}", e.serve_overrides);
 
     // The poison gate declares BOTH of its documented serve deltas, so a
     // `--pull-request-gate` run needs no operator flags at all and still
@@ -110,7 +116,13 @@ fn the_trees_serve_pins_sit_on_the_gates_that_need_them() {
             .map(String::as_str),
         Some("true")
     );
-    assert_eq!(p.serve_overrides.len(), 2, "{:?}", p.serve_overrides);
+    assert_eq!(
+        p.serve_overrides
+            .get("gpu_memory_utilization")
+            .map(String::as_str),
+        Some(GB10_UTIL_CEILING)
+    );
+    assert_eq!(p.serve_overrides.len(), 3, "{:?}", p.serve_overrides);
 
     // The concurrency gate no longer declares a serve profile at all: it names
     // the recipe that IS the profile. Until 2026-09-22 it served the shared
@@ -296,13 +308,7 @@ fn the_trees_serve_pins_sit_on_the_gates_that_need_them() {
     // OVERRIDES disclosure only prints for a non-empty merged set) while the
     // NEXT decode-floor run would have served batch 32, a different
     // instrument than its floor describes.
-    for id in [
-        "bfcl-subset",
-        "ttft-warm-gate",
-        "ttft-cold-gate",
-        "agentic-webserver",
-        "decode-floor",
-    ] {
+    for id in ["bfcl-subset", "decode-floor"] {
         let b = baseline_for(&root, id).unwrap();
         let (_, entry) = b.resolve("gb10", None).unwrap();
         assert!(
@@ -311,6 +317,66 @@ fn the_trees_serve_pins_sit_on_the_gates_that_need_them() {
             entry.serve_overrides
         );
     }
+    // These keep the recipe's config too, EXCEPT its 0.90 util: their default
+    // subject is the 35B FP8 on the bf16head recipe, and every FP8 entry pins
+    // the GB10 ceiling (owner decision 2026-09-23; 0.90 froze dgx2 once).
+    for id in ["ttft-warm-gate", "ttft-cold-gate", "agentic-webserver"] {
+        let b = baseline_for(&root, id).unwrap();
+        let (checkpoint, entry) = b.resolve("gb10", None).unwrap();
+        assert_eq!(checkpoint, "Qwen/Qwen3.6-35B-A3B-FP8", "{id}");
+        assert_eq!(
+            entry.serve_overrides,
+            std::collections::BTreeMap::from([(
+                "gpu_memory_utilization".to_string(),
+                GB10_UTIL_CEILING.to_string()
+            )]),
+            "{id} pins only the GB10 util ceiling"
+        );
+    }
+}
+
+/// The util every FP8 35B entry pins on GB10 (qwen3.6-35b-a3b/BENCH.toml).
+const GB10_UTIL_CEILING: &str = "0.85";
+
+/// ★ No entry serving the 35B FP8 checkpoint on GB10 may run above the util
+/// ceiling: the bf16head recipe's own default is 0.90, which froze dgx2 and
+/// needed a powercycle, and an entry without the pin inherits it silently.
+#[test]
+fn every_gb10_fp8_moe_entry_pins_the_util_ceiling() {
+    let root = repo_root();
+    let mut seen = Vec::new();
+    for (target, entry) in load_all(&root).expect("tree loads") {
+        if target.hardware != "gb10" || entry.checkpoint != "Qwen/Qwen3.6-35B-A3B-FP8" {
+            continue;
+        }
+        assert_eq!(
+            entry
+                .serve_overrides
+                .get("gpu_memory_utilization")
+                .map(String::as_str),
+            Some(GB10_UTIL_CEILING),
+            "{} ({:?}) must pin the GB10 util ceiling",
+            entry.gate,
+            entry.recipe
+        );
+        seen.push(entry.gate.clone());
+    }
+    seen.sort();
+    assert_eq!(
+        seen,
+        [
+            "agentic-webserver",
+            "bfcl-subset-echolp",
+            "concurrency-sweep-moe",
+            "mlperf-agentic-subset",
+            "ssm-state-poisoning-gate",
+            "ttft-cold-gate",
+            "ttft-warm-gate",
+            "video-fidelity",
+            "vision-fidelity",
+        ],
+        "the check must not pass vacuously"
+    );
 }
 
 #[path = "bench_override_tree_tests.rs"]

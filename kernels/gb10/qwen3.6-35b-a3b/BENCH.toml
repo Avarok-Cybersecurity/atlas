@@ -60,6 +60,10 @@ not describe the run that produced it: `webserver_ok >= 10` is satisfied by 12 s
 of 20, and `sum_wall_s` <= 700 is satisfied by 5 iterations. Neither is the gate. This adds a \
 threshold, it does not relax one -- the recorded runs all carry iterations 10."""
 
+[benchmarks.serve_overrides]
+# GB10 ceiling, owner decision 2026-09-23: see the concurrency-sweep-moe pin.
+gpu_memory_utilization = "0.85"
+
 [benchmarks.metrics.followed_directions]
 min = 10.0
 
@@ -201,6 +205,8 @@ the next receipt that beats them (a better SINGLE prompt is measurement-definiti
 and gets its own campaign)."""
 
 [benchmarks.serve_overrides]
+# GB10 ceiling, owner decision 2026-09-23: see the concurrency-sweep-moe pin.
+gpu_memory_utilization = "0.85"
 ssm_cache_slots = "256"
 
 [benchmarks.metrics.normalized_single_turn_score]
@@ -260,6 +266,10 @@ still be read against these before its first record is called a regression. \
 `update_baseline = true` means the gate ALSO compares each run to the previous one at +3%/+5%; \
 these committed values are the only ABSOLUTE bound and must be re-cut whenever the path gets \
 materially faster."""
+
+[benchmarks.serve_overrides]
+# GB10 ceiling, owner decision 2026-09-23: see the concurrency-sweep-moe pin.
+gpu_memory_utilization = "0.85"
 
 [benchmarks.metrics.median_ms]
 # The ceiling of 950 is the owner's stated bound (2026-09-20). Measured 908.07
@@ -351,6 +361,10 @@ TTFT is box-local by nature — a new box must be read against these before its 
 called a regression. `update_baseline = true` means the gate ALSO compares each run to the \
 previous one at +3%/+5%; these committed values are the only ABSOLUTE bound and must be re-cut \
 whenever the path gets materially faster."""
+
+[benchmarks.serve_overrides]
+# GB10 ceiling, owner decision 2026-09-23: see the concurrency-sweep-moe pin.
+gpu_memory_utilization = "0.85"
 
 [benchmarks.metrics.median_ms]
 # The ceiling of 210 is the owner's stated bound (2026-09-20), and equals the
@@ -482,9 +496,12 @@ max_batch_size = "128"
 # dtype as a mismatch, never as "the default". bf16 is also the one-shot's
 # parity (`--kv-cache-dtype auto` resolves to bf16 there).
 kv_cache_dtype = "bf16"
-# GB10 unified memory: 0.90 froze dgx2 and needed a powercycle; 0.85 is the
-# ceiling every gate serve on this class uses and the one-shot's
-# `--gpu-memory-utilization 0.85`.
+# GB10 unified memory: 0.90 froze dgx2 and needed a powercycle. 0.85 is the
+# one-shot's `--gpu-memory-utilization 0.85` and, by owner decision
+# 2026-09-23, the ceiling every FP8 entry in this file pins: until then the
+# bf16head entries served that recipe's default 0.90 (the dense 27B recipes
+# already sit at 0.85 or below). The NVFP4-checkpoint ttft entries serve
+# their own recipe's 0.88 and are NOT pinned here.
 gpu_memory_utilization = "0.85"
 # The recipe defaults to slai (SLO-aware). vLLM has no counterpart, so the
 # parity oracle pinned Atlas to fifo for the MoE ladder; a scheduling policy
@@ -624,6 +641,10 @@ delays; the official concurrency/Pareto scenario shape (per-user vs per-system t
 curve via the upstream client, which is the right tool for any official submission run).\
 """
 
+[benchmarks.serve_overrides]
+# GB10 ceiling, owner decision 2026-09-23: see the concurrency-sweep-moe pin.
+gpu_memory_utilization = "0.85"
+
 [[benchmarks]]
 quant = "nvfp4"
 checkpoint = "Qwen/Qwen3.6-35B-A3B-FP8"
@@ -696,6 +717,8 @@ from replayed history anyway.\
 """
 
 [benchmarks.serve_overrides]
+# GB10 ceiling, owner decision 2026-09-23: see the concurrency-sweep-moe pin.
+gpu_memory_utilization = "0.85"
 disable_thinking = "true"
 ssm_cache_slots = "256"
 
@@ -875,6 +898,10 @@ right rather than a coincidence. Ships preprocessor_config.json, so it resolved 
 px before the resolver fix as well; clamped to the encoder's 16384-patch ceiling, and \
 the boot log says so rather than silently ignoring the checkpoint."""
 
+[benchmarks.serve_overrides]
+# GB10 ceiling, owner decision 2026-09-23: see the concurrency-sweep-moe pin.
+gpu_memory_utilization = "0.85"
+
 [benchmarks.metrics.geometry_matched]
 min = 14.0
 
@@ -936,6 +963,10 @@ group-proportionality 1s=67 2s=116 4s=214 tokens (49 tok/group, 18 overhead), MP
 GIF both 214, image+video 286, two-videos 437, video-in-history 249, C=1/2/4 all \
 correct on one geometry. `default = false`: qwen3.8-27b owns this gate's default \
 serve."""
+
+[benchmarks.serve_overrides]
+# GB10 ceiling, owner decision 2026-09-23: see the concurrency-sweep-moe pin.
+gpu_memory_utilization = "0.85"
 
 [benchmarks.metrics.legs_passed]
 min = 13.0

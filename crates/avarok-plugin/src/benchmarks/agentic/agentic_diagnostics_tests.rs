@@ -119,7 +119,15 @@ fn trajectory_diagnostics_are_recorded_and_never_gated() {
     let baseline = crate::gate::bench::baseline_for(&root, DESCRIPTOR.id)
         .expect("the committed agentic-webserver baseline must load");
     for rows in [clean(), noisy()] {
-        let with = agentic_gate_record(rows);
+        let mut with = agentic_gate_record(rows);
+        // The record carries the baseline's own serve pins, as a self-served
+        // run's record does, so `check_record` judges the metrics, not the pins.
+        with.serve_overrides = baseline
+            .resolve(&with.hardware.gate_key(), Some(&with.target_model))
+            .expect("the committed 35B agentic entry resolves")
+            .1
+            .serve_overrides
+            .clone();
         for key in DIAGNOSTIC_KEYS {
             assert!(with.metrics.contains_key(key), "{key} must be recorded");
         }
@@ -138,7 +146,6 @@ fn trajectory_diagnostics_are_recorded_and_never_gated() {
             crate::gate::check_record(&without, &baseline)
         );
         // ...and on the failing side too, so equality is not "both pass".
-        let mut with = with;
         with.metrics.insert("followed_directions".into(), 9.0);
         without.metrics.insert("followed_directions".into(), 9.0);
         let failing = crate::gate::check_record(&with, &baseline);
