@@ -61,6 +61,7 @@ use spark_runtime::gpu::{GpuBackend, KernelHandle};
 
 pub mod build;
 pub mod forward;
+pub mod forward_prefill_gemm;
 pub mod weights;
 
 pub use weights::{Glm5NextDenseMlpWeights, Glm5NextExpertWeights, Glm5NextMoeWeights};
@@ -80,6 +81,10 @@ pub const W4A16_MODULE: &str = "w4a16";
 /// **9.7 GB/s** on the routed experts — 26x off the 254 GB/s roofline and 45 % of the
 /// whole decode step (2026-08-28 profile). Every routed-expert projection here is M=1.
 pub const W4A16_GEMV_MODULE: &str = "w4a16_gemv";
+/// `[modules]`: `moe_permute = "moe"` — the token sort / permute / unpermute family.
+pub const MOE_MODULE: &str = "moe";
+/// `[modules]`: `moe_w4a16_grouped_gemm = "moe_w4a16"` — the tensor-core grouped W4A16 GEMM.
+pub const MOE_GROUPED_MODULE: &str = "moe_w4a16";
 
 /// `float best_w[16]` in `glm5next_router_topk` — the most experts it can select per token.
 pub const KERNEL_MAX_TOP_K: usize = 16;
@@ -156,6 +161,22 @@ pub struct Glm5NextMlpKernels {
     pub swiglu: KernelHandle,
     pub router: KernelHandle,
     pub combine: KernelHandle,
+    /// Counting sort of the router's `[rows, top_k]` ids into expert-contiguous order —
+    /// `sorted_token_ids` + `expert_offsets` + the `token_to_perm` reverse map. The shared
+    /// `moe_permute.cu` kernel every other MoE model's prefill already uses.
+    ///
+    /// 🪤 `try_kernel`: a target without it leaves the grouped prefill path unreachable and
+    /// the row-batched GEMV arm stands.
+    pub moe_sort_by_expert: KernelHandle,
+    /// 🔴 The TENSOR-CORE grouped W4A16 GEMM (`mma.sync.aligned.m16n8k16`), one launch for
+    /// ALL experts. GLM's routed experts were the only MoE in the tree still doing prefill on
+    /// the software-dequant GEMV; its NVFP4 convention is byte-for-byte what this kernel
+    /// expects (N-major `[N, K/2]` packed, N-major `[N, K/16]` E4M3 scales, per-expert
+    /// `scale2`, `GROUP_SIZE = 16`, even k = low nibble) — see `forward_prefill_gemm`.
+    pub moe_grouped_gemm: KernelHandle,
+    /// [`Self::combine`] reading routed rows in EXPERT-SORTED order through `token_to_perm`.
+    /// Same accumulation, same single rounding — only the slot's address changes.
+    pub combine_indexed: KernelHandle,
 }
 
 impl Glm5NextMlpKernels {
@@ -195,6 +216,19 @@ impl Glm5NextMlpKernels {
             swiglu: gpu.kernel(FFN_MODULE, "glm5next_swiglu_clamp")?,
             router: gpu.kernel(FFN_MODULE, "glm5next_router_topk")?,
             combine: gpu.kernel(FFN_MODULE, "glm5next_moe_combine")?,
+            // 🪤 `[modules]` in `common/KERNEL.toml`: `moe_permute = "moe"` and
+            // `moe_w4a16_grouped_gemm = "moe_w4a16"`. Neither takes its file stem.
+            moe_sort_by_expert: crate::layers::try_kernel(gpu, MOE_MODULE, "moe_sort_by_expert"),
+            moe_grouped_gemm: crate::layers::try_kernel(
+                gpu,
+                MOE_GROUPED_MODULE,
+                "moe_w4a16_grouped_gemm_ptrtable",
+            ),
+            combine_indexed: crate::layers::try_kernel(
+                gpu,
+                FFN_MODULE,
+                "glm5next_moe_combine_indexed",
+            ),
         })
     }
 }

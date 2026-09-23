@@ -11,6 +11,7 @@ use anyhow::{Result, bail};
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kernel_args::KernelLaunch;
 
+use super::forward_prefill_gemm;
 use super::weights::{Glm5NextDenseMlpWeights, Glm5NextMoeWeights, Nvfp4Proj};
 use super::{Glm5NextMlpConfig, Glm5NextMlpKernels};
 
@@ -148,6 +149,22 @@ fn w4a16(
 }
 
 /// `out = silu(min(gate, limit)) * clamp(up, -limit, limit)` over `n` elements.
+///
+/// Re-exported to the grouped-prefill module as [`swiglu_rows`]: the clamp is asymmetric and
+/// model-specific, so that path must run THIS activation, never `moe_silu_mul`.
+pub(super) fn swiglu_rows(
+    gpu: &dyn GpuBackend,
+    k: KernelHandle,
+    gate: DevicePtr,
+    up: DevicePtr,
+    out: DevicePtr,
+    n: usize,
+    limit: f32,
+    stream: u64,
+) -> Result<()> {
+    swiglu(gpu, k, gate, up, out, n, limit, stream)
+}
+
 fn swiglu(
     gpu: &dyn GpuBackend,
     k: KernelHandle,
@@ -193,9 +210,20 @@ pub struct Glm5NextMlpWorkspace {
     u_eid: DevicePtr,
     /// `[rows * top_k, rows]` I32 slot per union entry per row, `-1` = row absent.
     u_slot: DevicePtr,
+    /// `[rows * top_k]` I32 — sorted row → original token. Grouped prefill GEMM only.
+    sorted_token_ids: DevicePtr,
+    /// `[rows * top_k]` I32 — sorted row → expert id. Grouped prefill GEMM only.
+    sorted_expert_ids: DevicePtr,
+    /// `[num_experts + 1]` I32 prefix sum over the expert-sorted rows.
+    expert_offsets: DevicePtr,
+    /// `[rows, top_k]` I32 — a slot's row in the expert-sorted output. Read by the grouped
+    /// GEMM's paired `glm5next_moe_combine_indexed`.
+    token_to_perm: DevicePtr,
     max_inter: usize,
     /// Widest verify this scratch can serve. `1` on the serial decode path.
     max_rows: usize,
+    /// `max_rows * top_k` — the routed-slot extent every grouped-path buffer is sized for.
+    max_total_expanded: usize,
 }
 
 impl Glm5NextMlpWorkspace {
@@ -228,9 +256,55 @@ impl Glm5NextMlpWorkspace {
             shared_out: gpu.alloc(rows * cfg.hidden * 2)?,
             u_eid: gpu.alloc(rows * cfg.top_k * 4)?,
             u_slot: gpu.alloc(rows * cfg.top_k * rows * 4)?,
+            // 🪤 A59: the grouped-prefill routing tables are allocated HERE, at load, with
+            // every other pool — never on the first prefill. They are tiny (a 256-row
+            // sub-chunk at top_k = 8 is 8 KB each, plus 1.2 KB of offsets), so they are
+            // allocated unconditionally rather than behind the env lever: a conditional
+            // pool is a pool that is missing exactly when a fallback needs it.
+            sorted_token_ids: gpu.alloc(rows * cfg.top_k * 4)?,
+            sorted_expert_ids: gpu.alloc(rows * cfg.top_k * 4)?,
+            expert_offsets: gpu.alloc((cfg.num_experts + 1) * 4)?,
+            token_to_perm: gpu.alloc(rows * cfg.top_k * 4)?,
             max_inter,
             max_rows: rows,
+            max_total_expanded: rows * cfg.top_k,
         })
+    }
+
+    /// Widest row group this scratch serves.
+    pub(super) fn max_rows(&self) -> usize {
+        self.max_rows
+    }
+    /// `max_rows * top_k` — the routed-slot extent the grouped buffers were sized for.
+    pub(super) fn max_total_expanded(&self) -> usize {
+        self.max_total_expanded
+    }
+    pub(super) fn ids(&self) -> DevicePtr {
+        self.ids
+    }
+    pub(super) fn a_gate(&self) -> DevicePtr {
+        self.a_gate
+    }
+    pub(super) fn a_up(&self) -> DevicePtr {
+        self.a_up
+    }
+    pub(super) fn a_act(&self) -> DevicePtr {
+        self.a_act
+    }
+    pub(super) fn expert_out(&self) -> DevicePtr {
+        self.expert_out
+    }
+    pub(super) fn sorted_token_ids(&self) -> DevicePtr {
+        self.sorted_token_ids
+    }
+    pub(super) fn sorted_expert_ids(&self) -> DevicePtr {
+        self.sorted_expert_ids
+    }
+    pub(super) fn expert_offsets(&self) -> DevicePtr {
+        self.expert_offsets
+    }
+    pub(super) fn token_to_perm(&self) -> DevicePtr {
+        self.token_to_perm
     }
 }
 
@@ -503,6 +577,34 @@ fn announce_row_batch(batched: bool, rows: usize) {
     }
 }
 
+/// Say once PER ROW COUNT whether the routed experts took the grouped GEMM.
+///
+/// 🪤 A silent fallback here is the expensive kind: a missing `moe_sort_by_expert` or
+/// `moe_w4a16_grouped_gemm_ptrtable` handle sends prefill straight back to the 8-row GEMV
+/// and the only symptom is the TTFT. Latch one bit per row count, like `announce_row_batch`.
+fn announce_grouped_prefill(on: bool, rows: usize) {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static SEEN: AtomicU32 = AtomicU32::new(0);
+    if rows <= MOE_ROW_BATCH_MAX_ROWS {
+        return; // the narrow paths never consider it; saying so every step is noise
+    }
+    let bit = 1u32 << (rows.min(31));
+    if SEEN.fetch_or(bit, Ordering::Relaxed) & bit != 0 {
+        return;
+    }
+    if on {
+        tracing::info!(
+            "GLM MoE prefill: grouped tensor-core W4A16 GEMM, {rows} rows in ONE launch \
+             per projection (AVAROK_GLM_MOE_PREFILL_GEMM=0 to restore the GEMV path)"
+        );
+    } else {
+        tracing::info!(
+            "GLM MoE prefill: row-batched GEMV, {rows} rows split into \
+             {MOE_ROW_BATCH_MAX_ROWS}-row sweeps"
+        );
+    }
+}
+
 /// Kill switch for the grouped path: `AVAROK_GLM_MOE_HOST_DISPATCH=1` restores the
 /// read-ids-to-host expert loop. Read once — this sits on the per-layer decode path.
 fn host_dispatch_forced() -> bool {
@@ -593,7 +695,30 @@ pub fn forward_moe(
     // Sub-groups the routed sweep runs at. `rows` may exceed the widest tier — the prefill
     // sub-chunk is 16 wide since the dense tier widened — so every gate below is PER GROUP.
     let groups = moe_row_groups(rows, row_batch_max());
-    let batched = rows >= 2
+    // ── PREFILL ONLY: the whole row group through the tensor-core grouped GEMM ──
+    //
+    // 🔴 `rows > MOE_ROW_BATCH_MAX_ROWS` IS the prefill test. Decode is 1 row and a
+    // speculative verify is capped at `DENSE_GEMV_BATCHM_MAX_M` (= 8 = this constant), so the
+    // only caller that can be wider is `Glm5NextLayer::prefill`'s sub-chunk. Both of the
+    // narrow paths therefore keep the bit-identical GEMV arm, unchanged, and prefill — which
+    // has never been bit-identical to decode anyway, since the dense projections leave the
+    // batched GEMV above the same width — takes the GEMM.
+    //
+    // 🪤 The same test is why this is safe under CUDA graph capture: only decode is captured,
+    // and decode can never reach here, so the host read of `expert_offsets` inside
+    // `forward_moe_grouped_prefill` cannot land inside a capture.
+    let grouped_prefill = rows > MOE_ROW_BATCH_MAX_ROWS
+        && forward_prefill_gemm::prefill_gemm_enabled()
+        && !host_dispatch_forced()
+        // The route trace reads `ids` back PER ROW; the grouped path never materialises a
+        // per-row id list. Leave tracing on the arm that can serve it.
+        && !profile::trace_on()
+        && k.moe_sort_by_expert.0 != 0
+        && k.moe_grouped_gemm.0 != 0
+        && k.combine_indexed.0 != 0
+        && rows * cfg.top_k <= ws.max_total_expanded();
+    let batched = !grouped_prefill
+        && rows >= 2
         && !host_dispatch_forced()
         && !row_batch_disabled()
         && !profile::trace_on()
@@ -606,6 +731,7 @@ pub fn forward_moe(
                 && k.w4a16_gemv_sw_moe_batchm[w - 2].0 != 0
         });
     announce_row_batch(batched, rows);
+    announce_grouped_prefill(grouped_prefill, rows);
 
     // ── router: FULL expert set, FP32 logits, replicated on every rank ──
     let t = profile::start();
@@ -680,7 +806,7 @@ pub fn forward_moe(
     gpu.memset_async(ws.expert_out, 0, rows * cfg.top_k * cfg.hidden * 2, stream)?;
 
     for r in 0..rows {
-        if batched {
+        if batched || grouped_prefill {
             break; // the experts run once for ALL rows, after this loop
         }
         let xr = x.offset(r * cfg.hidden * 2);
@@ -872,6 +998,15 @@ pub fn forward_moe(
         }
     }
 
+    if grouped_prefill {
+        // ONE launch per projection over the WHOLE row group — the 8-row cap does not apply.
+        // Leaves the routed outputs in `ws.expert_out` in EXPERT-SORTED order; the combine
+        // below reads them through `ws.token_to_perm`.
+        let t = profile::start();
+        forward_prefill_gemm::forward_moe_grouped_prefill(gpu, k, cfg, w, x, rows, ws, stream)?;
+        profile::end(profile::MOE_EXPERTS, t, gpu, stream);
+    }
+
     if batched {
         let t = profile::start();
         let mi = cfg.moe_intermediate;
@@ -990,16 +1125,35 @@ pub fn forward_moe(
     let t = profile::start();
     // ONE combine for every row: `glm5next_moe_combine` takes the row on `blockIdx.x` and
     // strides all four buffers by it. Was K `grid [1,1,1]` launches — 1.50 ms of a K=3 step.
-    KernelLaunch::new(gpu, k.combine)
-        .grid([rows as u32, 1, 1])
-        .block([ACT_BLOCK, 1, 1])
-        .arg_ptr(ws.expert_out)
-        .arg_ptr(ws.wts)
-        .arg_ptr(ws.shared_out)
-        .arg_ptr(out)
-        .arg_u32(cfg.hidden as u32)
-        .arg_u32(cfg.top_k as u32)
-        .launch(stream)?;
+    //
+    // 🪤 The grouped path's routed rows are EXPERT-SORTED, so it takes the `_indexed` twin —
+    // same accumulation order, same single rounding, one extra indirection through
+    // `token_to_perm`. Reading the sorted buffer with the plain kernel would silently combine
+    // whichever tokens happened to land at `t * top_k + k`.
+    if grouped_prefill {
+        KernelLaunch::new(gpu, k.combine_indexed)
+            .grid([rows as u32, 1, 1])
+            .block([ACT_BLOCK, 1, 1])
+            .arg_ptr(ws.expert_out)
+            .arg_ptr(ws.token_to_perm)
+            .arg_ptr(ws.wts)
+            .arg_ptr(ws.shared_out)
+            .arg_ptr(out)
+            .arg_u32(cfg.hidden as u32)
+            .arg_u32(cfg.top_k as u32)
+            .launch(stream)?;
+    } else {
+        KernelLaunch::new(gpu, k.combine)
+            .grid([rows as u32, 1, 1])
+            .block([ACT_BLOCK, 1, 1])
+            .arg_ptr(ws.expert_out)
+            .arg_ptr(ws.wts)
+            .arg_ptr(ws.shared_out)
+            .arg_ptr(out)
+            .arg_u32(cfg.hidden as u32)
+            .arg_u32(cfg.top_k as u32)
+            .launch(stream)?;
+    }
     profile::end(profile::MOE_COMBINE, t, gpu, stream);
     Ok(())
 }
