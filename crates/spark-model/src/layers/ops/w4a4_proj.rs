@@ -187,18 +187,94 @@ pub fn nvfp4_proj_small_m(
     k: u32,
     stream: u64,
 ) -> Result<()> {
+    proj(
+        gpu,
+        batch_kernel,
+        input,
+        weight,
+        output,
+        m,
+        n,
+        k,
+        stream,
+        false,
+    )
+}
+
+/// [`nvfp4_proj_small_m`] for a projection whose `input` is BYTE-FOR-BYTE the
+/// input of the immediately preceding projection on this stream (attention
+/// k/v after q, FFN up after gate). It skips re-quantising when the previous
+/// W4A4 launch quantised exactly `(input, m, k)` on this stream, and otherwise
+/// quantises as usual, so a wrong claim about the ADDRESS can never read a
+/// stale quantisation. The CALLER guarantees the CONTENTS did not change in
+/// between.
+#[allow(clippy::too_many_arguments)]
+#[track_caller]
+pub fn nvfp4_proj_small_m_same_input(
+    gpu: &dyn GpuBackend,
+    batch_kernel: KernelHandle,
+    input: DevicePtr,
+    weight: &QuantizedWeight,
+    output: DevicePtr,
+    m: u32,
+    n: u32,
+    k: u32,
+    stream: u64,
+) -> Result<()> {
+    proj(
+        gpu,
+        batch_kernel,
+        input,
+        weight,
+        output,
+        m,
+        n,
+        k,
+        stream,
+        true,
+    )
+}
+
+/// What the scratch currently holds: (backend, input address, m, k, stream).
+type QuantKey = (usize, u64, u32, u32, u64);
+
+fn last_quant() -> &'static Mutex<Option<QuantKey>> {
+    static LAST: OnceLock<Mutex<Option<QuantKey>>> = OnceLock::new();
+    LAST.get_or_init(|| Mutex::new(None))
+}
+
+#[allow(clippy::too_many_arguments)]
+#[track_caller]
+fn proj(
+    gpu: &dyn GpuBackend,
+    batch_kernel: KernelHandle,
+    input: DevicePtr,
+    weight: &QuantizedWeight,
+    output: DevicePtr,
+    m: u32,
+    n: u32,
+    k: u32,
+    stream: u64,
+    same_input: bool,
+) -> Result<()> {
     if w4a4_route(m, n, k, w4a4_downcast_enabled())
         && let Some(s) = state(gpu)
     {
-        KernelLaunch::new(gpu, s.quant)
-            .grid([m, 1, 1])
-            .block([256, 1, 1])
-            .arg_ptr(input)
-            .arg_ptr(s.aq)
-            .arg_ptr(s.a_scale)
-            .arg_ptr(s.a_gs)
-            .arg_u32(k)
-            .launch(stream)?;
+        let want: QuantKey = (key(gpu), input.0, m, k, stream);
+        let mut last = last_quant().lock().unwrap_or_else(|p| p.into_inner());
+        if !(same_input && *last == Some(want)) {
+            KernelLaunch::new(gpu, s.quant)
+                .grid([m, 1, 1])
+                .block([256, 1, 1])
+                .arg_ptr(input)
+                .arg_ptr(s.aq)
+                .arg_ptr(s.a_scale)
+                .arg_ptr(s.a_gs)
+                .arg_u32(k)
+                .launch(stream)?;
+            *last = Some(want);
+        }
+        drop(last);
         let mx = if m <= 8 {
             s.mx8
         } else if m <= 16 {

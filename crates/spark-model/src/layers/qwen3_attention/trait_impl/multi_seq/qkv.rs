@@ -605,6 +605,7 @@ impl Qwen3AttentionLayer {
         m: u32,
         n: u32,
         k: u32,
+        same_input_as_previous: bool,
     ) -> Result<()> {
         let gpu = c.fwd.gpu;
         let stream = c.stream;
@@ -618,9 +619,15 @@ impl Qwen3AttentionLayer {
         // M=8, so the DFlash wide verify (M=17) keeps the GEMM.
         let batchm = self.w4a16_batchm.kernel(m);
         if batchm.0 != 0 {
-            return ops::w4a4_proj::nvfp4_proj_small_m(
-                gpu, batchm, input, w_base, output, m, n, k, stream,
-            );
+            return if same_input_as_previous {
+                ops::w4a4_proj::nvfp4_proj_small_m_same_input(
+                    gpu, batchm, input, w_base, output, m, n, k, stream,
+                )
+            } else {
+                ops::w4a4_proj::nvfp4_proj_small_m(
+                    gpu, batchm, input, w_base, output, m, n, k, stream,
+                )
+            };
         }
         if let Some(wt) = w_t {
             // Small-M routing (w4a16_m17_bench): at M<=64 the M64-tile
@@ -778,6 +785,7 @@ impl Qwen3AttentionLayer {
                 n as u32,
                 fused_n as u32,
                 h as u32,
+                false,
             )?;
         } else {
             self.wide_verify_gemm(
@@ -789,6 +797,7 @@ impl Qwen3AttentionLayer {
                 n as u32,
                 q_proj_dim,
                 h as u32,
+                false,
             )?;
         }
         if self.gated && !self.q_lora_active() {
@@ -827,6 +836,7 @@ impl Qwen3AttentionLayer {
                 n as u32,
                 kv_dim,
                 h as u32,
+                true,
             )?;
             self.wide_verify_gemm(
                 c,
@@ -837,6 +847,7 @@ impl Qwen3AttentionLayer {
                 n as u32,
                 kv_dim,
                 h as u32,
+                true,
             )?;
         }
 
