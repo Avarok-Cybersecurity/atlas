@@ -230,7 +230,7 @@ impl Qwen3SsmLayer {
                     )?;
                 }
             }
-        } else if (5..=ops::gemv_tc::narrow_gemv_max_rows() as usize).contains(&num_tokens)
+        } else if (5..=ops::w4a4_proj::proj_max_rows() as usize).contains(&num_tokens)
             && self.w4a16_batchm.kernel(num_tokens as u32).0 != 0
             && let Some(ref nvfp4) = self.qkvz_nvfp4
         {
@@ -239,7 +239,7 @@ impl Qwen3SsmLayer {
             // falling through to the tile GEMMs below (the M>4 projection
             // cliff). FP8 checkpoints fall through unchanged (fp8_gemm arm
             // below).
-            ops::w4a16_gemv_batchm(
+            ops::w4a4_proj::nvfp4_proj_small_m(
                 ctx.gpu,
                 self.w4a16_batchm.kernel(num_tokens as u32),
                 normed,
@@ -323,7 +323,7 @@ impl Qwen3SsmLayer {
             }
         } else if num_tokens == 4 {
             if let Some(ref nvfp4) = self.qkvz_nvfp4 {
-                ops::w4a16_gemv_batchm(
+                ops::w4a4_proj::nvfp4_proj_small_m(
                     ctx.gpu,
                     self.w4a16_batchm.kernel(num_tokens as u32),
                     normed,
@@ -989,7 +989,7 @@ impl Qwen3SsmLayer {
                     )?;
                 }
             }
-        } else if (4..=ops::gemv_tc::narrow_gemv_max_rows() as usize).contains(&num_tokens)
+        } else if (4..=ops::w4a4_proj::proj_max_rows() as usize).contains(&num_tokens)
             && !self.ssm.out_proj.weight.is_null()
             && self.w4a16_batchm_kernel(num_tokens).0 != 0
         {
@@ -997,7 +997,7 @@ impl Qwen3SsmLayer {
             // previously fell through to the w4a16 tile GEMMs below (M>3
             // cliff — there was no ==4 arm at all on the NVFP4 side); the
             // batchm GEMV streams the weight once for all rows.
-            ops::w4a16_gemv_batchm(
+            ops::w4a4_proj::nvfp4_proj_small_m(
                 ctx.gpu,
                 self.w4a16_batchm_kernel(num_tokens),
                 normed_out_buf,
@@ -1255,7 +1255,7 @@ impl Qwen3SsmLayer {
                 (2 * h) as u32,
                 stream,
             )?;
-        } else if (4..=ops::gemv_tc::narrow_gemv_max_rows() as usize).contains(&num_tokens)
+        } else if (4..=ops::w4a4_proj::proj_max_rows() as usize).contains(&num_tokens)
             && self
                 .ffn
                 .try_forward_km(normed2_base, num_tokens as u32, ctx, stream)

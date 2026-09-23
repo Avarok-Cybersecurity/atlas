@@ -343,6 +343,26 @@ pub struct ServeArgs {
     #[arg(long, num_args = 0..=1, default_missing_value = "true")]
     pub prefill_codispatch: Option<bool>,
 
+    /// Downcast activations to NVFP4 (W4A4) on the small-M decode / MTP-verify
+    /// paths (default: false).
+    ///
+    /// ON puts the 1..=32-row NVFP4 projections (GDN qkvz/out_proj, attention
+    /// q/k/v/o, multi-seq SSM projections) on the FP4 block-scale tensor-core
+    /// MMA (`w4a4_gemv_mx`), and the 2..=8-row dense-FFN steps on the W4A4
+    /// MMQ the wider steps already use. It is an ENERGY lever. bf16 MMA power
+    /// scales with live rows, while the FP4 MMA reads the checkpoint's NVFP4
+    /// bytes with no dequant. It is also a NUMERICS change (per-row dynamic
+    /// NVFP4 activations), so it is off unless a recipe asks for it. No
+    /// environment fallback. The lm_head always stays W4A16.
+    #[arg(
+        long,
+        default_value_t = false,
+        num_args = 0..=1,
+        default_missing_value = "true",
+        action = clap::ArgAction::Set
+    )]
+    pub w4a4_downcast: bool,
+
     /// Sequential-decode-exact GDN/SSM verify chain — OPT-IN (default: off).
     ///
     /// ★ THIS FLAG IS NOT A CORRECTNESS SWITCH. A 2026-08-21 measurement on

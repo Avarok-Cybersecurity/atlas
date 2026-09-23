@@ -210,10 +210,10 @@ pub fn w4a16_gemv_batchm(
     k: u32,
     stream: u64,
 ) -> Result<()> {
-    // Largest template is w4a16_gemv_batch16 (MAX_M=16). Above that the
-    // kernel SILENTLY truncates: rows 0..15 computed, rows 16.. never
-    // written — garbage output, not a crash.
-    debug_assert!(m <= 16, "w4a16_gemv_batchm caps at M=16 (m={m})");
+    // The handle's template caps the rows: batch16 SILENTLY truncates above 16
+    // (rows 16.. never written). batch32 (MAX_M=32) is handed out only for
+    // 17..=32 rows under `--w4a4-downcast`, as the W4A4 path's fallback.
+    debug_assert!(m <= 32, "w4a16_gemv_batchm caps at M=32 (batch32; m={m})");
     // Tensor-core sibling first (same arguments, its own geometry): the
     // CUDA-core tiers below cost 50-60% more GPU-rail energy per launch at
     // M>=2 for the same weight stream. See `gemv_tc`.

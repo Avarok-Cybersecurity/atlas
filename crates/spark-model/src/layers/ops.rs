@@ -210,6 +210,8 @@ mod ssm_preproc;
 #[path = "ops/ssm_ssd.rs"]
 mod ssm_ssd;
 pub mod token_overlay;
+#[path = "ops/w4a4_proj.rs"]
+pub mod w4a4_proj;
 /// HOST SIMULATION of the Hopper `w8a16_gemv` override's loop order against the
 /// gb10 kernel's, so a GPU-free `cargo test` still judges the one claim the
 /// device microtest cannot make cheaply: that the UNROLL-wide prefetch did not

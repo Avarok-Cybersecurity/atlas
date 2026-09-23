@@ -95,6 +95,7 @@ pub(crate) fn disclosed_from(args: &crate::cli::ServeArgs) -> BTreeMap<String, S
         args.mtp_gate_force(),
         args.speculative,
         args.prefill_codispatch,
+        args.w4a4_downcast,
     )
 }
 

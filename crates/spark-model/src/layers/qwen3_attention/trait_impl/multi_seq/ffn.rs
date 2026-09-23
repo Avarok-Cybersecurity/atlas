@@ -142,7 +142,7 @@ impl Qwen3AttentionLayer {
                 (2 * h) as u32,
                 stream,
             )?;
-        } else if (4..=ops::gemv_tc::narrow_gemv_max_rows() as usize).contains(&n)
+        } else if (4..=ops::w4a4_proj::proj_max_rows() as usize).contains(&n)
             && !force_seq_ffn
             && self.ffn.can_forward_km(n as u32)
         {

@@ -37,7 +37,9 @@ use super::record::GateRecord;
 /// `AVAROK_W4A16_TC_WIDE` is the opposite polarity: an OPT-IN (any non-empty
 /// value) that widens the tensor-core row edge from 8 to 16, so `unset` means
 /// it did NOT run. `record_env_tests` pins both rules against
-/// `layers/ops/gemv_tc.rs`.
+/// `layers/ops/gemv_tc.rs`. The W4A4 activation downcast is NOT here: it is
+/// the `--w4a4-downcast` flag, disclosed in `serve_resolved`
+/// (`record_serve::W4A4_DOWNCAST`).
 const PERF_CONTROLS: [(&str, &str); 4] = [
     ("AVAROK_PREFILL_CODISPATCH_WINDOW_MS", "100"),
     ("AVAROK_PREFILL_CODISPATCH_SETTLE_MS", "10"),

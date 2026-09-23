@@ -28,6 +28,11 @@ pub const SPECULATIVE: &str = "speculative";
 /// environment, which a flag never touches, so a serve running
 /// `--prefill-codispatch true` was recorded as `AVAROK_PREFILL_CODISPATCH=0`.
 pub const PREFILL_CODISPATCH: &str = "prefill_codispatch";
+/// `--w4a4-downcast` (activations quantised to FP4 on the small-M projection
+/// and dense-FFN paths). Disclosed ONLY when true: the flag defaults to false
+/// and has no environment fallback, so absent is exactly false and every
+/// record before the flag existed reads correctly.
+pub const W4A4_DOWNCAST: &str = "w4a4_downcast";
 
 /// The disclosure for a server whose rendered flags resolved to these.
 ///
@@ -47,6 +52,7 @@ pub fn disclosure(
     mtp_gate_force: Option<bool>,
     speculative: bool,
     prefill_codispatch: Option<bool>,
+    w4a4_downcast: bool,
 ) -> BTreeMap<String, String> {
     let mut m = BTreeMap::new();
     m.insert(SPECULATIVE.to_string(), speculative.to_string());
@@ -58,6 +64,9 @@ pub fn disclosure(
     }
     if let Some(on) = prefill_codispatch {
         m.insert(PREFILL_CODISPATCH.to_string(), on.to_string());
+    }
+    if w4a4_downcast {
+        m.insert(W4A4_DOWNCAST.to_string(), "true".to_string());
     }
     m
 }

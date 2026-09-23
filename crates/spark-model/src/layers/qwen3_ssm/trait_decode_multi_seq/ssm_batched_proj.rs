@@ -178,7 +178,7 @@ impl Qwen3SsmLayer {
                         n <= 16,
                         "SSM batchm QKVZ GEMV caps at M=16 (n={n}); tile-GEMM twins required"
                     );
-                    ops::w4a16_gemv_batchm(
+                    ops::w4a4_proj::nvfp4_proj_small_m(
                         ctx.gpu,
                         fp4_gemv_batch_k,
                         normed_base,
@@ -324,7 +324,7 @@ impl Qwen3SsmLayer {
                         n <= 16,
                         "SSM batchm out_proj GEMV caps at M=16 (n={n}); tile-GEMM twins required"
                     );
-                    ops::w4a16_gemv_batchm(
+                    ops::w4a4_proj::nvfp4_proj_small_m(
                         ctx.gpu,
                         fp4_gemv_batch_k,
                         normed_out_base,
