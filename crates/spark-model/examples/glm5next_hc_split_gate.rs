@@ -16,7 +16,7 @@
 
 use anyhow::{Result, bail};
 use spark_model::layers::ops::{
-    Glm5NextMhcKernels, Glm5NextMhcSiteWeights, MHC_MIX_MAX_TOKENS, glm_hc_pre,
+    Glm5NextMhcKernels, Glm5NextMhcSiteWeights, glm_hc_pre, mhc_mix_max_tokens,
 };
 use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
@@ -109,8 +109,8 @@ fn main() -> Result<()> {
     );
 
     for (hid, hc, t) in CASES {
-        if t > MHC_MIX_MAX_TOKENS {
-            bail!("case T={t} exceeds MHC_MIX_MAX_TOKENS");
+        if t > mhc_mix_max_tokens() {
+            bail!("case T={t} exceeds mhc_mix_max_tokens()");
         }
         let m = mix_hc(hc);
         let hc_dim = hc * hid;
@@ -166,7 +166,7 @@ fn main() -> Result<()> {
             hc_fn_bf16: false,
             hc_scale: d_scale,
             hc_base: d_base,
-            mix: gpu.alloc(MHC_MIX_MAX_TOKENS * m * 4)?,
+            mix: gpu.alloc(mhc_mix_max_tokens() * m * 4)?,
         };
         let (yb, pb, cb) = (gpu.alloc(y_b)?, gpu.alloc(post_b)?, gpu.alloc(comb_b)?);
         poison(&gpu, yb, y_b)?;
@@ -257,7 +257,7 @@ fn main() -> Result<()> {
             hc_fn_bf16: true,
             hc_scale: d_scale,
             hc_base: d_base,
-            mix: gpu.alloc(MHC_MIX_MAX_TOKENS * m * 4)?,
+            mix: gpu.alloc(mhc_mix_max_tokens() * m * 4)?,
         };
         let (yd, pd, cd) = (gpu.alloc(y_b)?, gpu.alloc(post_b)?, gpu.alloc(comb_b)?);
         for (p, n) in [(yd, y_b), (pd, post_b), (cd, comb_b)] {
