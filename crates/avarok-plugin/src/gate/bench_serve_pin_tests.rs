@@ -175,6 +175,10 @@ fn the_trees_serve_pins_sit_on_the_gates_that_need_them() {
         // can have it while ttft-warm-gate does not. The dense proof that beats
         // vLLM at every rung was measured WITH it.
         ("prefill_codispatch", "true"),
+        // ★ The fifth, also a serve pin: `--w4a4-downcast` (engine default
+        // false) is ON for the ladder because the throughput recipe carries it
+        // and the energy comparison with vLLM was measured with it. #1246.
+        ("w4a4_downcast", "true"),
     ] {
         assert_eq!(
             c.serve_overrides.get(key).map(String::as_str),
@@ -183,7 +187,7 @@ fn the_trees_serve_pins_sit_on_the_gates_that_need_them() {
             c.serve_overrides
         );
     }
-    assert_eq!(c.serve_overrides.len(), 4, "{:?}", c.serve_overrides);
+    assert_eq!(c.serve_overrides.len(), 5, "{:?}", c.serve_overrides);
     assert!(
         !c.serve_overrides.contains_key("lm_head_dtype"),
         "the throughput recipe leaves the head at the checkpoint's native NVFP4; pinning \
@@ -218,6 +222,7 @@ fn the_trees_serve_pins_sit_on_the_gates_that_need_them() {
         ("dflash", "true"),
         ("draft_model", "incoai/Qwen3.8-27B-DFlash2"),
         ("dflash_gamma", "8"),
+        ("w4a4_downcast", "true"),
     ] {
         assert_eq!(
             d.serve_overrides.get(key).map(String::as_str),
@@ -226,7 +231,7 @@ fn the_trees_serve_pins_sit_on_the_gates_that_need_them() {
             d.serve_overrides
         );
     }
-    assert_eq!(d.serve_overrides.len(), 7, "{:?}", d.serve_overrides);
+    assert_eq!(d.serve_overrides.len(), 8, "{:?}", d.serve_overrides);
     assert!(
         !d.serve_overrides.contains_key("speculative"),
         "--dflash conflicts with --speculative at the CLI: pinning both would not start"
