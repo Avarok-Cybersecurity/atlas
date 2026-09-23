@@ -10,9 +10,15 @@
 //!
 //! Joules and tokens are additive and survive re-aggregation; a ratio does
 //! not. So the record carries `energy_j` and the window's token count, and
-//! J/token, tokens/J (which IS tokens/W: `(tok/s) / (J/s)`), and `$ per 1M
-//! tokens = (J/token) × ($/kWh) / 3.6` are all downstream arithmetic. None
-//! of those is stored here.
+//! tokens/J (which IS tokens/W: `(tok/s) / (J/s)`) and `$ per 1M tokens =
+//! (J/token) × ($/kWh) / 3.6` are downstream arithmetic.
+//!
+//! ONE ratio is also written: `gpu_rail_joules_per_token`, because a
+//! BENCH.toml ceiling can only bound a key the record carries (owner
+//! requirement 2026-09-23: a J/token ceiling per concurrency rung). It rides
+//! BESIDE its pair, never instead of it — anything that re-aggregates
+//! windows must still add joules and tokens and divide once
+//! ([`joules_per_token`] is that one division).
 //!
 //! # ★ WHICH RAIL — read before comparing this to any other number
 //!
@@ -158,6 +164,16 @@ pub fn integrate(samples: &[PowerSample], start: Instant, end: Instant) -> Optio
     })
 }
 
+/// GPU-rail joules per delivered output token, or `None` when the pair
+/// cannot support a ratio: no tokens (the division is undefined), or a joule
+/// count that is not a finite positive number (a delivered token never costs
+/// zero energy, so 0 J means the window measured nothing). `None` rather than
+/// 0.0 or ∞ because this value is bounded by a ceiling, and every sentinel a
+/// ceiling can compare against would read as a pass or as a real reading.
+pub fn joules_per_token(energy_j: f64, tokens: usize) -> Option<f64> {
+    (tokens > 0 && energy_j.is_finite() && energy_j > 0.0).then(|| energy_j / tokens as f64)
+}
+
 impl EnergyWindow {
     /// Joules above what the box would have drawn idle for the same
     /// duration: `energy_j − idle.mean_power_w × window_s`. Derived, so it
@@ -204,8 +220,9 @@ impl EnergyWindow {
     /// The record keys for one window, under `prefix` (`"c8_"` or `""`).
     /// `gpu_rail` is in every name on purpose — see the module docs.
     /// `tokens` is the output-token count delivered INSIDE this window: it
-    /// rides beside the joules because J/token is downstream arithmetic on
-    /// the pair, and a joule count with no denominator is not usable.
+    /// rides beside the joules because a joule count with no denominator is
+    /// not usable, and J/token is written from the pair (see the module docs
+    /// for why that one ratio is stored).
     pub fn metrics(
         &self,
         prefix: &str,
@@ -218,6 +235,12 @@ impl EnergyWindow {
         };
         put(m, "gpu_rail_energy_j", self.energy_j);
         put(m, "gpu_rail_energy_window_tokens", tokens as f64);
+        // Absent — never 0, inf or NaN — when the window cannot support the
+        // ratio, so a J/token ceiling on it fails as "missing from the
+        // record" instead of passing on an unmeasured value.
+        if let Some(r) = joules_per_token(self.energy_j, tokens) {
+            put(m, "gpu_rail_joules_per_token", r);
+        }
         put(m, "gpu_rail_mean_power_w", self.mean_power_w);
         put(m, "gpu_rail_max_power_w", self.max_power_w);
         put(m, "gpu_rail_power_samples", self.samples as f64);

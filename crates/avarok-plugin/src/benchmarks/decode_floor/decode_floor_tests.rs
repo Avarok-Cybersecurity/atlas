@@ -443,9 +443,13 @@ fn instrument_metrics_keep_both_clocks_and_store_joules_beside_tokens() {
         Some(&(1450.0 * 3.0))
     );
     assert!((m["gpu_rail_energy_above_idle_j"] - (9000.0 - 5.0 * 150.0)).abs() < 1e-9);
-    assert!(
-        !m.keys().any(|k| k.contains("per_token")),
-        "ratios are derived downstream"
+    // J/token is the one stored ratio, and it is the SUMMED pair's quotient
+    // (joules add, tokens add, divide once) — never a mean of per-run ratios.
+    assert!((m["gpu_rail_joules_per_token"] - 9000.0 / (1450.0 * 3.0)).abs() < 1e-12);
+    assert_eq!(
+        m.keys().filter(|k| k.contains("per_token")).count(),
+        1,
+        "no other ratio is stored: {m:?}"
     );
 
     // Nothing instrumented → nothing emitted, never zeros.
