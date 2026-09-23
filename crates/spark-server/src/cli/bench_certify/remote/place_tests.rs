@@ -161,7 +161,7 @@ fn the_record_must_be_for_this_unit_at_the_anchor_on_this_class() {
 /// orchestrator prints "No memory left for KV cache" rather than only
 /// "returned no record". A log with no such block adds nothing.
 #[test]
-fn a_missing_record_carries_the_childs_final_error_block() {
+fn a_missing_record_carries_the_child_logs_final_error_block() {
     let root = std::env::temp_dir().join(format!("certify-place-cause-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join(".certify/x")).unwrap();
