@@ -34,7 +34,7 @@ use half::bf16;
 use spark_model::layers::dense_ffn::m16_tc::oracle::{M16_TC_MAX_ULP, compare_m16_tc_block};
 use spark_model::layers::ops;
 use spark_runtime::cuda_backend::AvarokCudaBackend;
-use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
+use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use std::time::Instant;
 
 const MAX_M: usize = 32;
