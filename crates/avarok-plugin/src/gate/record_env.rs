@@ -34,12 +34,15 @@ use super::record::GateRecord;
 /// `AVAROK_NO_W4A16_TC` is a PRESENCE kill switch (any non-empty value, `0`
 /// included, turns the tensor-core small-M NVFP4 GEMV off), so its default is
 /// the literal `unset`, the one value under which the tensor-core path ran.
-/// `perf_env_defaults_match_the_scheduler` pins that rule against
+/// `AVAROK_W4A16_TC_WIDE` is the opposite polarity: an OPT-IN (any non-empty
+/// value) that widens the tensor-core row edge from 8 to 16, so `unset` means
+/// it did NOT run. `record_env_tests` pins both rules against
 /// `layers/ops/gemv_tc.rs`.
-const PERF_CONTROLS: [(&str, &str); 3] = [
+const PERF_CONTROLS: [(&str, &str); 4] = [
     ("AVAROK_PREFILL_CODISPATCH_WINDOW_MS", "100"),
     ("AVAROK_PREFILL_CODISPATCH_SETTLE_MS", "10"),
     ("AVAROK_NO_W4A16_TC", "unset"),
+    ("AVAROK_W4A16_TC_WIDE", "unset"),
 ];
 
 /// Resolve the `PERF_CONTROLS` table through `lookup`, substituting each

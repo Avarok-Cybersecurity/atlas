@@ -230,7 +230,7 @@ impl Qwen3SsmLayer {
                     )?;
                 }
             }
-        } else if (5..=8).contains(&num_tokens)
+        } else if (5..=ops::gemv_tc::narrow_gemv_max_rows() as usize).contains(&num_tokens)
             && self.w4a16_batchm.kernel(num_tokens as u32).0 != 0
             && let Some(ref nvfp4) = self.qkvz_nvfp4
         {
@@ -989,7 +989,7 @@ impl Qwen3SsmLayer {
                     )?;
                 }
             }
-        } else if (4..=8).contains(&num_tokens)
+        } else if (4..=ops::gemv_tc::narrow_gemv_max_rows() as usize).contains(&num_tokens)
             && !self.ssm.out_proj.weight.is_null()
             && self.w4a16_batchm_kernel(num_tokens).0 != 0
         {
@@ -1255,7 +1255,7 @@ impl Qwen3SsmLayer {
                 (2 * h) as u32,
                 stream,
             )?;
-        } else if (4..=8).contains(&num_tokens)
+        } else if (4..=ops::gemv_tc::narrow_gemv_max_rows() as usize).contains(&num_tokens)
             && self
                 .ffn
                 .try_forward_km(normed2_base, num_tokens as u32, ctx, stream)

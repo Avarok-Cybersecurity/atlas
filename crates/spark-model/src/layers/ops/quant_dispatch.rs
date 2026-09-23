@@ -141,6 +141,9 @@ pub fn w4a16_gemv_batch2(
     k: u32,
     stream: u64,
 ) -> Result<()> {
+    if super::gemv_tc::tc_fixed_m(gpu, input, weight, output, 2, n, k, stream)? {
+        return Ok(());
+    }
     KernelLaunch::new(gpu, kernel)
         .grid([div_ceil(n, 4), 1, 1])
         .block([256, 1, 1])
@@ -171,6 +174,9 @@ pub fn w4a16_gemv_batch3(
     k: u32,
     stream: u64,
 ) -> Result<()> {
+    if super::gemv_tc::tc_fixed_m(gpu, input, weight, output, 3, n, k, stream)? {
+        return Ok(());
+    }
     KernelLaunch::new(gpu, kernel)
         .grid([div_ceil(n, 4), 1, 1])
         .block([256, 1, 1])
@@ -396,6 +402,12 @@ pub fn w4a16_gemv_dual_batch3(
     k: u32,
     stream: u64,
 ) -> Result<()> {
+    // Two tensor-core launches, one per projection; both or neither (the
+    // routing decision depends only on (m, n, k), identical for the pair).
+    if super::gemv_tc::tc_fixed_m(gpu, input, weight0, output0, 3, n, k, stream)? {
+        super::gemv_tc::tc_fixed_m(gpu, input, weight1, output1, 3, n, k, stream)?;
+        return Ok(());
+    }
     KernelLaunch::new(gpu, kernel)
         .grid([div_ceil(n, 4), 1, 2])
         .block([256, 1, 1])
@@ -434,6 +446,12 @@ pub fn w4a16_gemv_dual_batch2(
     k: u32,
     stream: u64,
 ) -> Result<()> {
+    // Two tensor-core launches, one per projection; both or neither (the
+    // routing decision depends only on (m, n, k), identical for the pair).
+    if super::gemv_tc::tc_fixed_m(gpu, input, weight0, output0, 2, n, k, stream)? {
+        super::gemv_tc::tc_fixed_m(gpu, input, weight1, output1, 2, n, k, stream)?;
+        return Ok(());
+    }
     KernelLaunch::new(gpu, kernel)
         .grid([div_ceil(n, 4), 1, 2])
         .block([256, 1, 1])

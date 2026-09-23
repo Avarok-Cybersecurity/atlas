@@ -134,9 +134,11 @@ fn width_table_and_resolver_stay_in_lockstep() {
     let gpu = MockGpuBackend::new();
     let tiers = W4a16BatchmTiers::resolve(&gpu);
     assert!(tiers.handles.iter().all(|h| h.0 != 0));
-    assert_eq!(
-        gpu.kernel_lookups_snapshot(),
-        W4A16_BATCHM_WIDTHS.map(|w| {
+    // ...followed by exactly one lookup of the opt-in 9..=16-row handle
+    // (`AVAROK_W4A16_TC_WIDE`), which the resolver always resolves so the
+    // dispatch decision stays a pure function of the switch.
+    let mut expected: Vec<(String, String)> = W4A16_BATCHM_WIDTHS
+        .map(|w| {
             let func = if w == 8 {
                 "w4a16_gemv_batch8_rt2".to_owned()
             } else {
@@ -144,5 +146,8 @@ fn width_table_and_resolver_stay_in_lockstep() {
             };
             ("w4a16_gemv".to_owned(), func)
         })
-    );
+        .to_vec();
+    expected.push(("w4a16_gemv".to_owned(), "w4a16_gemv_batch16".to_owned()));
+    assert_eq!(gpu.kernel_lookups_snapshot(), expected);
+    assert_ne!(tiers.wide.0, 0);
 }

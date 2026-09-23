@@ -29,7 +29,11 @@
 
 use std::sync::{Mutex, OnceLock};
 
-use spark_runtime::gpu::{GpuBackend, KernelHandle};
+use anyhow::Result;
+use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
+use spark_runtime::kernel_args::KernelLaunch;
+
+use crate::weight_map::QuantizedWeight;
 
 /// Rows the `w4a16_gemv_tc8` entry covers (A-fragment rows 0..7).
 pub const TC8_MAX_M: u32 = 8;
@@ -92,6 +96,40 @@ pub fn tc_enabled() -> bool {
     *ON.get_or_init(|| std::env::var_os("AVAROK_NO_W4A16_TC").is_none_or(|v| v.is_empty()))
 }
 
+/// Widest row count the dispatch sites may send down the narrow-GEMV arms.
+/// 8 is the CUDA-core family's measured edge; with the tensor-core path on,
+/// `tc16` streams 9..=16 rows at ~190 GB/s (2.4x `w4a16_gemv_batch16`), so
+/// the verify steps of C=4/8 (9..16 rows) stop falling onto the tile GEMMs /
+/// W4A4 MMQ. The same switch also routes the FIXED-M launchers
+/// (`w4a16_gemv_batch2/3`, `w4a16_gemv_dual_batch2/3`: the C=2/C=3 decode
+/// and K=1/K=2 verify arms) to the tensor-core kernel.
+///
+/// ★ OPT-IN (`AVAROK_W4A16_TC_WIDE=1`, any non-empty value), because it is a
+/// SPEED lever that costs ENERGY. Measured on dgx3 (gate throughput config,
+/// same binary, 2 reps each): C=4 went 73.5/74.3 -> 77.9/77.9 tok/s (+5.5%),
+/// but 49.1/48.9 -> 61.8/61.8 W, i.e. 0.668/0.658 -> 0.794/0.793 J/token
+/// (+19%). The tensor-core MMA with 9..16 LIVE rows draws far more than the
+/// W4A4 MMQ / tile path it replaces. C=2 and C=8 did not move. With the base
+/// switch `AVAROK_NO_W4A16_TC` set it is off regardless.
+pub const NARROW_MAX_ROWS: u32 = 8;
+pub const WIDE_MAX_ROWS: u32 = TC16_MAX_M;
+
+pub fn wide_rows_enabled() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| {
+        tc_enabled() && std::env::var_os("AVAROK_W4A16_TC_WIDE").is_some_and(|v| !v.is_empty())
+    })
+}
+
+/// Row edge of the narrow-GEMV dispatch arms (see [`wide_rows_enabled`]).
+pub fn narrow_gemv_max_rows() -> u32 {
+    if wide_rows_enabled() {
+        WIDE_MAX_ROWS
+    } else {
+        NARROW_MAX_ROWS
+    }
+}
+
 /// Resolved handles, cached per backend. A `KernelHandle` is a function in
 /// ONE backend's loaded module, so the cache is keyed by the backend object's
 /// address; a process serves from one backend for its lifetime, so this holds
@@ -131,6 +169,40 @@ pub fn tc_kernel(gpu: &dyn GpuBackend, m: u32, n: u32, k: u32) -> Option<(Kernel
         TcKind::M16 => h.tc16,
     };
     Some((handle, n.div_ceil(kind.cols_per_cta())))
+}
+
+/// The fixed-M launchers' tensor-core route (`gemv_tc::wide_rows_enabled`):
+/// `Ok(true)` when it launched, `Ok(false)` to keep the CUDA-core kernel.
+#[allow(clippy::too_many_arguments)]
+pub fn tc_fixed_m(
+    gpu: &dyn GpuBackend,
+    input: DevicePtr,
+    weight: &QuantizedWeight,
+    output: DevicePtr,
+    m: u32,
+    n: u32,
+    k: u32,
+    stream: u64,
+) -> Result<bool> {
+    if !wide_rows_enabled() {
+        return Ok(false);
+    }
+    let Some((tc, grid_x)) = tc_kernel(gpu, m, n, k) else {
+        return Ok(false);
+    };
+    KernelLaunch::new(gpu, tc)
+        .grid([grid_x, 1, 1])
+        .block([TC_BLOCK, 1, 1])
+        .arg_ptr(input)
+        .arg_ptr(weight.weight)
+        .arg_ptr(weight.weight_scale)
+        .arg_f32(weight.weight_scale_2)
+        .arg_ptr(output)
+        .arg_u32(m)
+        .arg_u32(n)
+        .arg_u32(k)
+        .launch(stream)?;
+    Ok(true)
 }
 
 #[cfg(test)]
