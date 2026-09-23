@@ -53,6 +53,11 @@ pub(super) fn fp8_batchm_enabled() -> bool {
     *ON.get_or_init(|| std::env::var_os("AVAROK_NO_FP8_QKV_BATCH").is_none())
 }
 
+/// MAX_M of `w8a16_gemv_batch16_strided` (`ops::fp8_gemv_batch` enforces
+/// `1..=16` on the wrapper) — the last row the GEMV tiers serve; above it the
+/// 32-row M-tile twin takes the projection.
+const FP8_QKV_GEMV_MAX_ROWS: usize = 16;
+
 impl Qwen3AttentionLayer {
     /// Tier selection predicate. `enabled` is the kill switch, passed in rather
     /// than read here so tests can drive both arms without racing the
@@ -64,17 +69,18 @@ impl Qwen3AttentionLayer {
     /// same contract the n==2 / n==3 NVFP4 branches rely on. Never branch on
     /// the unpadded `seqs.len()` here.
     ///
-    /// The band is 2..=16, the MAX_M of `w8a16_gemv_batch16_strided`. It read
+    /// The band is [`Self::fp8_qkv_batch_band_admits`]: 2..=16 on the strided
+    /// GEMVs, and 17+ on the 32-row M-tile twin when it is linked. It read
     /// 2..=8 when this module landed, against a comment that the ladder was
     /// [2,4,8]; the ladder has had rungs 12 and 16 since the C=[1,2,4,8,16]
     /// concurrency work, so padded_n 12 and 16 were dropping back to the
     /// per-sequence scalar `w8a16_gemv` loop — 3n launches and n full weight
     /// passes per attention layer per step, which is the #927 cliff on the
-    /// projection side. 17+ still falls through: the kernel's MAX_M is 16 and
-    /// it CLAMPS rather than erroring, so the band's upper edge is the
-    /// template bound and not a tuning choice.
+    /// projection side. The same cliff reopened at exactly R=17 on the MoE
+    /// verify path (C=16 x k=2 = 32 rows: 128 launches and 32 weight passes
+    /// per layer, 13.4 ms of a 147 ms step — G18 lever A); the twin closes it.
     pub(super) fn ms_qkv_batchm_fp8_selected(&self, c: &MultiSeqCtx<'_>, enabled: bool) -> bool {
-        if !enabled || !(2..=16).contains(&c.n) {
+        if !enabled || !self.fp8_qkv_batch_band_admits(c.n) {
             return false;
         }
         if self.w8a16_gemv_batch4_strided_k.0 == 0 || self.w8a16_gemv_batch16_strided_k.0 == 0 {
@@ -94,6 +100,21 @@ impl Qwen3AttentionLayer {
         let strides_ok = c.per_seq_qkv.is_multiple_of(c.bf16) && c.h.is_multiple_of(8);
         let shapes_ok = q.n == c.q_proj_dim && k.n == kv_dim && v.n == kv_dim;
         dims_ok && strides_ok && shapes_ok
+    }
+
+    /// THE row band of the batched tier — the one reader the selection
+    /// predicate above and the arm chain in `ms_qkv_batchm_fp8_gemv` both
+    /// derive from, so they cannot disagree on where a tier ends.
+    ///
+    /// * `2..=FP8_QKV_GEMV_MAX_ROWS`: the strided GEMVs (`batch4` to 4,
+    ///   `batch16` / its levered siblings to 16 — the kernels' MAX_M, which
+    ///   CLAMP rather than error, so the edge is the template bound).
+    /// * `17..`: `w8a16_gemm_pipelined_m32_strided`, whose `grid.y` tiles M
+    ///   (one weight pass per 32 rows), so the band has no upper edge of its
+    ///   own — `VERIFY_ROW_CAP` bounds the rows the dispatch can hand in.
+    ///   Only when the twin is linked; a target without it keeps the loop.
+    pub(super) fn fp8_qkv_batch_band_admits(&self, n: usize) -> bool {
+        n >= 2 && (n <= FP8_QKV_GEMV_MAX_ROWS || self.w8a16_gemm_pipelined_m32_k.0 != 0)
     }
 
     /// q/k/v all present as native FP8 with 2D block scales (the only format
@@ -207,9 +228,10 @@ impl Qwen3AttentionLayer {
         } = *c;
         let kv_bytes = kv_dim as usize * bf16;
 
-        // batch4 for n<=4, batch16 for 5..=16 — one launch either way; the only
-        // difference is the kernel's compile-time register-array bound (and so
-        // the MAX_M the wrapper enforces).
+        // batch4 for n<=4, the M32 tile for 17+, batch16 for 5..=16 — one
+        // launch either way; between the two GEMVs the only difference is the
+        // kernel's compile-time register-array bound (and so the MAX_M the
+        // wrapper enforces).
         //
         // 5..=16 ALSO has a tensor-core tier (#927): `w8a16_gemm_m16_strided`
         // is the same one-weight-pass shape but replaces the batch16 GEMV's 16
@@ -227,6 +249,20 @@ impl Qwen3AttentionLayer {
             (
                 ops::w8a16_gemv_batch4_strided,
                 self.w8a16_gemv_batch4_strided_k,
+            )
+        } else if n > FP8_QKV_GEMV_MAX_ROWS {
+            // 17+ ROWS (G18 lever A): the 32-row M-tile tensor-core twin of
+            // the prefill's `w8a16_gemm_pipelined`, ONE strided launch per
+            // projection with `grid.y = ceil(n/32)` weight passes — where the
+            // per-row scalar loop used to issue n. The band predicate admitted
+            // n > 16 only with the handle linked. NOT bit-identical to the
+            // GEMV tiers below (MMA reassociation, the `m16` tiers' contract);
+            // identical to the numerics these weights already see in prefill
+            // and in the GDN verify at R > 16. Ahead of the `tc`/N-column
+            // arms because those are 5..=16 kernels (MAX_M 16).
+            (
+                ops::w8a16_gemm_pipelined_m32_strided,
+                self.w8a16_gemm_pipelined_m32_k,
             )
         } else if tc {
             crate::layers::qwen3_attention::attn_m16_tc_route::log_qkv_m16_tc_route(fwd.stats);

@@ -28,14 +28,19 @@ enum Tier {
     /// The tensor-core rung (`AVAROK_ATTN_M16_TC`, #927) — same 16-row group as
     /// `Batch16`, an m16n8k16 MMA instead of 16 scalar FFMA per weight byte.
     M16Tc,
+    /// The 32-row M-tile twin (G18 lever A): ONE launch over all n > 16 rows,
+    /// `grid.y` tiling M inside the kernel, so the group is the whole batch.
+    M32Tile,
 }
 
 impl Tier {
-    fn step(self) -> usize {
+    /// Rows per launch of this tier; the group loop issues `ceil(rows/step)`.
+    fn step(self, rows: usize) -> usize {
         match self {
             Tier::Scalar => 1,
             Tier::Batch4 => 4,
             Tier::Batch16 | Tier::Ncol2 | Tier::Ncol4 | Tier::M16Tc => 16,
+            Tier::M32Tile => rows,
         }
     }
 
@@ -47,6 +52,7 @@ impl Tier {
             Tier::Ncol2 => NCOL2_K,
             Tier::Ncol4 => NCOL4_K,
             Tier::M16Tc => M16TC_K,
+            Tier::M32Tile => M32_K,
         }
     }
 }
@@ -58,6 +64,8 @@ const NCOL2_K: u64 = 0xF0C2;
 const NCOL4_K: u64 = 0xF0C4;
 /// The tensor-core contiguous tier (`AVAROK_ATTN_M16_TC`).
 const M16TC_K: u64 = 0xF08E;
+/// The 32-row M-tile twin (`w8a16_gemm_pipelined_m32`).
+const M32_K: u64 = 0xF032;
 
 #[test]
 fn native_fp8_attention_o_projection_batches_four_real_rows() {
@@ -87,12 +95,46 @@ fn native_fp8_attention_o_projection_batches_up_to_sixteen_rows_in_one_pass() {
     }
 }
 
-/// Above the kernel's MAX_M the loop still walks — in 16-row groups now, not
-/// 4-row ones (n=20 is 2 launches, was 5).
+/// G18 lever A: above the GEMVs' MAX_M the 32-row M-tile twin takes the
+/// whole batch in ONE launch (n=20 and n=32 were 2 batch16 launches — two
+/// full weight passes — and n=64 is still one launch, the kernel tiling M).
 #[test]
-fn native_fp8_attention_o_projection_walks_wider_batches_in_sixteen_row_groups() {
+fn native_fp8_attention_o_projection_takes_the_m32_tile_above_sixteen_rows() {
+    for rows in [17, 20, 32, 64] {
+        check_dispatch(
+            rows,
+            128,
+            true,
+            WeightQuantFormat::Fp8BlockScaled,
+            Tier::M32Tile,
+        );
+    }
+}
+
+/// NEGATIVE CONTROL: a target without `w8a16_gemm_pipelined_m32` walks in
+/// 16-row groups exactly as before the twin — never off the batched tier.
+#[test]
+fn native_fp8_attention_o_projection_without_the_m32_tile_keeps_sixteen_row_groups() {
+    for rows in [20, 32] {
+        check_dispatch_with(
+            rows,
+            128,
+            true,
+            true,
+            WeightQuantFormat::Fp8BlockScaled,
+            Tier::Batch16,
+            None,
+            None,
+            false,
+        );
+    }
+}
+
+/// The twin's lower edge is the GEMVs' MAX_M: 16 rows stay on batch16.
+#[test]
+fn native_fp8_attention_o_projection_m32_tile_leaves_sixteen_rows_on_batch16() {
     check_dispatch(
-        20,
+        16,
         128,
         true,
         WeightQuantFormat::Fp8BlockScaled,
@@ -107,7 +149,9 @@ fn check_dispatch(
     format: WeightQuantFormat,
     tier: Tier,
 ) {
-    check_dispatch_with(rows, width, available, available, format, tier, None, None)
+    check_dispatch_with(
+        rows, width, available, available, format, tier, None, None, true,
+    )
 }
 
 /// `check_dispatch` with the N-column tier opted in — injected as the layer
@@ -123,6 +167,7 @@ fn check_dispatch_ncol(rows: usize, tier: Tier, ncol: NcolWidth) {
         tier,
         Some(ncol),
         None,
+        true,
     )
 }
 
@@ -140,6 +185,7 @@ fn check_dispatch_m16_tc(rows: usize, tier: Tier, handle: bool) {
         tier,
         None,
         Some(handle),
+        true,
     )
 }
 
@@ -148,7 +194,9 @@ fn check_dispatch_m16_tc(rows: usize, tier: Tier, handle: bool) {
 /// `m16_tc` is `None` when `AVAROK_ATTN_M16_TC` is unset and `Some(handle)` when
 /// it is, where `handle` is the presence of `w8a16_gemm_m16` on the shadow —
 /// the lever and the entry point are separate failure modes and both are
-/// exercised below.
+/// exercised below. `m32` is the presence of `w8a16_gemm_pipelined_m32` on
+/// the target — the 17+ row tier (G18 lever A), which the mock would
+/// otherwise resolve unconditionally.
 #[allow(clippy::too_many_arguments)]
 fn check_dispatch_with(
     rows: usize,
@@ -159,6 +207,7 @@ fn check_dispatch_with(
     tier: Tier,
     ncol: Option<NcolWidth>,
     m16_tc: Option<bool>,
+    m32: bool,
 ) {
     let gpu = MockGpuBackend::new();
     let mut config = ModelConfig::qwen3_next_80b_nvfp4();
@@ -211,6 +260,7 @@ fn check_dispatch_with(
     layer.attn_ncol = ncol;
     layer.m16_tc = m16_tc.is_some();
     layer.w8a16_gemm_m16_k = KernelHandle(if m16_tc == Some(true) { M16TC_K } else { 0 });
+    layer.w8a16_gemm_pipelined_m32_k = KernelHandle(if m32 { M32_K } else { 0 });
     let fp8 = Fp8Weight {
         weight: gpu.alloc(128 * 128).unwrap(),
         row_scale: gpu.alloc(4).unwrap(),
@@ -264,7 +314,7 @@ fn check_dispatch_with(
         .iter()
         .filter(|l| l.args.contains(&MockArg::Buffer(fp8.weight)))
         .collect();
-    let step = tier.step();
+    let step = tier.step(rows);
     assert_eq!(
         launches.len(),
         rows.div_ceil(step),
@@ -344,6 +394,7 @@ fn native_fp8_attention_o_projection_without_batch16_keeps_four_row_groups() {
             Tier::Batch4,
             None,
             None,
+            true,
         );
     }
 }
@@ -374,11 +425,23 @@ fn native_fp8_attention_o_projection_ncol_leaves_small_batches_alone() {
     }
 }
 
-/// Above MAX_M the group loop still walks in 16-row groups on the batch16
-/// GEMV — the tier declines rather than clamping rows away.
+/// Above MAX_M the N-column tier declines rather than clamping rows away:
+/// the M32 tile takes the batch, and without the twin the loop walks the
+/// batch16 GEMV in 16-row groups.
 #[test]
 fn native_fp8_attention_o_projection_ncol_declines_above_max_m() {
-    check_dispatch_ncol(20, Tier::Batch16, NcolWidth::Two);
+    check_dispatch_ncol(20, Tier::M32Tile, NcolWidth::Two);
+    check_dispatch_with(
+        20,
+        128,
+        true,
+        true,
+        WeightQuantFormat::Fp8BlockScaled,
+        Tier::Batch16,
+        Some(NcolWidth::Two),
+        None,
+        false,
+    );
 }
 
 /// ROUND 6's SPLIT, o_proj side. `AVAROK_ATTN_M16_TC` moves 5..=16 rows onto the
@@ -390,11 +453,24 @@ fn native_fp8_o_projection_attn_m16_tc_takes_the_sixteen_row_group() {
     }
 }
 
-/// Above MAX_M the loop still walks in 16-row groups — the lever changes which
-/// kernel serves a group, never how wide a group is.
+/// Above MAX_M the `m16` lever does not reach: `w8a16_gemm_m16` is a 16-row
+/// kernel, so the M32 tile takes the batch — and without the twin the lever's
+/// kernel walks 16-row groups, as it did before (the lever changes which
+/// kernel serves a group, never how wide a group is).
 #[test]
-fn native_fp8_o_projection_attn_m16_tc_walks_wider_batches_in_sixteen_row_groups() {
-    check_dispatch_m16_tc(20, Tier::M16Tc, true);
+fn native_fp8_o_projection_attn_m16_tc_yields_to_the_m32_tile_above_max_m() {
+    check_dispatch_m16_tc(20, Tier::M32Tile, true);
+    check_dispatch_with(
+        20,
+        128,
+        true,
+        true,
+        WeightQuantFormat::Fp8BlockScaled,
+        Tier::M16Tc,
+        None,
+        Some(true),
+        false,
+    );
 }
 
 /// 1..=4 rows keep `w8a16_gemv_batch4`: the tier's lower edge is the `wide`

@@ -234,6 +234,13 @@ pub struct Qwen3AttentionLayer {
     pub(super) attn_ncol: Option<super::attn_ncol_gemv::NcolWidth>,
     pub(super) w8a16_gemm_k: KernelHandle,
     pub(super) w8a16_gemm_pipelined_k: KernelHandle,
+    /// 32-row M-tile twin of `w8a16_gemm_pipelined` (G18 lever A): ONE strided
+    /// launch per Q/K/V projection and ONE contiguous o_proj launch at 17+
+    /// concurrent verify rows, where the batched GEMV tiers end and the
+    /// per-row scalar loop began. Its own module (`w8a16_gemm_pipelined_m32`),
+    /// resolved through `try_target_kernel`: zero on a target without it keeps
+    /// the loop. Rule + numerics: `ops::w8a16_gemm_pipelined_m32`.
+    pub(super) w8a16_gemm_pipelined_m32_k: KernelHandle,
     pub(super) w4a16_gemv_dual_k: KernelHandle,
     pub(super) rope_k: KernelHandle,
     /// Strided sibling: rotates all n sequences in ONE launch. 0 when absent.

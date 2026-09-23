@@ -28,6 +28,9 @@ const NCOL2_K: u64 = 0xF0C2;
 const NCOL4_K: u64 = 0xF0C4;
 /// The tensor-core strided tier (`AVAROK_ATTN_M16_TC`).
 const M16TC_STRIDED_K: u64 = 0xF08E;
+/// The 32-row M-tile twin (`w8a16_gemm_pipelined_m32`, G18 lever A) — the
+/// 17+ row tier; its cases live in `qkv_fp8_batch_m32_tests.rs`.
+const M32_STRIDED_K: u64 = 0xF032;
 const WIDTH: usize = 128;
 
 /// What the tier under test is expected to emit for one projection.
@@ -56,6 +59,10 @@ struct Case {
     m16_tc: bool,
     /// Whether the shadow carries `w8a16_gemm_m16_strided`.
     m16_tc_handles: bool,
+    /// Whether the target carries `w8a16_gemm_pipelined_m32` — the 17+ row
+    /// tier. Injected because the mock resolves every module, and the band's
+    /// upper edge is exactly this handle.
+    m32_handles: bool,
 }
 
 impl Case {
@@ -70,6 +77,7 @@ impl Case {
             ncol_handles: true,
             m16_tc: false,
             m16_tc_handles: true,
+            m32_handles: true,
         }
     }
 
@@ -108,13 +116,17 @@ fn native_fp8_qkv_batches_five_to_sixteen_rows_on_batch16() {
     }
 }
 
-/// 17+ is above the kernel's MAX_M, which CLAMPS rather than erroring — rows
-/// 16.. would simply never be written. The band's upper edge is that template
-/// bound, so the padded_n rungs above 16 must stay on the scalar loop.
+/// NEGATIVE CONTROL for the 17+ tier: on a target WITHOUT
+/// `w8a16_gemm_pipelined_m32`, 17+ is above the GEMVs' MAX_M, which CLAMPS
+/// rather than erroring — rows 16.. would simply never be written — so the
+/// padded_n rungs above 16 must stay on the scalar loop there. The positive
+/// cases are `m32::native_fp8_qkv_takes_the_m32_tile_above_sixteen_rows`.
 #[test]
-fn native_fp8_qkv_declines_rows_above_the_kernel_max_m() {
-    for rows in [17, 24] {
-        check_dispatch(&Case::new(rows), Expect::Scalar);
+fn native_fp8_qkv_declines_rows_above_the_kernel_max_m_without_the_m32_tile() {
+    for rows in [17, 24, 32] {
+        let mut case = Case::new(rows);
+        case.m32_handles = false;
+        check_dispatch(&case, Expect::Scalar);
     }
 }
 
@@ -284,6 +296,8 @@ fn run_phase(case: &Case, expect: Option<Expect>) -> usize {
     } else {
         0
     });
+    layer.w8a16_gemm_pipelined_m32_k =
+        KernelHandle(if case.m32_handles { M32_STRIDED_K } else { 0 });
     layer.deinterleave_qg_k = KernelHandle(0xF0D1);
 
     let q_dim = (config.num_attention_heads * config.head_dim) as u32;
@@ -429,63 +443,12 @@ fn u32_arg(v: u32) -> MockArg {
     MockArg::Bytes(v.to_ne_bytes().to_vec())
 }
 
-/// ROUND 6's SPLIT. `AVAROK_ATTN_M16_TC` turns THIS tier on — the one that
-/// measured −21.7% on the H100 — and it takes exactly the band
-/// `w8a16_gemv_batch16_strided` owns: one strided launch per projection, same
-/// argument layout, a different kernel.
-#[test]
-fn native_fp8_qkv_attn_m16_tc_takes_the_batch16_band() {
-    for rows in [5, 8, 12, 16] {
-        check_dispatch(&Case::m16_tc(rows), Expect::Batched(M16TC_STRIDED_K));
-    }
-}
+/// The `AVAROK_ATTN_M16_TC` cases — a child module (500-line cap), sharing
+/// this harness; moved by exact copy.
+#[path = "qkv_fp8_batch_m16_tc_tests.rs"]
+mod m16_tc;
 
-/// The tensor-core tier sits AHEAD of the bit-exact N-column tier: an operator
-/// who sets `AVAROK_ATTN_M16_TC` is asking for the MMA route explicitly.
-#[test]
-fn native_fp8_qkv_attn_m16_tc_outranks_the_ncol_tier() {
-    let mut case = Case::m16_tc(16);
-    case.ncol = Some(NcolWidth::Four);
-    check_dispatch(&case, Expect::Batched(M16TC_STRIDED_K));
-}
-
-/// Below the band `w8a16_gemv_batch4_strided` still owns the rows — the tier's
-/// MAX_M is 16 and its lower edge is where the ALU wall starts, neither of
-/// which the lever moves.
-#[test]
-fn native_fp8_qkv_attn_m16_tc_leaves_small_batches_on_batch4() {
-    for rows in [2, 3, 4] {
-        check_dispatch(&Case::m16_tc(rows), Expect::Batched(BATCH4_K));
-    }
-}
-
-/// A shadow without `w8a16_gemm_m16_strided` keeps the batch16 GEMV rather than
-/// launching a zero handle.
-#[test]
-fn native_fp8_qkv_attn_m16_tc_declines_without_its_entry_point() {
-    let mut case = Case::m16_tc(16);
-    case.m16_tc_handles = false;
-    check_dispatch(&case, Expect::Batched(BATCH16_K));
-}
-
-/// ...and with the lever unset the tier is invisible, which is the default.
-#[test]
-fn native_fp8_qkv_without_the_attn_lever_stays_on_batch16() {
-    for rows in [5, 16] {
-        check_dispatch(&Case::new(rows), Expect::Batched(BATCH16_K));
-    }
-}
-
-/// The tier is a pure kernel swap, so the phase still costs the same number of
-/// launches at 16 rows as at 2 — the per-row-loop pin, on this route too.
-#[test]
-fn native_fp8_qkv_attn_m16_tc_phase_launch_count_is_row_independent() {
-    let baseline = qkv_phase_launches(&Case::new(2));
-    for rows in [4, 8, 12, 16] {
-        assert_eq!(
-            qkv_phase_launches(&Case::m16_tc(rows)),
-            baseline,
-            "tensor-core route, rows={rows}"
-        );
-    }
-}
+/// The 17+ row tier's cases — a child module so this file stays under the
+/// 500-line cap while sharing `Case` / `check_dispatch` / the kernel ids.
+#[path = "qkv_fp8_batch_m32_tests.rs"]
+mod m32;

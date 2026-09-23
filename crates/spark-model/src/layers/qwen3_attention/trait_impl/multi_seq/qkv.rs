@@ -4,7 +4,7 @@
 //! - n=3 + NVFP4 → batch3 GEMV path
 //! - n=2 + NVFP4 → batch2 GEMV path
 //! - n>3 + NVFP4 → wide-verify batched GEMM
-//! - n in 2..=8 + native FP8 → strided batched GEMV (`qkv_fp8_batch`)
+//! - n>=2 + native FP8 → strided batched GEMV, M32 tile past 16 (`qkv_fp8_batch`)
 //! - n in 2..=8 + dense BF16 → `ms_qkv_batchm_bf16`
 //! - else        → sequential per-token GEMV (FP8/NVFP4/BF16 fallback)
 //!

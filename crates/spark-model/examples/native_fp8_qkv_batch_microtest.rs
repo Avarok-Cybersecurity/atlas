@@ -3,10 +3,15 @@
 //! scalar `w8a16_gemv` loop versus ONE strided batched launch per projection
 //! (`w8a16_gemv_batch{4,16}_strided`, issue #927 / O13).
 //!
-//! No new kernel math is claimed, so the bar is exact: identical BF16 output
-//! bytes, and every byte the batched path must NOT touch still holding its
-//! sentinel (the rows past M, the unused K/V region of a Q-only run, and the
-//! guard bands either side of every buffer).
+//! No new kernel math is claimed for the GEMV legs, so their bar is exact:
+//! identical BF16 output bytes, and every byte the batched path must NOT
+//! touch still holding its sentinel (the rows past M, the unused K/V region
+//! of a Q-only run, and the guard bands either side of every buffer).
+//!
+//! The 17..=32 leg (G18 lever A, `w8a16_gemm_pipelined_m32_strided`) IS new
+//! kernel math on this path — a tensor-core M tile — so its live extents are
+//! graded on the tensor-core tiers' shared tolerance (`common/fp8_qkv_m32_leg.rs`)
+//! while its untouched bytes are still held byte-exact.
 //!
 //! Shapes come from `kernels/gb10/qwen3.8-27b/MODEL.toml`: hidden_dim 5120,
 //! head_dim 256, q_heads 24, kv_heads 4, attn_output_gate = true. So
@@ -20,6 +25,9 @@
 use anyhow::{Result, ensure};
 use half::bf16;
 use spark_model::layers::ops;
+
+#[path = "common/fp8_qkv_m32_leg.rs"]
+mod m32_leg;
 use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 
@@ -27,7 +35,7 @@ const K: usize = 5120; // hidden_dim
 const Q_PROJ_DIM: usize = 12288; // 2 * q_heads * head_dim (gated)
 const KV_DIM: usize = 1024; // kv_heads * head_dim
 const PER_SEQ_QKV: usize = Q_PROJ_DIM + 2 * KV_DIM; // 14336 BF16 elements
-const MAX_M: usize = 8;
+const MAX_M: usize = 32;
 const GUARD: usize = 64; // bytes of sentinel either side of every buffer
 const SENTINEL: u8 = 0x5a;
 
@@ -55,14 +63,18 @@ fn values(bytes: &[u8]) -> Vec<f64> {
         .collect()
 }
 
-/// The real comparison oracle, exercised against deliberately-corrupted input
-/// below so a green run cannot be a vacuous one.
-fn check(observed: &[u8], baseline: &[u8], sentinel: &[u8], live: &[(usize, usize)]) -> Result<()> {
+/// Every byte outside the live extents must still be sentinel, on BOTH runs
+/// — the strided-write contract, shared by the exact legs and the M32 leg.
+fn check_untouched(
+    observed: &[u8],
+    baseline: &[u8],
+    sentinel: &[u8],
+    live: &[(usize, usize)],
+) -> Result<()> {
     ensure!(
         observed.len() == sentinel.len() && baseline.len() == sentinel.len(),
         "output extent mismatch"
     );
-    // Every byte outside the live extents must still be sentinel, on BOTH runs.
     let mut mask = vec![false; sentinel.len()];
     for &(start, len) in live {
         mask[GUARD + start..GUARD + start + len].fill(true);
@@ -79,6 +91,13 @@ fn check(observed: &[u8], baseline: &[u8], sentinel: &[u8], live: &[(usize, usiz
             );
         }
     }
+    Ok(())
+}
+
+/// The real comparison oracle for the GEMV legs, exercised against
+/// deliberately-corrupted input below so a green run cannot be a vacuous one.
+fn check(observed: &[u8], baseline: &[u8], sentinel: &[u8], live: &[(usize, usize)]) -> Result<()> {
+    check_untouched(observed, baseline, sentinel, live)?;
     for &(start, len) in live {
         let a = &observed[GUARD + start..GUARD + start + len];
         let b = &baseline[GUARD + start..GUARD + start + len];
@@ -114,10 +133,13 @@ type StridedBatchGemv = fn(
     u64,
 ) -> Result<()>;
 
+/// The tier's arm chain, as `ms_qkv_batchm_fp8_gemv` walks it: batch4 to 4,
+/// batch16 to 16, the 32-row M-tile twin past 16.
 fn run_batched(
     gpu: &dyn GpuBackend,
     batch4: KernelHandle,
     batch16: KernelHandle,
+    m32: KernelHandle,
     input: DevicePtr,
     out: DevicePtr,
     p: &Proj,
@@ -125,8 +147,10 @@ fn run_batched(
 ) -> Result<()> {
     let (launch, kernel): (StridedBatchGemv, KernelHandle) = if m <= 4 {
         (ops::w8a16_gemv_batch4_strided, batch4)
-    } else {
+    } else if m <= 16 {
         (ops::w8a16_gemv_batch16_strided, batch16)
+    } else {
+        (ops::w8a16_gemm_pipelined_m32_strided, m32)
     };
     launch(
         gpu,
@@ -173,6 +197,7 @@ fn main() -> Result<()> {
     let scalar = gpu.kernel("w8a16_gemv", "w8a16_gemv")?;
     let batch4 = gpu.kernel("w8a16_gemv_batch4", "w8a16_gemv_batch4_strided")?;
     let batch16 = gpu.kernel("w8a16_gemv_batch4", "w8a16_gemv_batch16_strided")?;
+    let m32 = gpu.kernel("w8a16_gemm_pipelined_m32", "w8a16_gemm_pipelined_m32")?;
 
     let mut state = 0x0132_8a16_2026_u64;
     let mut random = move || {
@@ -243,9 +268,10 @@ fn main() -> Result<()> {
     let scalar_out = scalar_base.offset(GUARD);
     let batch_out = batch_base.offset(GUARD);
     let mut first_oracle = true;
+    let mut first_m32_oracle = true;
     let mut failures = 0usize;
 
-    for m in [2_usize, 3, 4, 5, 8] {
+    for m in [2_usize, 3, 4, 5, 8, 16, 17, 24, 32] {
         // ── Pass 1: each projection ALONE. Everything else in the row — the
         // other two projections' slots — is a gap that must stay sentinel, so
         // this is the direct test of the c_row_stride arithmetic.
@@ -253,7 +279,7 @@ fn main() -> Result<()> {
             gpu.copy_h2d(&sentinel, scalar_base)?;
             gpu.copy_h2d(&sentinel, batch_base)?;
             run_scalar(&gpu, scalar, input, scalar_out, p, m)?;
-            run_batched(&gpu, batch4, batch16, input, batch_out, p, m)?;
+            run_batched(&gpu, batch4, batch16, m32, input, batch_out, p, m)?;
             gpu.synchronize(0)?;
             let mut baseline = vec![0_u8; sentinel.len()];
             let mut observed = vec![0_u8; sentinel.len()];
@@ -263,6 +289,11 @@ fn main() -> Result<()> {
                 .map(|r| ((r * PER_SEQ_QKV + p.offset) * 2, p.n * 2))
                 .collect();
 
+            if m > 16 && first_m32_oracle {
+                // The first 17+ case is q_proj, so the K slot is a gap here.
+                m32_leg::known_bad_controls(&baseline, &sentinel, &live, (Q_PROJ_DIM + 1) * 2, K)?;
+                first_m32_oracle = false;
+            }
             if first_oracle {
                 for mutation in ["output-bit", "gap", "guard", "nonfinite"] {
                     let mut bad = baseline.clone();
@@ -280,13 +311,13 @@ fn main() -> Result<()> {
             }
 
             let (mismatches, max_abs) = compare(&observed, &baseline, &live);
-            let kernel = if m <= 4 { "batch4" } else { "batch16" };
+            let kernel = kernel_name(m);
             println!(
                 "{} M={m} N={} K={K} stride={PER_SEQ_QKV} kernel={kernel} \
                  unequal_bf16={mismatches} max_abs={max_abs:.9}",
                 p.name, p.n
             );
-            if let Err(e) = check(&observed, &baseline, &sentinel, &live) {
+            if let Err(e) = grade(m, &observed, &baseline, &sentinel, &live) {
                 println!("FAIL {} M={m}: {e}", p.name);
                 failures += 1;
             }
@@ -298,7 +329,7 @@ fn main() -> Result<()> {
         gpu.copy_h2d(&sentinel, batch_base)?;
         for p in &projections {
             run_scalar(&gpu, scalar, input, scalar_out, p, m)?;
-            run_batched(&gpu, batch4, batch16, input, batch_out, p, m)?;
+            run_batched(&gpu, batch4, batch16, m32, input, batch_out, p, m)?;
         }
         gpu.synchronize(0)?;
         let mut baseline = vec![0_u8; sentinel.len()];
@@ -312,10 +343,11 @@ fn main() -> Result<()> {
             .collect();
         let (mismatches, max_abs) = compare(&observed, &baseline, &live);
         println!(
-            "full-qkv M={m} row_elems={PER_SEQ_QKV} K={K} \
-             unequal_bf16={mismatches} max_abs={max_abs:.9}"
+            "full-qkv M={m} row_elems={PER_SEQ_QKV} K={K} kernel={} \
+             unequal_bf16={mismatches} max_abs={max_abs:.9}",
+            kernel_name(m)
         );
-        if let Err(e) = check(&observed, &baseline, &sentinel, &live) {
+        if let Err(e) = grade(m, &observed, &baseline, &sentinel, &live) {
             println!("FAIL full-qkv M={m}: {e}");
             failures += 1;
         }
@@ -323,8 +355,41 @@ fn main() -> Result<()> {
 
     ensure!(failures == 0, "{failures} case(s) failed");
     println!(
-        "ALL PASS: Qwen3.8-27B q/k/v shapes, strided batch4 M2/M3/M4 and batch16 M5/M8, \
-         exact scalar equivalence, gaps and guards intact"
+        "ALL PASS: Qwen3.8-27B q/k/v shapes — strided batch4 M2/M3/M4 and batch16 \
+         M5/M8/M16 byte-exact vs scalar; M32 tile M17/M24/M32 within the tensor-core \
+         budget vs scalar; gaps and guards intact on every leg"
+    );
+    Ok(())
+}
+
+/// Which arm of the tier a row count lands on (`run_batched`'s chain).
+fn kernel_name(m: usize) -> &'static str {
+    if m <= 4 {
+        "batch4"
+    } else if m <= 16 {
+        "batch16"
+    } else {
+        "m32_tile"
+    }
+}
+
+/// The GEMV legs are graded byte-exact; the M32 leg on the tensor-core
+/// budget, with its worst-case numbers printed for the receipt.
+fn grade(
+    m: usize,
+    observed: &[u8],
+    baseline: &[u8],
+    sentinel: &[u8],
+    live: &[(usize, usize)],
+) -> Result<()> {
+    if m <= 16 {
+        return check(observed, baseline, sentinel, live);
+    }
+    let v = m32_leg::check_m32(observed, baseline, sentinel, live, K)?;
+    println!(
+        "  m32_tile M={m}: max_ulp={} over_ulp_only(floor-admitted)={} rel_rms={:.3e} \
+         max_abs={:.3e}",
+        v.max_ulp, v.over_ulp_only, v.rel_rms, v.max_abs
     );
     Ok(())
 }

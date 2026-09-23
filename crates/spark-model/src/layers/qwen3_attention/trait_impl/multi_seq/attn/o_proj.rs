@@ -218,7 +218,8 @@ impl Qwen3AttentionLayer {
             // bit-identical per row to both `w8a16_gemv_batch4` and the scalar
             // `w8a16_gemv`), which makes that ONE pass. Rows stay contiguous
             // either way, so the group loop below is unchanged apart from its
-            // stride — n > 16 still walks in 16-row groups.
+            // stride — n > 16 walks in 16-row groups only on a target without
+            // the M32 tile twin (the arm below).
             let block_scaled = o_fp8.scale_format == WeightQuantFormat::Fp8BlockScaled
                 && h % 128 == 0
                 && q_dim % 128 == 0;
@@ -244,6 +245,21 @@ impl Qwen3AttentionLayer {
                     ops::w8a16_gemv_batch4 as BatchGemv,
                     self.w8a16_gemv_batch4_k,
                     1,
+                )
+            } else if n > 16 && self.w8a16_gemm_pipelined_m32_k.0 != 0 {
+                // 17+ ROWS (G18 lever A, o_proj side): ONE launch of the
+                // 32-row M-tile twin over all n rows (`grid.y = ceil(n/32)`
+                // weight passes) instead of ceil(n/16) batch16 groups — two
+                // passes and two launches at the MoE's R=32. `step = n` makes
+                // the group loop below a single iteration. Tensor-core
+                // numerics (the `m16` tiers' contract), the same these weights
+                // see in prefill; block_scaled already holds here, and
+                // `q_dim % 128 == 0` is the kernel's K requirement. Ahead of
+                // `tc` because `w8a16_gemm_m16` is a 16-row kernel.
+                (
+                    ops::w8a16_gemm_pipelined_m32 as BatchGemv,
+                    self.w8a16_gemm_pipelined_m32_k,
+                    n,
                 )
             } else if tc {
                 crate::layers::qwen3_attention::attn_m16_tc_route::log_o_proj_m16_tc_route(
