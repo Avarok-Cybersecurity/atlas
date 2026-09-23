@@ -199,11 +199,8 @@ fn k3_tp4_rank_local_composed_graph_reset_and_history() -> Result<()> {
         q_b: matrix(mq, ml.q_lora_rank, 10),
         kv_a: matrix(ml.kv_lora_rank + ml.qk_rope_head_dim, h, 11),
         kv_a_ln: vec![1.; ml.kv_lora_rank],
-        kv_b: matrix(
-            ml.heads * (ml.qk_nope_head_dim + ml.v_head_dim),
-            ml.kv_lora_rank,
-            12,
-        ),
+        k_b: matrix(ml.heads * ml.kv_lora_rank, ml.qk_nope_head_dim, 12),
+        v_b: matrix(ml.heads * ml.v_head_dim, ml.kv_lora_rank, 19),
         g_proj: matrix(mv, h, 13),
         o_proj: matrix(h, mv, 14),
     };
@@ -289,6 +286,10 @@ fn k3_tp4_rank_local_composed_graph_reset_and_history() -> Result<()> {
         rope_theta: c.rope_theta as f32,
         reduce_hidden: None,
         dense_mlp: Some(&dense_core),
+        gpu_gemv: None,
+        shared_intermediate: 0,
+        tp_rank: 0,
+        tp_world: 1,
     };
     let build_seconds = build.elapsed().as_secs_f64();
     let run = |inputs: &[usize]| -> Result<Vec<Vec<f32>>> {

@@ -1,0 +1,1 @@
+{"error":{"message":"Tokenization error: Kimi K3 XTML chat/reasoning/tool parsing is not implemented; use /v1/completions with independently prepared token IDs for bring-up. Generic ChatML and K2 tool parsers are not compatible.","type":"invalid_request_error","param":null,"code":null,"hint":null}}

@@ -99,7 +99,8 @@ fn layer_inventory(
             let qk = mla.heads * mla.qk_head_dim();
             let dv = mla.heads * mla.v_head_dim;
             let kv_in = mla.kv_lora_rank + mla.qk_rope_head_dim;
-            let kv_b = mla.heads * (mla.qk_nope_head_dim + mla.v_head_dim);
+            let k_b_n = mla.heads * mla.kv_lora_rank * mla.qk_nope_head_dim;
+            let v_b_n = mla.heads * mla.v_head_dim * mla.kv_lora_rank;
             k.extend([
                 (format!("{lp}.self_attn.g_proj.weight"), dv * h),
                 (format!("{lp}.self_attn.o_proj.weight"), h * dv),
@@ -111,10 +112,8 @@ fn layer_inventory(
                     format!("{lp}.self_attn.kv_a_proj_with_mqa.weight"),
                     kv_in * h,
                 ),
-                (
-                    format!("{lp}.self_attn.kv_b_proj.weight"),
-                    kv_b * mla.kv_lora_rank,
-                ),
+                (format!("{lp}.self_attn.k_b_proj.weight"), k_b_n),
+                (format!("{lp}.self_attn.v_b_proj.weight"), v_b_n),
                 (
                     format!("{lp}.self_attn.q_a_layernorm.weight"),
                     mla.q_lora_rank,
@@ -338,7 +337,8 @@ fn assemble_mla(prefix: &str, lp: &str, got: &mut HashMap<String, Vec<f32>>) -> 
             prefix,
             &format!("{lp}.self_attn.kv_a_layernorm.weight"),
         )?,
-        kv_b: pull(got, prefix, &format!("{lp}.self_attn.kv_b_proj.weight"))?,
+        k_b: pull(got, prefix, &format!("{lp}.self_attn.k_b_proj.weight"))?,
+        v_b: pull(got, prefix, &format!("{lp}.self_attn.v_b_proj.weight"))?,
         g_proj: pull(got, prefix, &format!("{lp}.self_attn.g_proj.weight"))?,
         o_proj: pull(got, prefix, &format!("{lp}.self_attn.o_proj.weight"))?,
     }))

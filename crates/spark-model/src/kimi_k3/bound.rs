@@ -146,16 +146,18 @@ impl TransformerLayer for K3BoundLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
-        self.decode_host(
-            hidden,
-            residual,
-            state,
-            seq_len,
-            ctx,
-            stream,
-            avarok_core::kimi_k3::cuda_kda_enabled(),
-            avarok_core::kimi_k3::cuda_mla_enabled(),
-        )
+        super::forward_panic::retain_weights_on_panic(std::panic::AssertUnwindSafe(|| {
+            self.decode_host(
+                hidden,
+                residual,
+                state,
+                seq_len,
+                ctx,
+                stream,
+                avarok_core::kimi_k3::cuda_kda_enabled(),
+                avarok_core::kimi_k3::cuda_mla_enabled(),
+            )
+        }))
     }
 
     fn alloc_state(&self, _gpu: &dyn GpuBackend) -> Result<Box<dyn LayerState>> {

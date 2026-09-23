@@ -1,0 +1,16 @@
+HTTP/1.1 200 OK
+content-type: application/json
+x-request-id: req_40ffb4f9-fd71-45c3-9e7a-397111094011
+openai-processing-ms: 616906
+x-ratelimit-limit-requests: 1000000
+x-ratelimit-remaining-requests: 999999
+x-ratelimit-reset-requests: 0s
+x-ratelimit-limit-tokens: 1000000000
+x-ratelimit-remaining-tokens: 999999999
+x-ratelimit-reset-tokens: 0s
+openai-organization: avarok-local
+openai-version: 2026-01-01
+access-control-allow-origin: *
+transfer-encoding: chunked
+date: Tue, 22 Sep 2026 02:08:36 GMT
+

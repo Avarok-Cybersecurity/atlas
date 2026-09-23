@@ -18,9 +18,13 @@
 //! tensors like `rope_freqs.weight` that carry no learnable weight).
 
 mod deepseek41;
+mod kimi_k3;
 
 pub use deepseek41::deepseek41_deferred_name;
 use deepseek41::translate_deepseek41;
+pub use kimi_k3::kimi_k3_deferred_name;
+pub use kimi_k3::kimi_k3_expert_name;
+use kimi_k3::translate_kimi_k3;
 
 /// Result of translating one GGUF tensor name.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,6 +90,7 @@ fn arch_override(gguf_name: &str, arch: &str) -> Option<GgufName> {
         // separate indexer, mHC triples, engram), so this arch is fully handled
         // here and never falls through to `translate_default`.
         "deepseek41" => translate_deepseek41(gguf_name),
+        "kimi-k3" | "kimi_k3" | "kimik3" => translate_kimi_k3(gguf_name),
         _ => None,
     }
 }

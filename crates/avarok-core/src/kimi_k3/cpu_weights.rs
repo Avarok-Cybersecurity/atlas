@@ -77,7 +77,8 @@ pub struct MlaWeights {
     pub q_b: Vec<f32>,
     pub kv_a: Vec<f32>,
     pub kv_a_ln: Vec<f32>,
-    pub kv_b: Vec<f32>,
+    pub k_b: Vec<f32>,
+    pub v_b: Vec<f32>,
     pub g_proj: Vec<f32>,
     pub o_proj: Vec<f32>,
 }
@@ -416,14 +417,22 @@ fn synth_mla(mla: &MlaConfig, hidden: usize, seed: u32) -> MlaWeights {
     let qk = mla.heads * mla.qk_head_dim();
     let dv = mla.heads * mla.v_head_dim;
     let kv_in = mla.kv_lora_rank + mla.qk_rope_head_dim;
-    let kv_b_out = mla.heads * (mla.qk_nope_head_dim + mla.v_head_dim);
     MlaWeights {
         q_a: ident(mla.q_lora_rank, hidden),
         q_a_ln: ones(mla.q_lora_rank),
         q_b: fill(qk * mla.q_lora_rank, seed, 0.05),
         kv_a: fill(kv_in * hidden, seed + 1, 0.05),
         kv_a_ln: ones(mla.kv_lora_rank),
-        kv_b: fill(kv_b_out * mla.kv_lora_rank, seed + 2, 0.05),
+        k_b: fill(
+            mla.heads * mla.kv_lora_rank * mla.qk_nope_head_dim,
+            seed + 2,
+            0.05,
+        ),
+        v_b: fill(
+            mla.heads * mla.v_head_dim * mla.kv_lora_rank,
+            seed + 3,
+            0.05,
+        ),
         g_proj: fill(dv * hidden, seed + 3, 0.05),
         o_proj: ident(hidden, dv),
     }

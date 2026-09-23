@@ -50,7 +50,24 @@ pub fn load_sharded(
     config: &ModelConfig,
     gpu: &dyn GpuBackend,
 ) -> Result<(DenseWeight, WeightMeta)> {
-    let t = store.get(name)?;
+    let t = match store.get(name) {
+        Ok(t) => t,
+        Err(e) => {
+            // GGUF AttnRes/MLPRes: one score vector mapped to *_res_proj only.
+            if let Some(proj) = name.strip_suffix("_res_norm.weight") {
+                let alt = format!("{proj}_res_proj.weight");
+                store.get(&alt).map_err(|_| e)?
+            } else if let Some(stem) = name.strip_suffix("output_attn_res_norm.weight") {
+                let alt = format!("{stem}output_attn_res_proj.weight");
+                store.get(&alt).map_err(|_| e)?
+            } else {
+                return Err(e);
+            }
+        }
+    };
+    if let Some(meta) = accept_split_kv_b(name, t, config) {
+        return Ok((DenseWeight { weight: t.ptr }, meta));
+    }
     let (kind, full_out, full_in) = tensor_plan(name, mixer, mlp, config);
     if is_prepartitioned(store, config)? {
         if kind != TpShardKind::Replicated {
@@ -73,12 +90,21 @@ pub fn load_sharded(
                 TpShardKind::Replicated => unreachable!(),
             };
             ensure!(
-                t.shape.first() == Some(&local_out) && t.num_elements() == local_out * local_in,
+                t.num_elements() == local_out * local_in
+                    && (t.shape.first() == Some(&local_out)
+                        || (local_in == 1 && t.shape.as_slice() == [local_out].as_slice())),
                 "{name}: prepartitioned shape {:?} does not match [{local_out}, {local_in}]",
                 t.shape
             );
             ensure!(
-                matches!(t.dtype, WeightDtype::BF16 | WeightDtype::FP32),
+                matches!(
+                    t.dtype,
+                    WeightDtype::BF16
+                        | WeightDtype::FP32
+                        | WeightDtype::Q8_0
+                        | WeightDtype::Iq2Xs
+                        | WeightDtype::Iq3Xxs
+                ),
                 "{name}: unsupported dense prepartitioned dtype {:?}",
                 t.dtype
             );
@@ -94,6 +120,25 @@ pub fn load_sharded(
     }
 
     if config.tp_world_size.max(1) <= 1 || kind == TpShardKind::Replicated {
+        return Ok((
+            DenseWeight { weight: t.ptr },
+            WeightMeta {
+                name: name.to_string(),
+                dtype: t.dtype,
+                numel: t.num_elements(),
+            },
+        ));
+    }
+    // Keep-packed GGUF (Q8/IQ*): cannot BF16-shard in place. Under EP-overlapped
+    // TP the loader replicates these; expert residency is EP-local.
+    if matches!(
+        t.dtype,
+        WeightDtype::Q8_0
+            | WeightDtype::Q2K
+            | WeightDtype::Q3K
+            | WeightDtype::Iq2Xs
+            | WeightDtype::Iq3Xxs
+    ) {
         return Ok((
             DenseWeight { weight: t.ptr },
             WeightMeta {
@@ -148,8 +193,48 @@ fn as_bf16(
             gpu.copy_h2d(&bf, dst)?;
             Ok((dst, true))
         }
+        WeightDtype::Q8_0
+        | WeightDtype::Q2K
+        | WeightDtype::Q3K
+        | WeightDtype::Iq2Xs
+        | WeightDtype::Iq3Xxs => {
+            // GGUF keep-packed: leave resident. TP column/row splits for these
+            // dtypes are applied at GGUF upload when ep/tp overlap; bind uses
+            // the pointer as-is (EP owns expert residency).
+            Ok((ptr, false))
+        }
         other => bail!("K3 TP shard: unsupported dtype {other:?}"),
     }
+}
+
+fn accept_split_kv_b(
+    name: &str,
+    t: &spark_runtime::weights::WeightTensor,
+    config: &ModelConfig,
+) -> Option<WeightMeta> {
+    let heads = config.num_attention_heads;
+    let lora = config.kv_lora_rank;
+    let is_k = name.ends_with(".self_attn.k_b_proj.weight");
+    let is_v = name.ends_with(".self_attn.v_b_proj.weight");
+    if !is_k && !is_v {
+        return None;
+    }
+    if t.shape.len() != 3 || t.shape.first() != Some(&heads) {
+        return None;
+    }
+    let ok = if is_k {
+        t.shape[1] == lora && t.shape[2] == config.qk_nope_head_dim
+    } else {
+        t.shape[1] == config.v_head_dim && t.shape[2] == lora
+    };
+    if !ok {
+        return None;
+    }
+    Some(WeightMeta {
+        name: name.to_string(),
+        dtype: t.dtype,
+        numel: t.num_elements(),
+    })
 }
 
 #[cfg(test)]

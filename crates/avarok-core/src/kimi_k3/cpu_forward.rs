@@ -6,16 +6,15 @@ use anyhow::Result;
 
 use super::attnres::rms_norm;
 use super::cache::{HybridCache, LayerCache, MlaKv};
-use super::cpu_weights::{
-    Ablation, DenseMlp, K3CpuLayer, K3CpuModel, KdaWeights, MixerW, MlaWeights, MlpW, MoeWeights,
-};
-use super::kda::{KdaConfig, KdaState, bounded_gate, kda_decode_token};
-use super::latent_moe::{LatentMoeConfig, mix_routed_experts, sigmoid_topk};
+use super::cpu_weights::{Ablation, DenseMlp, K3CpuLayer, K3CpuModel, MixerW, MlpW, MoeWeights};
+use super::kda::{KdaConfig, KdaState, kda_decode_token};
+use super::latent_moe::{LatentMoeConfig, mix_routed_experts};
 use super::mla::{MlaConfig, mla_decode_token};
-use super::ops::{embed_token, matvec, matvec_column_tp};
-use super::situ::sigmoid;
+use super::ops::{embed_token, matvec};
 
 mod dense;
+mod mixer;
+mod moe;
 mod stream;
 pub use stream::AttnResStream;
 
@@ -25,6 +24,9 @@ pub type HiddenReduce<'a> = &'a dyn Fn(&mut [f32]) -> Result<()>;
 /// Optional resident dense/shared MLP, with local TP intermediate width.
 pub type DenseMlpCore<'a> =
     &'a dyn Fn(&DenseMlp, &[f32], usize, usize, f32, f32) -> Result<Vec<f32>>;
+
+/// Resident BF16 GEMV. `op` is a suffix key (q_proj, routed_down, ...).
+pub type GpuGemv<'a> = &'a dyn Fn(&str, &[f32], usize, usize) -> Result<Vec<f32>>;
 
 /// Per-layer geometry the GPU wrapper and `forward_token` share.
 ///
@@ -44,6 +46,12 @@ pub struct K3LayerCtx<'a> {
     /// After row-parallel `o_proj` (and dense MLP `down`). None at TP=1.
     pub reduce_hidden: Option<HiddenReduce<'a>>,
     pub dense_mlp: Option<DenseMlpCore<'a>>,
+    pub gpu_gemv: Option<GpuGemv<'a>>,
+    /// Shared-expert intermediate (full, before /tp). 6144 production.
+    pub shared_intermediate: usize,
+    /// Rank in TP. Slice hidden for routed down/up (7168/8, not n_experts).
+    pub tp_rank: usize,
+    pub tp_world: usize,
 }
 
 impl<'a> K3LayerCtx<'a> {
@@ -60,6 +68,10 @@ impl<'a> K3LayerCtx<'a> {
             rope_theta: model.rope_theta,
             reduce_hidden: None,
             dense_mlp: None,
+            gpu_gemv: None,
+            shared_intermediate: 0,
+            tp_rank: 0,
+            tp_world: 1,
         }
     }
 }
@@ -265,9 +277,10 @@ where
     let x = rms_norm(&h, &layer.input_norm, eps);
     let mut mix_out = match (&layer.mixer, mixer_state) {
         (MixerW::Kda(w), LayerCache::Kda(state)) => {
-            kda_mixer(w, &x, ctx.kda, state, eps, ablation, &mut kda_decode)?
+            mixer::kda_mixer(ctx, w, &x, state, ablation, &mut kda_decode)?
         }
-        (MixerW::Mla(w), LayerCache::Mla(kv)) => mla_mixer(
+        (MixerW::Mla(w), LayerCache::Mla(kv)) => mixer::mla_mixer(
+            ctx,
             w,
             &x,
             ctx.mla,
@@ -297,175 +310,8 @@ where
             }
             y
         }
-        MlpW::Moe(w) => moe_mlp_with(w, &x, ctx, ablation.force_expert, &mut moe_experts)?,
+        MlpW::Moe(w) => moe::moe_mlp_with(w, &x, ctx, ablation.force_expert, &mut moe_experts)?,
     };
     stream.add(&mlp_out);
     Ok(())
-}
-
-fn apply_o_proj(w: &[f32], x: &[f32], out: usize, inn: usize, ablation: Ablation) -> Vec<f32> {
-    matvec_column_tp(
-        w,
-        x,
-        out,
-        inn,
-        ablation.o_proj_tp,
-        ablation.drop_o_proj_rank,
-    )
-}
-
-fn kda_mixer<F>(
-    w: &KdaWeights,
-    x: &[f32],
-    cfg: &KdaConfig,
-    state: &mut KdaState,
-    eps: f32,
-    ablation: Ablation,
-    kda_decode: &mut F,
-) -> Result<Vec<f32>>
-where
-    F: FnMut(&[f32], &[f32], &[f32], &[f32], &KdaConfig, &mut KdaState) -> Result<Vec<f32>>,
-{
-    let qdim = cfg.qkv_dim();
-    let q = matvec(&w.q_proj, x, qdim, x.len());
-    let k = matvec(&w.k_proj, x, qdim, x.len());
-    let v = matvec(&w.v_proj, x, qdim, x.len());
-    let mut qkv = q;
-    qkv.extend_from_slice(&k);
-    qkv.extend_from_slice(&v);
-    // HF: g = f_b_proj(f_a_proj(x)) — two linears, no SiLU on the bottleneck.
-    let fa = matvec(&w.f_a, x, cfg.head_dim, x.len());
-    let z = matvec(&w.f_b, &fa, qdim, cfg.head_dim);
-    let gate = bounded_gate(
-        &z,
-        &w.dt_bias,
-        &w.a_log,
-        cfg.heads,
-        cfg.head_dim,
-        cfg.gate_lower_bound,
-    );
-    let beta = matvec(&w.b_proj, x, cfg.heads, x.len());
-    let g = matvec(&w.g_proj, x, qdim, x.len());
-    let core = kda_decode(&qkv, &w.conv, &gate, &beta, cfg, state)?;
-    let gated = gated_o_norm(&core, &g, &w.o_norm, cfg.head_dim, eps);
-    Ok(apply_o_proj(&w.o_proj, &gated, x.len(), qdim, ablation))
-}
-
-fn gated_o_norm(core: &[f32], g: &[f32], o_norm: &[f32], head_dim: usize, eps: f32) -> Vec<f32> {
-    let mut out = vec![0.0f32; core.len()];
-    for ((c, gg), o) in core
-        .chunks_exact(head_dim)
-        .zip(g.chunks_exact(head_dim))
-        .zip(out.chunks_exact_mut(head_dim))
-    {
-        let n = rms_norm(c, o_norm, eps);
-        for i in 0..head_dim {
-            o[i] = sigmoid(gg[i]) * n[i];
-        }
-    }
-    out
-}
-
-#[allow(clippy::too_many_arguments)]
-fn mla_mixer<F>(
-    w: &MlaWeights,
-    x: &[f32],
-    cfg: &MlaConfig,
-    kv: &mut MlaKv,
-    pos: usize,
-    theta: f32,
-    eps: f32,
-    ablation: Ablation,
-    mla_decode: &mut F,
-) -> Result<Vec<f32>>
-where
-    F: FnMut(
-        &mut [f32],
-        &mut [f32],
-        &[f32],
-        &[f32],
-        &mut MlaKv,
-        &MlaConfig,
-        usize,
-        f32,
-    ) -> Result<Vec<f32>>,
-{
-    let qk = cfg.qk_head_dim();
-    let qa = matvec(&w.q_a, x, cfg.q_lora_rank, x.len());
-    let qa = rms_norm(&qa, &w.q_a_ln, eps);
-    let mut q = matvec(&w.q_b, &qa, cfg.heads * qk, cfg.q_lora_rank);
-    let kv_in = cfg.kv_lora_rank + cfg.qk_rope_head_dim;
-    let kv_lat = matvec(&w.kv_a, x, kv_in, x.len());
-    let (c, pe) = kv_lat.split_at(cfg.kv_lora_rank);
-    let c = rms_norm(c, &w.kv_a_ln, eps);
-    let kvb_out = cfg.heads * (cfg.qk_nope_head_dim + cfg.v_head_dim);
-    let kvb = matvec(&w.kv_b, &c, kvb_out, cfg.kv_lora_rank);
-    let (k, v) = pack_mla_kv(&kvb, pe, cfg);
-    let mut k = k;
-    let g = matvec(&w.g_proj, x, cfg.heads * cfg.v_head_dim, x.len());
-    let attn = mla_decode(&mut q, &mut k, &v, &g, kv, cfg, pos, theta)?;
-    Ok(apply_o_proj(
-        &w.o_proj,
-        &attn,
-        x.len(),
-        cfg.heads * cfg.v_head_dim,
-        ablation,
-    ))
-}
-
-fn pack_mla_kv(kvb: &[f32], k_pe: &[f32], cfg: &MlaConfig) -> (Vec<f32>, Vec<f32>) {
-    let nope = cfg.qk_nope_head_dim;
-    let rope = cfg.qk_rope_head_dim;
-    let dv = cfg.v_head_dim;
-    let qk = nope + rope;
-    let mut k = vec![0.0f32; cfg.heads * qk];
-    let mut v = vec![0.0f32; cfg.heads * dv];
-    let stride = nope + dv;
-    for h in 0..cfg.heads {
-        let src = &kvb[h * stride..(h + 1) * stride];
-        let kd = &mut k[h * qk..(h + 1) * qk];
-        kd[..nope].copy_from_slice(&src[..nope]);
-        if rope > 0 {
-            kd[nope..].copy_from_slice(k_pe);
-        }
-        v[h * dv..(h + 1) * dv].copy_from_slice(&src[nope..]);
-    }
-    (k, v)
-}
-
-fn moe_mlp_with<F>(
-    w: &MoeWeights,
-    x: &[f32],
-    ctx: &K3LayerCtx<'_>,
-    force: Option<usize>,
-    experts_fn: &mut F,
-) -> Result<Vec<f32>>
-where
-    F: FnMut(&MoeWeights, &[f32], &[usize], &[f32], &LatentMoeConfig) -> Result<Vec<f32>>,
-{
-    let mut logits = matvec(&w.router, x, ctx.moe.n_routed, ctx.moe.hidden);
-    if let Some(e) = force {
-        logits.fill(0.0);
-        logits[e] = 8.0;
-    }
-    let shared = w
-        .shared
-        .as_ref()
-        .map(|s| dense::run(ctx, s, x, ctx.moe.expert_hidden))
-        .transpose()?;
-    let latent = matvec(&w.down, x, ctx.moe.latent, ctx.moe.hidden);
-    let (ids, weights) = sigmoid_topk(&logits, &w.bias, ctx.moe.top_k);
-    let mixed = experts_fn(w, &latent, &ids, &weights, ctx.moe)?;
-    let mixed = if ctx.moe.use_norm {
-        rms_norm(&mixed, &w.norm, ctx.eps)
-    } else {
-        mixed
-    };
-    let mut out = matvec(&w.up, &mixed, ctx.moe.hidden, ctx.moe.latent);
-    if let Some(s) = shared {
-        for (o, ss) in out.iter_mut().zip(&s) {
-            *o += ss;
-        }
-    }
-    Ok(out)
 }

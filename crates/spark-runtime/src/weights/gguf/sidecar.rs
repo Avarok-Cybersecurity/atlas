@@ -19,7 +19,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 
 use super::{container, dequant_cpu, dequant_to_device, names, value_transform};
 use crate::gpu::GpuBackend;
@@ -38,7 +38,7 @@ pub fn is_mmproj(p: &Path) -> bool {
 /// lexicographically-first `*mmproj*.gguf` that is not `backbone` (the
 /// already-selected text model), so a text-only model dir returns `None` and a
 /// multimodal dir returns the projector to load as a second pass.
-pub fn find_mmproj(dir: &Path, backbone: &Path) -> Option<PathBuf> {
+pub(super) fn find_mmproj(dir: &Path, backbone: &Path) -> Option<PathBuf> {
     let mut candidates: Vec<PathBuf> = std::fs::read_dir(dir)
         .ok()?
         .filter_map(|e| e.ok())
@@ -199,6 +199,38 @@ pub fn load_pass(
             continue;
         }
 
+        // kimi-k3: TP-slice keep-packed Direct + routed experts (see kimi_gguf_load).
+        if matches!(arch, "kimi-k3" | "kimi_k3" | "kimik3")
+            && matches!(id, 0 | 8 | 10 | 11 | 12 | 13 | 14 | 17 | 18)
+            && let names::GgufName::Direct(ref hf_name) = target
+        {
+            super::kimi_gguf_load::upload_direct_packed(
+                loader, gpu, hf_name, raw, &hf_shape, id, weights,
+            )?;
+            continue;
+        }
+        if matches!(arch, "kimi-k3" | "kimi_k3" | "kimik3")
+            && names::kimi_k3_deferred_name(&tensor.name).is_some()
+        {
+            // EP must stay 1: TP-slice every expert (one alloc each).
+            ensure!(
+                loader.ep_world_size <= 1,
+                "K3 GGUF experts: EP>1 refused; use --tp-size with --ep-size 1"
+            );
+            let _ = deferred; // experts are resident, not deferred
+            let _ = shard_path;
+            super::kimi_gguf_load::upload_expert_stack(
+                loader,
+                gpu,
+                &tensor.name,
+                raw,
+                &tensor.dims,
+                id,
+                weights,
+            )?;
+            continue;
+        }
+
         if native_q2
             && id == 42
             && let names::GgufName::Direct(ref hf_name) = target
@@ -284,16 +316,28 @@ pub fn load_pass(
         match target {
             names::GgufName::Direct(hf_name) => {
                 weights.insert(
-                    hf_name,
+                    hf_name.clone(),
                     WeightTensor {
                         ptr: bf16_ptr,
-                        shape: hf_shape,
+                        shape: hf_shape.clone(),
                         dtype: WeightDtype::BF16,
                     },
                 );
+                if matches!(arch, "kimi-k3" | "kimi_k3" | "kimik3")
+                    && let Some(stem) = hf_name.strip_suffix("_res_proj.weight")
+                {
+                    weights.insert(
+                        format!("{stem}_res_norm.weight"),
+                        WeightTensor {
+                            ptr: bf16_ptr,
+                            shape: hf_shape,
+                            dtype: WeightDtype::BF16,
+                        },
+                    );
+                }
             }
             names::GgufName::ExpertStack { layer, proj } => {
-                loader.emit_experts(weights, bf16_ptr, &hf_shape, layer, proj, skipped)?;
+                loader.emit_experts(weights, bf16_ptr, &hf_shape, layer, proj, skipped, arch)?;
             }
             names::GgufName::Drop => unreachable!("Drop filtered above"),
         }

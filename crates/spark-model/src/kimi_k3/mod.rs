@@ -35,7 +35,11 @@ pub use moe_cuda::{K3MoeGemmKernels, launch_k3_latent_moe_experts};
 pub use tp::{supports_tp, tensor_plan};
 
 pub mod bound;
+mod forward_panic;
+mod gpu_gemv;
 mod host_decode;
+mod iq2_cuda;
+mod iq2_moe;
 pub mod state;
 pub use avarok_core::kimi_k3::{Ablation, K3CpuModel, K3LayerSpec, greedy_decode};
 pub use state::K3CpuFallbackState;
