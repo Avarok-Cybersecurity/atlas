@@ -391,7 +391,7 @@ fn bench(g: &dyn GpuBackend, bm: KernelHandle) -> Result<()> {
             }
             let us = wall.elapsed().as_secs_f64() * 1e6 / iters as f64;
             println!(
-                "PHASE {name:8} M={m:2} t0={t0} t1={} us_per_position={us:.1} GB/s={:.1}",
+                "PHASE {name} M={m} t0={t0} t1={} us_per_position={us:.1} GB/s={:.1}",
                 unix_ms(),
                 849.35e3 / us
             );
