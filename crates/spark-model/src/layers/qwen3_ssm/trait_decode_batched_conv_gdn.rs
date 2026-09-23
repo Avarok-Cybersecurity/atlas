@@ -52,6 +52,19 @@ fn wy_resident_min_width() -> usize {
     16
 }
 
+/// Minimum width for the FP16 (`--ssm-h-dtype f16*`) K=2 resident twin,
+/// `gated_delta_rule_wy2_resident_f16`. Measured, not inherited from the FP32
+/// gate above: dgx1 2026-09-23 microbench (27B dims, 48 v-heads, cold state,
+/// table form) at n=4/8/12 — resident 93/182/270 us vs base wy2_f16
+/// 103/231/326 us, energy per launch 3.2/6.4/9.7 vs 3.5/8.5/12.5 mJ — and
+/// bit-exact against the base on H, the rollback intermediate and the output
+/// at every width tested (4..32). The FP16 state halves the per-CTA traffic
+/// the 1-block/SM residency must hide, which is why the FP32 twin's n=16
+/// floor does not carry over. Below 4 is unmeasured and keeps the base.
+fn wy2_resident_f16_min_width() -> usize {
+    4
+}
+
 use super::{Qwen3SsmLayer, SsmLayerState};
 use crate::layer::ForwardContext;
 use crate::layers::ops;
@@ -149,7 +162,11 @@ impl Qwen3SsmLayer {
         // returned as zero on purpose: the call sites turn that into a hard
         // error rather than a silent FP32 fallback.
         if super::ssm_h_fp16_enabled() {
-            return if eligible && self.gdn_wy2_resident_f16_k.0 != 0 {
+            let eligible_f16 = kd == 128
+                && vd == 128
+                && n >= wy2_resident_f16_min_width()
+                && wy2_resident_enabled();
+            return if eligible_f16 && self.gdn_wy2_resident_f16_k.0 != 0 {
                 self.gdn_wy2_resident_f16_k
             } else {
                 self.gdn_wy2_f16_k
