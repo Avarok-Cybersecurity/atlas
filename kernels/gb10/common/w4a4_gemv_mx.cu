@@ -1,5 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
+// Targets whose ISA lacks the warp-level block-scale MMA (hopper sm_90a, b200
+// sm_100a) define AVAROK_NO_WARP_BLOCKSCALE_MMA (their HARDWARE.toml), the
+// guard every warp-block-scale kernel sits behind. There this whole module,
+// its commentary included, compiles to NO entry points, so
+// `ops::w4a4_proj::prepare` resolves nothing and `--w4a4-downcast` keeps every
+// projection on W4A16 instead of dispatching a kernel whose MMA was compiled
+// away.
+#ifndef AVAROK_NO_WARP_BLOCKSCALE_MMA
+
 // Atlas W4A4 small-M projection on FP4 TENSOR CORES (Blackwell block-scale
 // MMA `kind::mxf4nvf4`, E2M1 x E2M1, UE4M3 per-16 scales). This is the energy
 // sibling of `w4a16_gemv_tc.cu` for 1..32 decode / MTP-verify rows.
@@ -263,3 +272,5 @@ extern "C" __global__ __launch_bounds__(256) void w4a4_quant_rows(
         }
     }
 }
+
+#endif  // AVAROK_NO_WARP_BLOCKSCALE_MMA
