@@ -78,7 +78,7 @@ impl MtpHead {
         stream: u64,
     ) -> Result<()> {
         // `AVAROK_MTP_TC=1`: the tensor-core BF16 GEMV takes every width it
-        // covers (1..=32) ahead of the CUDA-core table below. Off (the
+        // covers (2..=32) ahead of the CUDA-core table below. Off (the
         // default), nothing is launched here and the table is unchanged.
         if ops::dense_gemv_tc::try_dense_gemv_tc(gpu, input, w, output, m as u32, n, k, n, stream)?
         {
@@ -636,7 +636,7 @@ impl MtpHead {
     /// W4A8 dequant GEMM (per-k-step LUT dequant + barriers, issue-bound on
     /// GB10), and one tensor-core GEMV pass reads the head once at any n <= 16.
     /// Shared by the dispatch and its log line so the two cannot disagree.
-    pub(super) fn mtp_tc_lm_head(
+    fn mtp_tc_lm_head(
         &self,
         gpu: &dyn spark_runtime::gpu::GpuBackend,
         n: usize,

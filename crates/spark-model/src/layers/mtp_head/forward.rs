@@ -455,36 +455,18 @@ impl MtpHead {
             ctx.config.vocab_size as u32
         };
         let logits = ctx.buffers.logits();
-        // `AVAROK_MTP_TC=1` also moves this M=1 NVFP4 head onto the
-        // tensor-core `w4a16_gemv_tc8` (through `w4a16_gemv_batchm`, which
-        // routes there whenever `tc_kernel` resolves, so the tier handle is
-        // then unused). Same predicate as the batched propose's head.
-        if self.mtp_tc_lm_head(ctx.gpu, 1, v, h) {
-            ops::w4a16_gemv_batchm(
-                ctx.gpu,
-                self.lm_head_batch_kernel(1),
-                final_normed,
-                &self.lm_head_nvfp4,
-                logits,
-                1,
-                v,
-                h,
-                stream,
-            )?;
-        } else {
-            ops::w4a16_decode_gemv(
-                ctx.gpu,
-                self.w4a16_gemv_k,
-                self.w4a16_gemv_sw_k,
-                ctx.levers.gemv_sw,
-                final_normed,
-                &self.lm_head_nvfp4,
-                logits,
-                v,
-                h,
-                stream,
-            )?;
-        }
+        ops::w4a16_decode_gemv(
+            ctx.gpu,
+            self.w4a16_gemv_k,
+            self.w4a16_gemv_sw_k,
+            ctx.levers.gemv_sw,
+            final_normed,
+            &self.lm_head_nvfp4,
+            logits,
+            v,
+            h,
+            stream,
+        )?;
 
         // MTP-debug (AVAROK_MTP_DEBUG_NORMS=1): localize the constant-0 draft.
         // A true zero reads as 0.0 regardless of dtype, so these L2 norms

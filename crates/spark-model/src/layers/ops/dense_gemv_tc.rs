@@ -13,7 +13,8 @@
 //! The drafter is hot at every concurrency, which puts it on the GB10
 //! J/token critical path against vLLM, whose drafter runs on tensor cores.
 //! The tensor-core entries run the same contract with one `mma.sync.m16n8k16`
-//! per 16x16 weight block and no per-weight ALU work.
+//! per 16x16 weight block and no per-weight ALU work, at M = 2..=32 (see
+//! [`MIN_M`] for why M=1 stays on the CUDA-core GEMV).
 //!
 //! # Contract
 //!
@@ -49,6 +50,13 @@ pub const ROWS_PER_CTA: u32 = 16;
 pub const BLOCK: u32 = 256;
 /// K per warp step (`DTC_KB` in the .cu): each quad reads one 64-k block.
 pub const K_STEP: u32 = 64;
+/// Narrowest width that routes. At M=1 the CUDA-core `dense_gemv_bf16` is
+/// not issue-bound and the tensor-core entry LOSES: one full 27B draft
+/// position (849 MB, GB10, 2405 MHz) measured 3392 us / 93 mJ on
+/// `dense_gemv_bf16` against 3699 us / 99 mJ on `dense_gemv_bf16_tc8`. From
+/// M=2 up it wins: -32% mJ at M=2, -38% at M=4, -57% at M=8 (+1.6..5% time),
+/// and 1.5x faster than the pipelined GEMM at M=12..32.
+pub const MIN_M: u32 = 2;
 
 /// Which tensor-core entry serves a launch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -70,6 +78,9 @@ impl DtcKind {
 
 /// PURE routing decision. `None` keeps the caller's CUDA-core kernel.
 ///
+/// `m < MIN_M` declines (see [`MIN_M`]): the C=1 propose keeps
+/// `dense_gemv_bf16`, bit-identical to a build without this path.
+///
 /// `have` is `[tc8, tc16, tc32]` resolved. The narrowest resolved entry that
 /// covers `m` wins: a wider entry serves narrow M correctly (it skips token
 /// tiles past M) but issues more reduction work. `K % 64` is required (each
@@ -77,7 +88,7 @@ impl DtcKind {
 /// guessing at a K tail. Any N routes: a partial last weight tile is guarded
 /// in-kernel.
 pub fn route(m: u32, n: u32, k: u32, enabled: bool, have: [bool; 3]) -> Option<DtcKind> {
-    if !enabled || m == 0 || n == 0 || k == 0 || !k.is_multiple_of(K_STEP) {
+    if !enabled || m < MIN_M || n == 0 || k == 0 || !k.is_multiple_of(K_STEP) {
         return None;
     }
     [

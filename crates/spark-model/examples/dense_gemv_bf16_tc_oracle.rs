@@ -2,13 +2,14 @@
 //! ORACLE (and microbench) for the MTP drafter's tensor-core BF16 GEMV
 //! (`dense_gemv_bf16_tc.cu`, routed by `ops::dense_gemv_tc`).
 //!
-//! `AVAROK_MTP_TC=1` sends every BF16 drafter projection at M = 1..=32 to the
+//! `AVAROK_MTP_TC=1` sends every BF16 drafter projection at M = 2..=32 to the
 //! tensor-core entries. That is sound only if, on every real 27B drafter
 //! shape and every row count, the routed result is as accurate as the
 //! CUDA-core kernel it replaces. This decides it:
 //!
 //!   1. ARMED: `try_dense_gemv_tc` (the PRODUCTION launcher) launches for every
-//!      (M, N, K); otherwise this would silently measure nothing.
+//!      (M, N, K); otherwise this would silently measure nothing. It must
+//!      DECLINE M=1 (`MIN_M`): the C=1 propose keeps `dense_gemv_bf16`.
 //!   2. vs CPU f64 (64 sampled output columns + first/last, every row): the
 //!      routed max error must not exceed max(1.25 x the CUDA-core kernel's own
 //!      error, one BF16 half-ulp of the output range).
@@ -63,7 +64,7 @@ const SHAPES: [(&str, u32, u32); 8] = [
 ];
 /// Odd N: a partial last weight tile (rows past N load zeros, never stored).
 const ODD: (&str, u32, u32) = ("odd N   ", 1001, 5120);
-const MS: [u32; 12] = [1, 2, 3, 4, 5, 8, 9, 12, 16, 17, 24, 32];
+const MS: [u32; 11] = [2, 3, 4, 5, 8, 9, 12, 16, 17, 24, 32];
 const PAD: u32 = 8;
 
 struct Rng(u64);
@@ -235,6 +236,10 @@ fn main() -> Result<()> {
             .chain([0, nu - 1])
             .collect();
         let widest = case.routed(32, 32)?;
+        if dense_gemv_tc::try_dense_gemv_tc(g, a, &case.w, c, 1, n, k, n + PAD, 0)? {
+            println!("{label} M=1 was ROUTED: MIN_M is not enforced  FAIL");
+            failures += 1;
+        }
         for m in MS {
             let mu = m as usize;
             let rf = case.reference(bm, m)?;
@@ -369,7 +374,7 @@ fn bench(g: &dyn GpuBackend, bm: KernelHandle) -> Result<()> {
         }
         Ok(())
     };
-    for m in [1u32, 2, 4, 8, 12, 16, 24, 32] {
+    for m in [2u32, 4, 8, 12, 16, 24, 32] {
         let mut variants: Vec<(&str, &dyn Fn(u32) -> Result<()>)> =
             vec![("current", &current), ("tc", &routed)];
         if m <= 16 {

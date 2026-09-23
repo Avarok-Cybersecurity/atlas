@@ -34,7 +34,7 @@ fn switch_is_opt_in_and_only_exactly_one_arms_it() {
 #[test]
 fn every_drafter_shape_routes_to_the_narrowest_entry() {
     for (n, k) in DRAFTER_27B {
-        for m in 1..=32 {
+        for m in MIN_M..=32 {
             let want = if m <= 8 {
                 DtcKind::M8
             } else if m <= 16 {
@@ -51,6 +51,10 @@ fn every_drafter_shape_routes_to_the_narrowest_entry() {
 fn off_or_out_of_range_declines() {
     assert_eq!(route(4, 5120, 5120, false, ALL), None, "switch off");
     assert_eq!(route(0, 5120, 5120, true, ALL), None, "m=0");
+    // M=1 measured a loss on tensor cores: the C=1 propose keeps its GEMV.
+    for (n, k) in DRAFTER_27B {
+        assert_eq!(route(1, n, k, true, ALL), None, "m=1 n={n} k={k}");
+    }
     assert_eq!(
         route(33, 5120, 5120, true, ALL),
         None,
@@ -75,5 +79,5 @@ fn missing_entries_fall_back_to_a_wider_one_or_decline() {
         Some(DtcKind::M32)
     );
     assert_eq!(route(12, 5120, 5120, true, [true, false, false]), None);
-    assert_eq!(route(1, 5120, 5120, true, [false, false, false]), None);
+    assert_eq!(route(2, 5120, 5120, true, [false, false, false]), None);
 }
