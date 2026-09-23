@@ -199,12 +199,18 @@ describe('GateChart: a declared ceiling applies only from the date it took effec
   // took effect. The records carry no absolute of their own, so this is the
   // case that once turned pre-ratchet history red.
   const CK = 'Qwen/Qwen3.6-35B-A3B-FP8';
-  const { since, value: ceiling } = gateLimits['ttft-warm-gate'][CK].median_ms.max.at(-1);
+  const series = gateLimits['ttft-warm-gate'][CK].median_ms.max;
+  const { since, value: ceiling } = series.at(-1);
+  // The ledger is a SERIES (every re-cut, dated). A point 30 days before the
+  // newest ceiling is governed by the one before it, so "before any ceiling"
+  // means before the FIRST entry — the day this file's assumption of a single
+  // entry silently stopped holding, the rule was drawn from the left edge.
+  const first = series[0].since;
   const ttft = (when, v) =>
     rec({ benchmark_id: 'ttft-warm-gate', target_model: CK, recorded_at: when, metrics: { median_ms: v } });
   const panel = { title: 'warm TTFT', unit: 'ms', metrics: [{ key: 'median_ms', label: 'median' }] };
   // Two points over today's ceiling: one recorded before it took effect, one after.
-  const before = ttft(since - 30 * DAY, ceiling * 2);
+  const before = ttft(first - 30 * DAY, ceiling * 2);
   const after = ttft(since + 30 * DAY, ceiling * 2);
   const page = html(GateChart, { panel, records: [before, after, ttft(since + 31 * DAY, ceiling / 2)], onselect: () => {} });
 
