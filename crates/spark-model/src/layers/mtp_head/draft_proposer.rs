@@ -76,7 +76,8 @@ impl DraftProposer for MtpHead {
             drafts.push(draft);
             current_token = draft;
             // For subsequent drafts, use the MTP head's own hidden state
-            current_hidden = ctx.buffers.hidden_states();
+            // (pre- or post-final-norm: `chain_hidden`, the one reader).
+            current_hidden = Self::chain_hidden(ctx);
         }
 
         mtp_state.last_num_drafted = drafts.len();

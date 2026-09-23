@@ -413,6 +413,7 @@ impl MtpHead {
 }
 
 mod batch_caps;
+mod chain_hidden;
 mod draft_proposer;
 mod forward;
 mod forward_batch;

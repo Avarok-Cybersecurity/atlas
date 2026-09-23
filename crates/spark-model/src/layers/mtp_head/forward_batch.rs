@@ -774,9 +774,8 @@ impl MtpHead {
             let hiddens_j: Vec<DevicePtr> = if j == 0 {
                 target_hiddens.to_vec()
             } else {
-                (0..n)
-                    .map(|i| ctx.buffers.hidden_states().offset(i * h * 2))
-                    .collect()
+                let chain = Self::chain_hidden(ctx);
+                (0..n).map(|i| chain.offset(i * h * 2)).collect()
             };
             self.forward_batch_position(
                 &cur_tokens,

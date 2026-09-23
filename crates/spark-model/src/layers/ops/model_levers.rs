@@ -288,6 +288,21 @@ pub struct ModelLevers {
     /// drafter's `forward_one`, which asked for it FOUR times per drafted
     /// token, each read only to decide whether to do nothing.
     pub mtp_debug_norms: bool,
+    /// `AVAROK_MTP_CHAIN_POSTNORM=1` — feed draft `j > 0` of an MTP propose
+    /// chain the drafter's FINAL-NORMED hidden (`norm_output`, the row its LM
+    /// head reads) instead of its pre-norm residual stream (`hidden_states`).
+    ///
+    /// The reference Qwen3.5/3.6 MTP chains the post-norm hidden: vLLM 0.30
+    /// `qwen3_5_mtp.py` returns `self.norm(hidden_states, residual)` and
+    /// `llm_base_proposer.py` feeds that same tensor to the next step. Atlas
+    /// fed the residual stream, and `pre_fc_norm_hidden` does not undo the
+    /// difference (RMSNorm(x) != RMSNorm(RMSNorm(x) * w_final): `w_final` is
+    /// elementwise). G10 measured Atlas's per-position accept gap vs vLLM
+    /// GROWING with chain depth (p1 -0.014, p2|1 -0.045, p3|12 -0.08), the
+    /// signature of a chain-input mismatch. Acceptance-only: drafts are
+    /// verified by the target, so emitted tokens cannot change. Read by BOTH
+    /// chains through `MtpHead::chain_hidden`. Opt-in until its A/B lands.
+    pub mtp_chain_postnorm: bool,
     /// `AVAROK_MTP_DRAFT_CONF=<t>` — confidence floor for submitting drafts
     /// to verification, clamped to `[0.0, 0.99]`. `0.0` (unset) disables.
     ///
