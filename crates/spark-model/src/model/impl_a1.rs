@@ -235,6 +235,11 @@ impl TransformerModel {
                 && ((!mtp_weights.is_empty() && draft_lm_head_nvfp4.is_some())
                     || checkpoint_declares_mtp))
             || dflash_kgamma > 0;
+        // The precision the MTP head's forward actually runs at (a dense-FFN
+        // head under `--mtp-quantization nvfp4` is weight-only NVFP4 on the
+        // BF16 forward — `MtpQuantization::effective_for_head`).
+        let mtp_quant_fwd = mtp_quant
+            .effective_for_head(mtp_weights.first().is_some_and(|w| w.dense_ffn.is_some()));
         let num_intermediates = if !has_mtp {
             0
         } else if dflash_kgamma > 0 {
@@ -543,7 +548,7 @@ impl TransformerModel {
             mtp_prefill_rows
         };
         let mtp_prefill_hidden = if has_mtp
-            && mtp_quant.supports_drafter_prefill()
+            && mtp_quant_fwd.supports_drafter_prefill()
             && crate::layers::mtp_drafter_prefill_enabled(&levers)
         {
             // Bound the capture to what the drafter can actually CONSUME.
@@ -578,7 +583,7 @@ impl TransformerModel {
             gpu.alloc(bytes)?
         } else {
             if has_mtp
-                && !mtp_quant.supports_drafter_prefill()
+                && !mtp_quant_fwd.supports_drafter_prefill()
                 && crate::layers::mtp_drafter_prefill_enabled(&levers)
             {
                 tracing::info!(

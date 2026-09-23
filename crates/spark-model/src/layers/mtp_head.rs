@@ -88,6 +88,21 @@ impl MtpQuantization {
     pub fn supports_drafter_prefill(self) -> bool {
         matches!(self, Self::Bf16)
     }
+
+    /// The precision the head's FORWARD runs at (KV dtype, forward arms,
+    /// drafter prefill) for a head whose FFN is dense (`dense_ffn_head`) or
+    /// not. A dense-FFN head under [`Self::Nvfp4`] is weight-only NVFP4 on
+    /// the BF16 forward (see `MtpHead::new`), so it behaves as [`Self::Bf16`];
+    /// every other combination is itself. THE one place that rule lives:
+    /// the head, the KV-pool reserve and the prompt-capture allocation all
+    /// ask here.
+    pub fn effective_for_head(self, dense_ffn_head: bool) -> Self {
+        if dense_ffn_head && matches!(self, Self::Nvfp4) {
+            Self::Bf16
+        } else {
+            self
+        }
+    }
 }
 
 impl std::str::FromStr for MtpQuantization {

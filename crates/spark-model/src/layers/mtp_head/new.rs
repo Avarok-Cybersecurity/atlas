@@ -32,6 +32,17 @@ impl MtpHead {
         levers: &crate::layers::ops::ModelLevers,
     ) -> Result<Self> {
         let stream = gpu.default_stream();
+        // Dense-FFN heads (Qwen3.6/3.8-27B) under `--mtp-quantization nvfp4`
+        // are WEIGHT-ONLY NVFP4: the per-draft byte stream (q/o projections
+        // and the dense gate/up/down, ~361M of the head's ~424M params) is
+        // stored NVFP4 and run W4A16 (BF16 activations), while the forward,
+        // BF16 KV and the drafter prefill are exactly the BF16 head's. fc/k/v
+        // stay BF16 because the drafter prefill projects them as a BF16 GEMM.
+        // The legacy NVFP4 path below (FP8 KV, fused qg/dual GEMVs) was built
+        // for MoE heads and was never valid for a dense one (#1247).
+        let wquant = quant;
+        let quant = wquant.effective_for_head(weights.dense_ffn.is_some());
+        let dense_nvfp4 = quant != wquant;
         let absmax_k = gpu.kernel("quantize_nvfp4", "nvfp4_global_absmax")?;
         let nvfp4_k = gpu.kernel("quantize_nvfp4", "quantize_bf16_to_nvfp4")?;
         let fp8_k = gpu.kernel("gemv_fp8w", "quantize_bf16_to_fp8")?;
@@ -53,29 +64,27 @@ impl MtpHead {
         let q = |bf16: &DenseWeight, n: usize, k: usize| -> Result<ProjectionWeight> {
             Self::quantize_proj(bf16, n, k, quant, gpu, absmax_k, nvfp4_k, fp8_k, stream)
         };
+        // The dense-NVFP4 byte stream (see `dense_nvfp4`); identical to `q`
+        // for every other head.
+        let qw = |bf16: &DenseWeight, n: usize, k: usize| -> Result<ProjectionWeight> {
+            Self::quantize_proj(bf16, n, k, wquant, gpu, absmax_k, nvfp4_k, fp8_k, stream)
+        };
 
         // Quantize projections
         let fc = q(&weights.fc, h, h * 2)?;
-        let q_proj = q(&weights.q_proj, nq * hd * 2, h)?;
+        let q_proj = qw(&weights.q_proj, nq * hd * 2, h)?;
         let k_proj = q(&weights.k_proj, nkv * hd, h)?;
         let v_proj = q(&weights.v_proj, nkv * hd, h)?;
-        let o_proj = q(&weights.o_proj, h, nq * hd)?;
+        let o_proj = qw(&weights.o_proj, h, nq * hd)?;
 
         // Dense FFN MTP heads (Qwen3.6-27B-FP8) bypass the MoE setup entirely.
         // We quantize the dense gate/up/down triple and stash it; the MoE
         // fields stay None and the forward path takes the dense shortcut.
         let dense_ffn_generic = if let Some(dense_ffn) = weights.dense_ffn.as_ref() {
-            if matches!(quant, MtpQuantization::Nvfp4) {
-                anyhow::bail!(
-                    "MTP NVFP4 mode is not supported for dense FFN MTP heads yet \
-                     (Qwen3.6-27B-FP8 ships an FP8 MTP head — use \
-                     `--mtp-quantization fp8` or `bf16`)"
-                );
-            }
             Some((
-                q(&dense_ffn.gate_proj, inter, h)?,
-                q(&dense_ffn.up_proj, inter, h)?,
-                q(&dense_ffn.down_proj, h, inter)?,
+                qw(&dense_ffn.gate_proj, inter, h)?,
+                qw(&dense_ffn.up_proj, inter, h)?,
+                qw(&dense_ffn.down_proj, h, inter)?,
             ))
         } else {
             None
@@ -304,9 +313,14 @@ impl MtpHead {
             "MoE (per-expert)"
         };
         tracing::info!(
-            "MTP head: quant={:?}, fc=[{h},{h2}], attn Q=[{qd},{h}], ffn={ffn}, \
+            "MTP head: quant={:?}{wo}, fc=[{h},{h2}], attn Q=[{qd},{h}], ffn={ffn}, \
              {ne} experts, vocab={ev}/{fv} (LM head {lm:.1} MB)",
             quant,
+            wo = if dense_nvfp4 {
+                " (weight-only NVFP4 q/o + dense FFN)"
+            } else {
+                ""
+            },
             h2 = h * 2,
             qd = nq * hd * 2,
             ffn = ffn_kind,

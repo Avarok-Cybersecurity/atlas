@@ -54,6 +54,51 @@ use crate::layers::mtp_meta::pack_mtp_attn_meta;
 const LP_SCRATCH_OFF: usize = 256;
 
 impl MtpHead {
+    /// [`Self::gemm_rows`] for a projection that may be BF16 or the
+    /// weight-only NVFP4 stream (BF16 activations, W4A16): the NVFP4 arm
+    /// reads the weight ONCE for all `m` rows on the narrowest batched
+    /// W4A16 GEMV tier (tensor-core where resolved), else one GEMV per row.
+    #[allow(clippy::too_many_arguments)]
+    fn proj_rows(
+        &self,
+        gpu: &dyn spark_runtime::gpu::GpuBackend,
+        input: DevicePtr,
+        w: &ProjectionWeight,
+        output: DevicePtr,
+        m: usize,
+        n: u32,
+        k: u32,
+        stream: u64,
+    ) -> Result<()> {
+        match w {
+            ProjectionWeight::Bf16(d) => self.gemm_rows(gpu, input, d, output, m, n, k, stream),
+            ProjectionWeight::Nvfp4(q) => {
+                let kh = self.w4a16_batchm.kernel(m as u32);
+                if kh.0 != 0 {
+                    return ops::w4a16_gemv_batchm(
+                        gpu, kh, input, q, output, m as u32, n, k, stream,
+                    );
+                }
+                for r in 0..m {
+                    ops::w4a16_decode_gemv(
+                        gpu,
+                        self.w4a16_gemv_k,
+                        self.w4a16_gemv_sw_k,
+                        self.gemv_sw,
+                        input.offset(r * k as usize * 2),
+                        q,
+                        output.offset(r * n as usize * 2),
+                        n,
+                        k,
+                        stream,
+                    )?;
+                }
+                Ok(())
+            }
+            _ => anyhow::bail!("propose_batch: FP8 projection (can_propose_batch lied)"),
+        }
+    }
+
     /// M=n-row BF16 projection dispatch. Three tiers, selected by the pure
     /// [`row_dispatch::drafter_row_kernel`] (which carries the measurements,
     /// the 2..=8 band and the numerics statement):
@@ -66,6 +111,7 @@ impl MtpHead {
     ///
     /// All three see the same `[m, k]` contiguous `input` and write m
     /// contiguous `[n]` output rows, so `out_stride == n`.
+    #[allow(clippy::too_many_arguments)]
     fn gemm_rows(
         &self,
         gpu: &dyn spark_runtime::gpu::GpuBackend,
@@ -228,22 +274,16 @@ impl MtpHead {
 
         // 4. fc: [n, 2h] -> [n, h]; copy to residual stream.
         let hidden = ctx.buffers.hidden_states();
-        let (fc_w, q_w, k_w, v_w, o_w) = match (
-            &self.fc,
-            &self.q_proj,
-            &self.k_proj,
-            &self.v_proj,
-            &self.o_proj,
-        ) {
-            (
-                ProjectionWeight::Bf16(fc),
-                ProjectionWeight::Bf16(q),
-                ProjectionWeight::Bf16(k),
-                ProjectionWeight::Bf16(v),
-                ProjectionWeight::Bf16(o),
-            ) => (fc, q, k, v, o),
-            _ => anyhow::bail!("propose_batch: non-BF16 projections (can_propose_batch lied)"),
+        // fc/k/v are BF16 on every head the batched propose admits; q/o (and
+        // the dense FFN below) may be the weight-only NVFP4 byte stream of a
+        // dense head under `--mtp-quantization nvfp4` (`proj_rows`).
+        let (fc_w, k_w, v_w) = match (&self.fc, &self.k_proj, &self.v_proj) {
+            (ProjectionWeight::Bf16(fc), ProjectionWeight::Bf16(k), ProjectionWeight::Bf16(v)) => {
+                (fc, k, v)
+            }
+            _ => anyhow::bail!("propose_batch: non-BF16 fc/k/v (can_propose_batch lied)"),
         };
+        let (q_w, o_w) = (&self.q_proj, &self.o_proj);
         self.gemm_rows(
             gpu,
             concat,
@@ -277,7 +317,7 @@ impl MtpHead {
         let q_out = ctx.buffers.qkv_output();
         let k_out = q_out.offset(n * qg_dim * bf16);
         let v_out = k_out.offset(n * kv_dim * bf16);
-        self.gemm_rows(gpu, normed, q_w, q_out, n, qg_dim as u32, h as u32, stream)?;
+        self.proj_rows(gpu, normed, q_w, q_out, n, qg_dim as u32, h as u32, stream)?;
         self.gemm_rows(gpu, normed, k_w, k_out, n, kv_dim as u32, h as u32, stream)?;
         self.gemm_rows(gpu, normed, v_w, v_out, n, kv_dim as u32, h as u32, stream)?;
 
@@ -438,7 +478,7 @@ impl MtpHead {
 
         // 8. O projection [n, q_dim] -> [n, h]; residual + post-attn norm.
         let o_out = ctx.buffers.norm_output();
-        self.gemm_rows(gpu, attn_out, o_w, o_out, n, h as u32, q_dim as u32, stream)?;
+        self.proj_rows(gpu, attn_out, o_w, o_out, n, h as u32, q_dim as u32, stream)?;
         let normed2 = ctx.buffers.norm_output();
         ops::residual_add_rms_norm(
             gpu,
@@ -461,17 +501,13 @@ impl MtpHead {
             ctx.config.moe_intermediate_size as u32
         };
         let (gate_w, up_w, down_w) = match self.dense_ffn_generic.as_ref() {
-            Some((
-                ProjectionWeight::Bf16(g),
-                ProjectionWeight::Bf16(u),
-                ProjectionWeight::Bf16(d),
-            )) => (g, u, d),
-            _ => anyhow::bail!("propose_batch: non-BF16 FFN (can_propose_batch lied)"),
+            Some((g, u, d)) => (g, u, d),
+            None => anyhow::bail!("propose_batch: no dense FFN (can_propose_batch lied)"),
         };
         let gate_out = ctx.buffers.expert_gate_out();
         let up_out = ctx.buffers.expert_up_out();
-        self.gemm_rows(gpu, normed2, gate_w, gate_out, n, inter, h as u32, stream)?;
-        self.gemm_rows(gpu, normed2, up_w, up_out, n, inter, h as u32, stream)?;
+        self.proj_rows(gpu, normed2, gate_w, gate_out, n, inter, h as u32, stream)?;
+        self.proj_rows(gpu, normed2, up_w, up_out, n, inter, h as u32, stream)?;
         ops::moe_silu_mul(
             gpu,
             self.moe_silu_mul_k.unwrap(),
@@ -482,7 +518,7 @@ impl MtpHead {
             stream,
         )?;
         let ffn_out = ctx.buffers.moe_output();
-        self.gemm_rows(gpu, gate_out, down_w, ffn_out, n, h as u32, inter, stream)?;
+        self.proj_rows(gpu, gate_out, down_w, ffn_out, n, h as u32, inter, stream)?;
         ops::residual_add(
             gpu,
             self.residual_add_k,

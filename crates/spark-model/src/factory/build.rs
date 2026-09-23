@@ -705,7 +705,8 @@ pub fn build_model(
         // (`kv_bf16` in mtp_head/new.rs).
         let block = 16usize;
         let per_seq_blocks = max_seq_len / block + 1;
-        let elem = match mtp_quant {
+        let dense_head = mtp_weights.first().is_some_and(|w| w.dense_ffn.is_some());
+        let elem = match mtp_quant.effective_for_head(dense_head) {
             MtpQuantization::Nvfp4 => 1usize,
             MtpQuantization::Fp8 | MtpQuantization::Bf16 => 2,
         };
