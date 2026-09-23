@@ -131,15 +131,45 @@ pub struct Glm5NextMhcSiteWeights {
     pub hc_scale: DevicePtr,
     /// `[mix_hc]` FP32.
     pub hc_base: DevicePtr,
-    /// `[MHC_MIX_MAX_TOKENS, mix_hc]` FP32 scratch: `hc_mix` writes it, `hc_finish` reads it.
+    /// `[mhc_mix_max_tokens(), mix_hc]` FP32 scratch: `hc_mix` writes it, `hc_finish` reads it.
     /// Per-site, so the two sites of a layer cannot alias; both run on one stream in order.
+    /// 🪤 Sized by the FUNCTION, not by [`MHC_MIX_MAX_TOKENS`] — the const is only its floor.
     pub mix: DevicePtr,
 }
 
-/// Token bound on the `mix` scratch. The GLM stack drives mHC one token at a time (the highway
-/// forces a serial prefill), so this is slack, not a shape — but `glm_hc_pre` REFUSES above it
-/// rather than writing past the allocation.
+/// FLOOR of the `mix` scratch's token bound — the value the stack shipped with, and the value
+/// it still uses at every prefill sub-chunk of 256 rows or fewer.
 pub const MHC_MIX_MAX_TOKENS: usize = 256;
+
+/// Token bound the `mix` scratch is actually allocated at AND checked against.
+///
+/// 🔴 MEASURED 2026-09-22, WS1/P2: this was a bare `256` const, and it is a **hard ceiling on
+/// `AVAROK_GLM_PREFILL_ROWS`** that has nothing to do with memory. At 512 rows the serve boots
+/// fine and then every prefill dies at layer 0 with
+/// *"glm_hc_pre: 512 tokens exceeds the 256-token `mix` scratch"* — HTTP 200, empty completion,
+/// `runs/ws1-p2-prefill-n1n2/out/shared-r512/`. P1's "rows=1024 is not memory-feasible" never
+/// saw this because the LOAD died first; memory was the second blocker, not the first.
+///
+/// The scratch is `[tokens, mix_hc(hc_mult)] FP32` **per site**: at GLM-5.3's `hc_mult = 4`
+/// that is `tokens * 96 B` per site, 90 sites — **2.2 MB for the whole model at 256, 8.8 MB at
+/// 1024**. The ceiling was never buying anything; it was slack that hardened into a limit.
+///
+/// 🪤 The allocation in `glm5_next_load` and the refusal in [`glm_hc_pre`] MUST read the same
+/// number, which is why this is one `OnceLock` function and not two `max()` expressions. Two
+/// expressions that agree today are a buffer overrun the day one of them is edited.
+pub fn mhc_mix_max_tokens() -> usize {
+    static T: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *T.get_or_init(|| {
+        let t = crate::layers::glm5next_layer::prefill_rows().max(MHC_MIX_MAX_TOKENS);
+        if t != MHC_MIX_MAX_TOKENS {
+            tracing::warn!(
+                "GLM mHC `mix` scratch widened to {t} tokens (floor {MHC_MIX_MAX_TOKENS}) to \
+                 match AVAROK_GLM_PREFILL_ROWS"
+            );
+        }
+        t
+    })
+}
 
 /// `hc_pre`: collapse the `hc_mult` FP32 streams to one BF16 sequence and emit this site's
 /// `post` / `comb` mixing coefficients.
@@ -171,10 +201,12 @@ pub fn glm_hc_pre(
     stream: u64,
 ) -> Result<()> {
     let mix_hc = (2 + hc_mult) * hc_mult;
-    if num_tokens as usize > MHC_MIX_MAX_TOKENS {
+    let mix_cap = mhc_mix_max_tokens();
+    if num_tokens as usize > mix_cap {
         anyhow::bail!(
-            "glm_hc_pre: {num_tokens} tokens exceeds the {MHC_MIX_MAX_TOKENS}-token `mix` \
-             scratch. Raise MHC_MIX_MAX_TOKENS and rebind; do not launch past the allocation."
+            "glm_hc_pre: {num_tokens} tokens exceeds the {mix_cap}-token `mix` scratch \
+             (floor {MHC_MIX_MAX_TOKENS}, widened to AVAROK_GLM_PREFILL_ROWS). Do not launch \
+             past the allocation."
         );
     }
     // 🪤 The two kernels take the SAME arguments; only `hc_fn`'s element width differs, and it
@@ -290,5 +322,30 @@ mod mhc_shape_tests {
     fn the_kernels_mix_bound_is_hc_mult_four() {
         assert_eq!(mix_hc(4), 24, "GLM_HC_MAX_MIX in glm5next_mhc.cu");
         assert!(mix_hc(5) > 24, "hc_mult 5 would exceed the kernel's bound");
+    }
+
+    /// The `mix` bound must never drop BELOW the shipped floor, whatever the sub-chunk is:
+    /// `glm_hc_pre` checks against this number and `glm5_next_load` allocates from it, and a
+    /// bound under the floor would turn a refusal into an overrun. With no
+    /// `AVAROK_GLM_PREFILL_ROWS` in the environment — the state of a test process — the
+    /// default sub-chunk is 16, so the answer must still be the 256-token floor.
+    #[test]
+    fn the_mix_bound_never_goes_below_the_shipped_floor() {
+        assert_eq!(mhc_mix_max_tokens(), MHC_MIX_MAX_TOKENS);
+        assert!(mhc_mix_max_tokens() >= MHC_MIX_MAX_TOKENS);
+    }
+
+    /// The scratch's real cost, so "raise the ceiling" is never argued from a guess. Per SITE:
+    /// `tokens * mix_hc(hc_mult) * 4 B`. GLM-5.3 is `hc_mult = 4`, two sites per layer, 45
+    /// layers = 90 sites.
+    #[test]
+    fn the_mix_scratch_costs_megabytes_not_gigabytes() {
+        let total = |tokens: usize| tokens * mix_hc(4) * 4 * 90;
+        assert_eq!(
+            total(256),
+            2_211_840,
+            "2.2 MB for the whole model at the floor"
+        );
+        assert_eq!(total(1024), 8_847_360, "8.8 MB at a 1024-row sub-chunk");
     }
 }
