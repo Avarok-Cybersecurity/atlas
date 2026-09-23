@@ -346,16 +346,24 @@ impl MtpHead {
                 k,
                 stream,
             ),
-            ProjectionWeight::Bf16(w) => ops::dense_gemv(
-                gpu,
-                self.dense_gemv_k.unwrap(),
-                input,
-                w,
-                output,
-                n,
-                k,
-                stream,
-            ),
+            // `AVAROK_MTP_TC=1`: the M=1 tensor-core entry (see
+            // `ops::dense_gemv_tc`); otherwise the CUDA-core GEMV.
+            ProjectionWeight::Bf16(w) => {
+                if ops::dense_gemv_tc::try_dense_gemv_tc(gpu, input, w, output, 1, n, k, n, stream)?
+                {
+                    return Ok(());
+                }
+                ops::dense_gemv(
+                    gpu,
+                    self.dense_gemv_k.unwrap(),
+                    input,
+                    w,
+                    output,
+                    n,
+                    k,
+                    stream,
+                )
+            }
         }
     }
 

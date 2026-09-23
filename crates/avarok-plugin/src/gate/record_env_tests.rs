@@ -128,3 +128,41 @@ fn tc_kill_switch_default_matches_the_lever() {
         Some("unset")
     );
 }
+
+/// `AVAROK_MTP_TC` is an OPT-IN armed by exactly `1`. The record's `0` default
+/// is right only while the lever treats every value but `1` (unset and empty
+/// included) as OFF. Read the lever's own source so a rule change there fails
+/// here instead of silently mislabelling every record; a set value is
+/// disclosed verbatim.
+#[test]
+fn tc_mtp_switch_default_matches_the_lever() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let path = root.join("crates/spark-model/src/layers/ops/dense_gemv_tc.rs");
+    let src = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let rule = src
+        .find("pub fn mtp_tc_from(")
+        .map(|at| src[at..].chars().take(160).collect::<String>())
+        .expect("the drafter tc rule is gone; PERF_CONTROLS discloses a dead variable");
+    assert!(
+        rule.contains("value == Some(\"1\")"),
+        "the AVAROK_MTP_TC rule changed; the record's \"0\" default assumes only `1` arms it: {rule}"
+    );
+    let read = src
+        .find("pub fn mtp_tc_enabled()")
+        .map(|at| src[at..].chars().take(260).collect::<String>())
+        .expect("the drafter tc lever is gone");
+    assert!(
+        read.contains("mtp_tc_from(std::env::var(\"AVAROK_MTP_TC\")"),
+        "the lever no longer reads AVAROK_MTP_TC through mtp_tc_from: {read}"
+    );
+    assert_eq!(
+        super::resolve_perf_env(|_| None)
+            .get("AVAROK_MTP_TC")
+            .map(String::as_str),
+        Some("0")
+    );
+    for v in ["1", "true"] {
+        let resolved = super::resolve_perf_env(|k| (k == "AVAROK_MTP_TC").then(|| v.to_string()));
+        assert_eq!(resolved.get("AVAROK_MTP_TC").map(String::as_str), Some(v));
+    }
+}
