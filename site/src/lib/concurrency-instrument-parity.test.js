@@ -100,32 +100,55 @@ describe('the gate and the published bar declare one instrument', () => {
     expect(differs.map((d) => d.axis).sort()).toEqual(['kv_cache_dtype', 'max_model_len']);
   });
 
-  test('the rung floors are PROVISIONAL — the published ladder halved, and never zero', () => {
-    // Re-pointing moved every rung 1.15x-4.3x, so the old bars describe
-    // nothing here. Each floor is the published Atlas value at that rung x 0.5
-    // rounded down to a clean step: a 2x margin, because the published leg ran
-    // an August build with its own CLI while this gate serves main's recipe.
+  test('the rung floors are cut BELOW every clean rep on this instrument, and never zero', () => {
+    // Re-cut 2026-09-23 from the first gate record on this instrument plus the
+    // same-instrument ladder38 history on all three boxes (the derivation
+    // block above the C1 table in BENCH.toml). Three properties, each of
+    // which a wrong re-cut breaks in a different way:
     //
-    // ★ AND NEVER ZERO. Switching the ladder off was the obvious move and it
-    // is wrong: `Floors::gating()` in concurrency_verdict.rs is
-    // `peak > 0 || any per_c > 0`, so an all-zero ladder flips the run to the
-    // INFO verdict, and `GateRecord::verdict_passes` accepts only "PASS"
-    // (gate/check.rs:382) — the gate would be UNSATISFIABLE, not ungated.
-    // Re-cut under the speed-bound policy once >= 3 records exist here.
-    const published = { c1: 23.59, c2: 41.02, c4: 74.21, c8: 125.95, c16: 203.36,
-                        c32: 291.01, c64: 386.63, c128: 478.11, peak: 478.11 };
-    const expected = { c1: 11.5, c2: 20.5, c4: 37, c8: 62.5, c16: 100,
-                       c32: 140, c64: 190, c128: 230, peak: 230 };
+    //   1. the values, pinned, so a drift is a visible diff and not a quiet
+    //      one — and every one > 0, because `Floors::gating()` in
+    //      concurrency_verdict.rs is `peak > 0 || any per_c > 0`: an all-zero
+    //      ladder flips the run to INFO, which `verdict_passes` refuses, and
+    //      the gate becomes UNSATISFIABLE rather than ungated;
+    //   2. no floor above the speed-bound policy's own number on the record
+    //      it was cut from (latest x 0.975 rounded DOWN to the file's step) —
+    //      a bar above that is a ratchet from a hot box, not a floor;
+    //   3. the record that justified the re-cut clears every floor by the
+    //      driver's own rule (raw value >= min, stricter than scoring's
+    //      value + noise), so the file cannot refuse its own basis.
+    const record = JSON.parse(
+      readFileSync(repo('.benchmarks/concurrency-sweep/2026-09-23-6c75c09da4.json'), 'utf8')
+    );
+    expect(record.verdict).toBe('PASS');
+    // The raw record, as the harness wrote it: the basis must be on THIS
+    // instrument, or the floors describe a different one.
+    expect(record.params.prompt_mode).toBe('essay');
+    expect(record.params.osl).toBe('1024');
+    expect(record.serve_overrides.max_model_len).toBe('2048');
+    const stepDown = (v) => (v < 100 ? Math.floor(v * 2) / 2 : v < 1000 ? Math.floor(v / 10) * 10 : Math.floor(v / 50) * 50);
+    const expected = { c1: 22, c2: 38, c4: 67, c8: 110, c16: 180,
+                       c32: 260, c64: 360, c128: 440, peak: 440 };
     for (const [key, want] of Object.entries(expected)) {
-      const min = entry.metrics[`${key}_aggregate_tok_s`].min;
+      const metric = `${key}_aggregate_tok_s`;
+      const { min, noise } = entry.metrics[metric];
       expect(`${key} ${min}`).toBe(`${key} ${want}`);
       expect(min).toBeGreaterThan(0);
-      // the 2x margin, asserted rather than trusted to the arithmetic above
-      expect(published[key] / min).toBeGreaterThanOrEqual(2);
-      expect(published[key] / min).toBeLessThan(2.3);
+      expect(noise ?? 0).toBe(0);
+      const measured = record.metrics[metric];
+      expect(min).toBeLessThanOrEqual(stepDown(measured * 0.975));
+      expect(measured).toBeGreaterThanOrEqual(min);
     }
-    // what is NOT re-cut: the two bars the re-point does not invalidate.
+    // The peak floor is the C=128 floor: the peak lands at C=128 in every
+    // regime run, and the record agrees.
+    expect(entry.metrics.peak_aggregate_tok_s.min).toBe(entry.metrics.c128_aggregate_tok_s.min);
+    expect(record.metrics.peak_aggregate_tok_s).toBe(record.metrics.c128_aggregate_tok_s);
+    // The two companion bars: vacuity stays absolute; min_completion_tokens
+    // was re-cut with the rungs (650, from the regime's per-run minima) and
+    // the record clears it.
     expect(entry.metrics.vacuous_cells.max).toBe(0);
-    expect(entry.metrics.min_completion_tokens.min).toBe(260);
+    expect(entry.metrics.min_completion_tokens.min).toBe(650);
+    expect(record.metrics.min_completion_tokens).toBeGreaterThanOrEqual(650);
+    expect(record.metrics.vacuous_cells).toBe(0);
   });
 });

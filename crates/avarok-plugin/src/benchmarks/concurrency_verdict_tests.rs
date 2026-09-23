@@ -77,6 +77,13 @@ fn a_clean_sweep_that_clears_every_floor_passes() {
     // value at that rung x 0.5, rounded down. The fixture below is the
     // published ladder itself, which is what this gate should now measure.
     //
+    // ★ RE-CUT 2026-09-23 from the first record on the 128/1024 essay
+    // instrument plus the same-instrument ladder38 history on all three
+    // boxes; the derivation is the block above the C1 table in BENCH.toml.
+    // The fixture below is the PUBLISHED Atlas ladder, which every re-cut
+    // floor must still clear -- a bar the published leg fails is a bar cut
+    // from a hot box.
+    //
     // ★ ZERO WAS NOT AN OPTION, and this pin is where that is remembered.
     // `RUNGS` says a rung with no metrics block gates nothing — true of ONE
     // rung beside bounded ones. But `Floors::gating()` is
@@ -99,17 +106,17 @@ fn a_clean_sweep_that_clears_every_floor_passes() {
     assert_eq!(
         floors.per_c,
         vec![
-            (1, 11.5),
-            (2, 20.5),
-            (4, 37.0),
-            (8, 62.5),
-            (16, 100.0),
-            (32, 140.0),
-            (64, 190.0),
-            (128, 230.0)
+            (1, 22.0),
+            (2, 38.0),
+            (4, 67.0),
+            (8, 110.0),
+            (16, 180.0),
+            (32, 260.0),
+            (64, 360.0),
+            (128, 440.0)
         ]
     );
-    assert_eq!(floors.peak, 230.0);
+    assert_eq!(floors.peak, 440.0);
     assert!(
         floors.gating(),
         "an all-zero ladder is an INFO verdict, not an ungated one, and INFO is \
