@@ -658,49 +658,37 @@ pub fn step_mtp(
         // DFlash γ-block drafters return ≥4 drafts per step (γ=16 typical).
         // The K=2/3/4 graphed paths are MTP-shaped and don't generalize past
         // K=4 cleanly, so γ-block verify routes through `step_verify_dflash`.
-        // MTP keeps using the existing graphed paths; this dispatch is purely
-        // additive.
-        if drafts.len() >= 4 {
-            step_verify_dflash(
-                model,
-                a,
-                sched,
-                &drafts,
-                num_drafts,
-                verify_ctx,
-                dflash_verify_raw_argmax,
-            );
-        } else if num_drafts >= 3 && drafts.len() >= 3 {
-            step_verify_k4(
-                model,
-                a,
-                sched,
-                &drafts,
-                num_drafts,
-                verify_ctx,
-                dflash_verify_raw_argmax,
-            );
-        } else if num_drafts >= 2 && drafts.len() >= 2 {
-            step_verify_k3(
-                model,
-                a,
-                sched,
-                &drafts,
-                num_drafts,
-                verify_ctx,
-                dflash_verify_raw_argmax,
-            );
+        // MTP runs at THIS step's clamped ladder width, surplus truncated,
+        // exactly like the batched path (G25, `spec_capacity`).
+        let step_nd = if dflash_verify_raw_argmax {
+            num_drafts
         } else {
-            step_verify_k2(
-                model,
-                a,
-                sched,
-                &drafts,
-                num_drafts,
-                verify_ctx,
-                dflash_verify_raw_argmax,
-            );
+            ladder_nd
+        };
+        let (keep, arm) = crate::scheduler::spec_capacity::serial_verify_plan(
+            drafts.len(),
+            step_nd,
+            dflash_verify_raw_argmax,
+        );
+        drafts.truncate(keep);
+        if drafts.is_empty() {
+            continue;
         }
+        let verify = match arm {
+            crate::scheduler::spec_capacity::SerialArm::DFlash => step_verify_dflash,
+            crate::scheduler::spec_capacity::SerialArm::K4 => step_verify_k4,
+            crate::scheduler::spec_capacity::SerialArm::K3 => step_verify_k3,
+            crate::scheduler::spec_capacity::SerialArm::K2 => step_verify_k2,
+        };
+        verify(
+            model,
+            a,
+            sched,
+            &drafts,
+            step_nd,
+            verify_ctx,
+            dflash_verify_raw_argmax,
+        );
     }
     sched
         .timing

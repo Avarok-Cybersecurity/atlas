@@ -39,6 +39,51 @@ pub(crate) fn clamp_drafts_to_slot_capacity(
         .fold(drafts, |acc, cap| acc.min(cap))
 }
 
+/// The verify arm the SERIAL (per-sequence) path runs for one sequence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SerialArm {
+    DFlash,
+    K4,
+    K3,
+    K2,
+}
+
+/// Serial-path twin of the batched path's surplus truncation (G25).
+///
+/// A verify re-proposes at the width it was handed, so a sequence can carry
+/// more pending drafts than THIS step's clamped width `step_drafts` (the
+/// ladder rung after [`clamp_drafts_to_slot_capacity`]). The batched path
+/// truncates that surplus; the serial path used to dispatch on the pending
+/// count against the serve-wide `--num-drafts`, so `AVAROK_MTP_K_LADDER=1:1`
+/// with `--num-drafts 3` alternated K=2 -> re-propose 3 -> K=4 verify on a
+/// slot sized for one draft ("SSM MTP intermediate buffers not allocated
+/// (h_state_intermediates.len()=1 ... num_tokens=4)"), and the failed graph
+/// capture poisoned every later request. Returns how many pending drafts to
+/// keep and the arm to run; `step_drafts` is also the re-propose width the
+/// caller hands that arm. DFlash γ-blocks keep their own width: the caller
+/// passes the serve-wide count there and nothing is truncated.
+pub(crate) fn serial_verify_plan(
+    pending: usize,
+    step_drafts: usize,
+    dflash: bool,
+) -> (usize, SerialArm) {
+    let keep = if dflash {
+        pending
+    } else {
+        pending.min(step_drafts)
+    };
+    let arm = if keep >= 4 {
+        SerialArm::DFlash
+    } else if step_drafts >= 3 && keep >= 3 {
+        SerialArm::K4
+    } else if step_drafts >= 2 && keep >= 2 {
+        SerialArm::K3
+    } else {
+        SerialArm::K2
+    };
+    (keep, arm)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -63,5 +108,29 @@ mod tests {
         assert_eq!(clamp_drafts_to_slot_capacity(3, [usize::MAX; 4]), 3);
         // Pure-attention models have no active-slot constraint at all.
         assert_eq!(clamp_drafts_to_slot_capacity(2, std::iter::empty()), 2);
+    }
+
+    #[test]
+    fn a_ladder_below_num_drafts_never_reaches_the_k4_verify_at_n1() {
+        // G25, the arm-k1 serve: `AVAROK_MTP_K_LADDER=1:1,...`, `--num-drafts
+        // 3`, one sequence. Slot 0 is sized for the ladder's one draft, so the
+        // step width is 1; the previous K=2 verify re-proposed three drafts.
+        let step = clamp_drafts_to_slot_capacity(1, [1]);
+        assert_eq!(serial_verify_plan(3, step, false), (1, SerialArm::K2));
+        assert_eq!(serial_verify_plan(2, step, false), (1, SerialArm::K2));
+        // A two-draft rung keeps two of three and runs K=3.
+        assert_eq!(serial_verify_plan(3, 2, false), (2, SerialArm::K3));
+    }
+
+    #[test]
+    fn a_full_width_step_dispatches_as_before() {
+        assert_eq!(serial_verify_plan(3, 3, false), (3, SerialArm::K4));
+        assert_eq!(serial_verify_plan(2, 3, false), (2, SerialArm::K3));
+        assert_eq!(serial_verify_plan(1, 3, false), (1, SerialArm::K2));
+        // A grammar-truncated sequence carries fewer drafts than the width.
+        assert_eq!(serial_verify_plan(0, 3, false), (0, SerialArm::K2));
+        // DFlash γ-blocks are never truncated to an MTP width.
+        assert_eq!(serial_verify_plan(16, 16, true), (16, SerialArm::DFlash));
+        assert_eq!(serial_verify_plan(3, 3, true), (3, SerialArm::K4));
     }
 }

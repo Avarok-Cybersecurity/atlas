@@ -319,13 +319,7 @@ impl Model for TransformerModel {
     ) -> Result<Vec<u32>> {
         self.ssm_pool.require_verify_rollback_supported()?;
         let r = self.decode_verify_dispatch(tokens, seq, stream);
-        if r.is_err() {
-            // Same brick guard as decode_batch: a refuse mid-verify-capture
-            // (MTP/spec) must not leave the default stream recording. No-op when
-            // not capturing. Verify captures on default_stream (verify_a/b/…).
-            self.gpu.abort_capture_if_active(self.gpu.default_stream());
-        }
-        r
+        self.release_verify_capture_on_err(r)
     }
     fn checkpoint_ssm_states(&self, seq: &mut SequenceState) -> Result<()> {
         self.checkpoint_ssm_states_dispatch(seq)
@@ -391,7 +385,8 @@ impl Model for TransformerModel {
         _stream: u64,
     ) -> Result<[u32; 2]> {
         self.ssm_pool.require_verify_rollback_supported()?;
-        self.decode_verify_graphed_dispatch(tokens, seq, _stream)
+        let r = self.decode_verify_graphed_dispatch(tokens, seq, _stream);
+        self.release_verify_capture_on_err(r)
     }
     fn decode_verify_graphed_k3(
         &self,
@@ -400,7 +395,8 @@ impl Model for TransformerModel {
         _stream: u64,
     ) -> Result<[u32; 3]> {
         self.ssm_pool.require_verify_rollback_supported()?;
-        self.decode_verify_graphed_k3_dispatch(tokens, seq, _stream)
+        let r = self.decode_verify_graphed_k3_dispatch(tokens, seq, _stream);
+        self.release_verify_capture_on_err(r)
     }
     fn decode_verify_graphed_k4(
         &self,
@@ -409,7 +405,8 @@ impl Model for TransformerModel {
         _stream: u64,
     ) -> Result<[u32; 4]> {
         self.ssm_pool.require_verify_rollback_supported()?;
-        self.decode_verify_graphed_k4_dispatch(tokens, seq, _stream)
+        let r = self.decode_verify_graphed_k4_dispatch(tokens, seq, _stream);
+        self.release_verify_capture_on_err(r)
     }
     fn can_batch_verify(&self, ks: &[usize]) -> bool {
         self.can_batch_verify_dispatch(ks)
@@ -423,7 +420,8 @@ impl Model for TransformerModel {
         opts: crate::traits::VerifyBatchedOpts,
     ) -> Result<Vec<u32>> {
         self.ssm_pool.require_verify_rollback_supported()?;
-        self.decode_verify_batched_dispatch(tokens, ks, seqs, _stream, opts)
+        let r = self.decode_verify_batched_dispatch(tokens, ks, seqs, _stream, opts);
+        self.release_verify_capture_on_err(r)
     }
     fn stash_verify_hidden_rows(&self, rows: &[usize], _stream: u64) -> Result<()> {
         self.stash_verify_hidden_rows_dispatch(rows, _stream)
@@ -458,7 +456,8 @@ impl Model for TransformerModel {
         _stream: u64,
     ) -> Result<Vec<u32>> {
         self.ssm_pool.require_verify_rollback_supported()?;
-        self.decode_verify_graphed_kgamma_dispatch(tokens, seq, _stream)
+        let r = self.decode_verify_graphed_kgamma_dispatch(tokens, seq, _stream);
+        self.release_verify_capture_on_err(r)
     }
     fn decode_and_verify_fused(
         &self,
@@ -467,7 +466,8 @@ impl Model for TransformerModel {
         _stream: u64,
     ) -> Result<Vec<u32>> {
         self.ssm_pool.require_verify_rollback_supported()?;
-        self.decode_and_verify_fused_dispatch(tokens, seq, _stream)
+        let r = self.decode_and_verify_fused_dispatch(tokens, seq, _stream);
+        self.release_verify_capture_on_err(r)
     }
     fn save_hidden_for_catchup(&self, token_idx: usize, pos: usize) -> Result<()> {
         self.save_hidden_for_catchup_dispatch(token_idx, pos)
@@ -933,6 +933,19 @@ impl Model for TransformerModel {
 }
 
 impl TransformerModel {
+    /// Same brick guard as `decode_batch`: a refuse mid-verify-capture
+    /// (MTP/spec) must not leave the default stream recording, or every later
+    /// CUDA op fails with STREAM_CAPTURE_UNSUPPORTED / 901 and each request
+    /// after it dies in prefill (G25: an undersized K=4 verify at capture
+    /// time bricked the serve). No-op when not capturing. Every verify arm
+    /// captures on default_stream (verify_a/b/c/c2/d/e/fused).
+    fn release_verify_capture_on_err<T>(&self, r: Result<T>) -> Result<T> {
+        if r.is_err() {
+            self.gpu.abort_capture_if_active(self.gpu.default_stream());
+        }
+        r
+    }
+
     /// Collect chunk-boundary aux layer state (PLE, QSA) for a Marconi
     /// snapshot. Returns the blobs to attach; empty when no layer carries
     /// aux state.
