@@ -707,7 +707,13 @@ pub fn forward_moe(
     // 🪤 The same test is why this is safe under CUDA graph capture: only decode is captured,
     // and decode can never reach here, so the host read of `expert_offsets` inside
     // `forward_moe_grouped_prefill` cannot land inside a capture.
+    //
+    // 🔴 The width FLOOR is load-bearing, not caution. MEASURED on one image at 5,400
+    // tokens: at the shipping 16-row sub-chunk the grouped path is 25.14 tok/s against the
+    // GEMV's 63.05 (0.40x); at 256 rows it is 128.10 against 82.14 (1.56x). Without the
+    // floor, "default ON" would have regressed the default serve by 2.5x.
     let grouped_prefill = rows > MOE_ROW_BATCH_MAX_ROWS
+        && rows >= forward_prefill_gemm::prefill_gemm_min_rows()
         && forward_prefill_gemm::prefill_gemm_enabled()
         && !host_dispatch_forced()
         // The route trace reads `ids` back PER ROW; the grouped path never materialises a
