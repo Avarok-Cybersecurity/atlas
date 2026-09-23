@@ -152,7 +152,7 @@ fn the_overrides_count_is_the_real_declaration_entry_for_entry() {
         let n = count_declared_overrides(&root, hw);
         let text = std::fs::read_to_string(root.join(hw).join("HARDWARE.toml"))
             .unwrap_or_else(|e| panic!("kernels/{hw}/HARDWARE.toml: {e}"));
-        let value: toml::Value = text.parse().expect("valid TOML");
+        let value: toml::Value = toml::from_str(&text).expect("valid TOML");
         let entries = declared_overrides(&value);
         assert_eq!(entries.len(), n, "kernels/{hw}");
         for e in &entries {
@@ -174,8 +174,8 @@ fn an_absent_declaration_counts_zero() {
         count_declared_overrides(std::path::Path::new("/nonexistent"), "hopper"),
         0
     );
-    let empty: toml::Value = "[hardware]\narch = \"sm_90a\"\n".parse().unwrap();
+    let empty: toml::Value = toml::from_str("[hardware]\narch = \"sm_90a\"\n").unwrap();
     assert!(declared_overrides(&empty).is_empty());
-    let bad: toml::Value = "[kernels]\noverrides = [1, \"ok.cu\"]\n".parse().unwrap();
+    let bad: toml::Value = toml::from_str("[kernels]\noverrides = [1, \"ok.cu\"]\n").unwrap();
     assert_eq!(declared_overrides(&bad), vec!["ok.cu".to_string()]);
 }

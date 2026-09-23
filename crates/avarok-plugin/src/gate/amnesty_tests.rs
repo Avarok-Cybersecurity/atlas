@@ -195,12 +195,17 @@ fn amnesty_expires_once_every_gate_has_a_fresh_record() {
         .iter()
         .copied()
         .filter(|id| {
-            let newest = records_newest_first(root, id)
-                .first()
-                .and_then(|p| read_record(p).ok())
-                .map(|r| r.recorded_at)
-                .unwrap_or(0);
-            newest <= AMNESTY_EPOCH
+            // A gate with NO record at all has nothing the grant ever
+            // covered and nothing to re-earn: `concurrency-sweep-moe` became
+            // REQUIRED on 2026-09-23 with its first record still owed to the
+            // campaign certifying that PR. It is neither stale under the
+            // grant nor evidence the grant is still needed. A record that
+            // exists but cannot be read still counts as stale (fail-closed).
+            let records = records_newest_first(root, id);
+            let Some(newest) = records.first() else {
+                return false;
+            };
+            read_record(newest).ok().map(|r| r.recorded_at).unwrap_or(0) <= AMNESTY_EPOCH
         })
         .collect();
     if ONE_TIME_AMNESTY.is_empty() {

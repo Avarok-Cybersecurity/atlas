@@ -409,6 +409,10 @@ async fn run(args: RunArgs) -> Result<i32> {
             .as_ref()
             .map(|s| s.resolved.clone())
             .unwrap_or_default();
+        let serve_env = served
+            .as_ref()
+            .map(|s| s.serve_env.clone())
+            .unwrap_or_default();
         let (sha_at_start, dirty_at_start) = provenance.unwrap_or_default();
         let written = super::bench_record::write_gate_record(
             &outcome.record,
@@ -416,6 +420,7 @@ async fn run(args: RunArgs) -> Result<i32> {
             &target.model,
             recipe,
             serve_resolved,
+            serve_env,
             sha_at_start,
             dirty_at_start,
             match &args.output_image {

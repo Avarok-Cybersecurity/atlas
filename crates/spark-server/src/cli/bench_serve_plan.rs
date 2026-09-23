@@ -11,7 +11,7 @@
 use std::collections::BTreeMap;
 
 use anyhow::{Context, Result, bail};
-use avarok_plugin::gate;
+use avarok_plugin::{gate, serve_env};
 
 use super::bench_resolve::Resolved;
 
@@ -25,6 +25,11 @@ pub struct ServePlan {
     /// The merged `[benchmarks.serve_overrides]` pin + `--serve-override` set,
     /// after `--hermetic` expansion: what the record states.
     pub requested: BTreeMap<String, String>,
+    /// The `AVAROK_*` serve levers the server runs under: the recipe's `env:`
+    /// block under the entry's `[benchmarks.serve_env]` pin, both validated
+    /// by `serve_env::declared`. What a leased server's `env_sha256` must
+    /// fingerprint to, and what the record discloses (#1242).
+    pub serve_env: BTreeMap<String, String>,
     /// The box class the run is for, and its declared limits
     /// (`kernels/<hw>/HARDWARE.toml` `[benchmarks.limits]`): the memory floor
     /// a self-start applies and how long a server may take to come up.
@@ -67,6 +72,18 @@ impl ServePlan {
     /// the same values as one started here.
     pub fn disclosed(&self, port: u16) -> Result<BTreeMap<String, String>> {
         Ok(disclosed_from(&self.serve_args(port)?))
+    }
+
+    /// Reconcile the declared lever set with the levers THIS process carries
+    /// — refusing, by name, any the recipe did not declare and any it declares
+    /// at another value (`serve_env::reconcile`). Called before a server is
+    /// probed or started, so a contaminated harness gets no server at all.
+    pub fn reconcile_env(&self) -> Result<serve_env::Reconciled> {
+        serve_env::reconcile(
+            &format!("recipe {}", self.recipe_id),
+            &self.serve_env,
+            &serve_env::process_levers(),
+        )
     }
 }
 
@@ -149,6 +166,26 @@ pub fn plan_serve(
         );
     }
 
+    // The levers the serve runs under: the recipe's own `env:` block with the
+    // entry's `[benchmarks.serve_env]` pin on top (the pin wins, as a serve
+    // override does). Validated NOW — a legacy spelling or a harness variable
+    // in either is refused before a model load, not by the serve after one.
+    let serve_env = serve_env::merge_declared(
+        serve_env::declared(&format!("recipe {recipe_id}"), &recipe.env)?,
+        serve_env::declared(
+            &format!("{benchmark_id}'s baseline entry for {model} ([benchmarks.serve_env])"),
+            &entry.serve_env,
+        )?,
+    );
+    if !serve_env.is_empty() {
+        let shown = serve_env
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        eprintln!("gate: recipe {recipe_id} is measured under serve env: {shown}");
+    }
+
     // `--hermetic` expands into the keys it closes BEFORE the recipe renders,
     // so a recipe default that turns one of them on does not produce a command
     // line contradicting itself. See `cli::hermetic::CLOSED_KEYS`.
@@ -173,6 +210,7 @@ pub fn plan_serve(
         recipe,
         entry,
         requested,
+        serve_env,
         hardware,
         limits,
     })

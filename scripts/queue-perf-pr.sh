@@ -13,7 +13,7 @@
 # THE PROTOCOL: freeze -> campaign -> queue alone.
 #   1. Update the branch to CURRENT main and push. This is the freeze; any
 #      later main movement restarts the protocol.
-#   2. Run all twelve gates against exactly that sha (on a box with exclusive
+#   2. Run all thirteen gates against exactly that sha (on a box with exclusive
 #      GPU), commit the records, push.
 #   3. Queue the PR with NO other performance PR ahead of it. Do not add a
 #      second record-bearing PR to the queue until this one has landed.
@@ -28,7 +28,7 @@
 #     why.
 #   * The TTFT gates need TWO runs each on a box with no stored baseline. The
 #     first one only creates the baseline and records `info`, which the gate
-#     does not accept — so a twelve-gate campaign silently comes back ten.
+#     does not accept — so a thirteen-gate campaign silently comes back eleven.
 #   * The exit code is not the evidence. A BFCL run generated all 995
 #     responses, died in scoring, and correctly wrote NO record; a driver that
 #     trusted `rc` called that a pass. Ask

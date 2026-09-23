@@ -58,6 +58,10 @@ pub struct SelfServed {
     /// `ServePlan::disclosed`. Empty only for a fixture; every real serve
     /// comes from a plan.
     pub resolved: BTreeMap<String, String>,
+    /// The `AVAROK_*` serve levers the server runs under — the recipe's
+    /// declaration after `serve_env::reconcile`, for the record's
+    /// `serve_env` (#1242). Empty when the recipe declares none.
+    pub serve_env: BTreeMap<String, String>,
     /// The served variant's baseline entry — its committed thresholds, note
     /// and label. Carried so the run can DERIVE anything its own verdict
     /// shares with the gate (`BenchmarkDescriptor::threshold_params`) from the
@@ -79,6 +83,7 @@ impl SelfServed {
         recipe_id: String,
         overrides: BTreeMap<String, String>,
         resolved: BTreeMap<String, String>,
+        serve_env: BTreeMap<String, String>,
         baseline_entry: gate::ModelBaseline,
     ) -> Self {
         Self {
@@ -86,6 +91,7 @@ impl SelfServed {
             recipe_id,
             overrides,
             resolved,
+            serve_env,
             baseline_entry,
             server: None,
         }
@@ -159,6 +165,11 @@ pub async fn serve_for(
     overrides: BTreeMap<String, String>,
 ) -> Result<SelfServed> {
     let plan = super::bench_serve_plan::plan_serve(benchmark_id, hardware, checkpoint, overrides)?;
+    // The server is a task in THIS process, so its levers are this process's
+    // environment: what the recipe declares must already be here, and
+    // nothing else may be (#1242).
+    let reconciled = plan.reconcile_env()?;
+    refuse_unapplied_levers(&plan.recipe_id, &reconciled)?;
     let port = avarok_plugin::benchmarks::agentic::score::free_port()?;
     let serve_args = plan.serve_args(port)?;
     let resolved = plan.disclosed(port)?;
@@ -191,6 +202,7 @@ pub async fn serve_for(
         recipe_id: plan.recipe_id,
         overrides: plan.requested,
         resolved,
+        serve_env: reconciled.env,
         baseline_entry: plan.entry,
         server: Some(server),
     };
@@ -234,6 +246,41 @@ fn claim_start_slot(started: &AtomicBool, shutdown_requested: bool) -> Result<()
         );
     }
     Ok(())
+}
+
+/// Refuse an in-process serve whose recipe declares levers this process does
+/// not carry.
+///
+/// A child serve (`--serve-reuse`, `bench_lease`) is handed the declared set
+/// on top of the inherited environment. An in-process serve reads THIS
+/// process's environment, and that cannot be changed once the runtime's
+/// threads exist — `serve_load` retired the old `set_var` for exactly that
+/// (a `setenv` beside a concurrent `getenv` is UB). So a declared lever that
+/// is absent here is refused with the export line, never applied late and
+/// never dropped: a serve measured without it would be a serve of some other
+/// recipe, recorded as this one.
+///
+/// Pure over the reconciliation, so the refusal is testable without a GPU.
+fn refuse_unapplied_levers(
+    recipe_id: &str,
+    reconciled: &avarok_plugin::serve_env::Reconciled,
+) -> Result<()> {
+    if reconciled.missing.is_empty() {
+        return Ok(());
+    }
+    let exports = reconciled
+        .missing
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    bail!(
+        "recipe {recipe_id:?} is measured under {} serve lever(s) this process does not carry: \
+         {exports}. A gate that serves in-process cannot set them after it has started, so \
+         export them first:\n    env {exports} spark benchmark run …\nor run with \
+         --serve-reuse, which starts the server as a child and hands it the recipe's set.",
+        reconciled.missing.len()
+    );
 }
 
 /// Refuse to self-start onto a box that is already holding memory.
