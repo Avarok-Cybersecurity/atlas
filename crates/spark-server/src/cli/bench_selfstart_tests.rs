@@ -113,10 +113,54 @@ fn served_forever() -> (SelfServed, tokio::sync::oneshot::Receiver<()>) {
         recipe_id: "r".to_string(),
         overrides: Default::default(),
         resolved: Default::default(),
+        serve_env: Default::default(),
         baseline_entry: Default::default(),
         server: Some(server),
     };
     (served, rx)
+}
+
+// ── Declared levers an in-process serve cannot be given (#1242) ──
+
+/// An in-process serve reads this process's environment, which cannot be
+/// changed once the runtime is up. A declared lever the process lacks is
+/// refused with the exact export line — never applied late, never dropped.
+#[test]
+fn a_declared_lever_this_process_lacks_is_refused_with_the_export_line() {
+    use avarok_plugin::serve_env::Reconciled;
+    let declared: BTreeMap<String, String> = [
+        ("AVAROK_FP8_ROWWISE", "1"),
+        ("AVAROK_MTP_DCUT_RATIO", "1.0"),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .collect();
+    let err = refuse_unapplied_levers(
+        "qwen3.8/qwen3.8-27b-nvfp4-unsloth",
+        &Reconciled {
+            env: declared.clone(),
+            missing: declared.clone(),
+        },
+    )
+    .expect_err("refused");
+    let msg = format!("{err:#}");
+    assert!(msg.contains("2 serve lever(s)"), "{msg}");
+    assert!(
+        msg.contains("env AVAROK_FP8_ROWWISE=1 AVAROK_MTP_DCUT_RATIO=1.0 spark benchmark run"),
+        "the export line is verbatim: {msg}"
+    );
+    assert!(msg.contains("--serve-reuse"), "names the child path: {msg}");
+    assert!(msg.contains("qwen3.8/qwen3.8-27b-nvfp4-unsloth"), "{msg}");
+    // NEGATIVE CONTROL: a declaration the process already carries in full has
+    // nothing to apply and passes.
+    refuse_unapplied_levers(
+        "r",
+        &Reconciled {
+            env: declared,
+            missing: BTreeMap::new(),
+        },
+    )
+    .expect("nothing missing, nothing refused");
 }
 
 #[test]

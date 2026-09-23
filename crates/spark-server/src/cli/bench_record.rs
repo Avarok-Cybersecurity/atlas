@@ -28,6 +28,10 @@ pub(crate) async fn write_gate_record(
     // What that recipe RESOLVED (`ServePlan::disclosed`); empty for an
     // operator's own endpoint, where nothing was resolved by this process.
     serve_resolved: BTreeMap<String, String>,
+    // The `AVAROK_*` levers the gate applied to its server
+    // (`SelfServed::serve_env`); empty for an operator's own endpoint and
+    // for a recipe that declares none.
+    serve_env: BTreeMap<String, String>,
     sha_at_start: String,
     dirty_at_start: Vec<String>,
     // `--output-image` target plus its parsed `--output-image-args`.
@@ -86,7 +90,8 @@ pub(crate) async fn write_gate_record(
         // time, so it describes the code that actually ran rather than the
         // tree as it stands now.
         .with_closure(avarok_kernels::TARGET_CLOSURES)
-        .with_serve_resolved(serve_resolved);
+        .with_serve_resolved(serve_resolved)
+        .with_serve_env(serve_env);
     let path = gate::write_record(&root, &gate_record)?;
 
     // Sign it, and say BOTH filenames. The operator commits what the terminal

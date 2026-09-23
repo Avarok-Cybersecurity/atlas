@@ -4,7 +4,6 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -13,7 +12,10 @@ use crate::hardware::Hardware;
 use crate::history::RunRecord;
 use crate::result::{RunStatus, VerdictKind};
 
+pub use super::record_env::resolve_perf_env;
 pub use super::record_path::{date_of, record_path, record_path_for, variant_slug};
+pub use super::record_summary::now_secs;
+use super::record_summary::summarize;
 pub use super::record_write::write_record;
 
 /// One run record, as committed.
@@ -131,6 +133,17 @@ pub struct GateRecord {
     /// endpoint, where nothing was resolved. Disclosure only — never gated.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub serve_resolved: BTreeMap<String, String>,
+    /// The `AVAROK_*` serve levers the gate APPLIED to the server it measured
+    /// — the recipe's `env:` block under the entry's `[benchmarks.serve_env]`
+    /// pin, and after `serve_env::reconcile` nothing else. `perf_env` above
+    /// discloses three scheduler controls with their defaults filled in; this
+    /// is the whole lever set, so a record measured under
+    /// `AVAROK_FP8_ROWWISE=1` says so and one that was not cannot be mistaken
+    /// for it (#1242). Empty (and absent) for a run against an operator's own
+    /// endpoint and for every record written before this existed. Disclosure
+    /// only — `check_record` does not demand it.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub serve_env: BTreeMap<String, String>,
     /// What each kernel target compiled to when this was measured.
     ///
     /// Lets a later `kernels/`-only diff keep this record for the targets whose
@@ -139,39 +152,6 @@ pub struct GateRecord {
     /// records written before this existed behave exactly as they did.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub closure: super::closure::Attestation,
-}
-
-/// The scheduler performance controls a gate record discloses, each with the
-/// default the scheduler applies when it is unset.
-///
-/// Kept beside the record rather than imported from the scheduler because
-/// `avarok-plugin` does not depend on `spark-server`. That is a real duplication
-/// and `perf_env_defaults_match_the_scheduler` pins it: if a default moves in
-/// `scheduler::mod_helpers`, that test is what fails.
-const PERF_CONTROLS: [(&str, &str); 3] = [
-    ("AVAROK_PREFILL_CODISPATCH", "0"),
-    ("AVAROK_PREFILL_CODISPATCH_WINDOW_MS", "100"),
-    ("AVAROK_PREFILL_CODISPATCH_SETTLE_MS", "10"),
-];
-
-/// Resolve the `PERF_CONTROLS` table through `lookup`, substituting each
-/// default for an unset or empty variable.
-///
-/// Pure over the lookup so it is testable without mutating the process
-/// environment — `set_var` is unsafe and process-global, and a test that raced
-/// another test's read would be exactly the kind of intermittent this file
-/// exists to make impossible.
-pub fn resolve_perf_env(lookup: impl Fn(&str) -> Option<String>) -> BTreeMap<String, String> {
-    PERF_CONTROLS
-        .iter()
-        .map(|(key, default)| {
-            let value = lookup(key).filter(|v| !v.trim().is_empty());
-            (
-                (*key).to_string(),
-                value.unwrap_or_else(|| (*default).to_string()),
-            )
-        })
-        .collect()
 }
 
 /// Comparison against one metric's threshold. `min` fails below (scores),
@@ -228,6 +208,14 @@ pub struct ModelBaseline {
     /// `--param`; an explicit `--param` still wins. See `bench::BenchEntry`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub param_overrides: BTreeMap<String, String>,
+    /// `AVAROK_*` serve levers the gate pins for this entry, applied on top of
+    /// the recipe's own `env:` block — `serve_overrides`' sibling for what is
+    /// not a flag. See `bench::BenchEntry::serve_env` for the contract and
+    /// the case (the concurrency gate on the shared agentic recipe). Values
+    /// are validated by `serve_env::declared` at parse; disclosed on the
+    /// record as `GateRecord::serve_env`, never demanded by `check_record`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub serve_env: BTreeMap<String, String>,
 }
 
 /// Baseline pins first; the operator's `--serve-override` wins on a clash.
@@ -450,10 +438,12 @@ impl GateRecord {
             // environment this call sees, and there is no second process whose
             // state could have diverged in between.
             perf_env: resolve_perf_env(|k| std::env::var(k).ok()),
-            // Attached afterwards by `with_serve_resolved`, for the same
-            // reason as `closure`: a record without it forfeits a disclosure,
-            // it does not overstate anything.
+            // Attached afterwards by `with_serve_resolved` and
+            // `with_serve_env`, for the same reason as `closure`: a record
+            // without them forfeits a disclosure, it does not overstate
+            // anything.
             serve_resolved: BTreeMap::new(),
+            serve_env: BTreeMap::new(),
         })
     }
 
@@ -482,51 +472,4 @@ impl GateRecord {
     pub fn frame_status_failed(&self) -> bool {
         self.frame_status == RunStatus::Failed
     }
-}
-
-/// The one line a future reader sees first. States the headline numbers and,
-/// when the frame logged warnings, the first one — those are the observations
-/// worth carrying into the next run's context.
-fn summarize(record: &RunRecord) -> String {
-    let frame = &record.frame;
-    let numbers: Vec<String> = frame
-        .metrics
-        .iter()
-        .map(|(k, v)| format!("{k}={v:.2}"))
-        .collect();
-    let numbers = if numbers.is_empty() {
-        "no metrics".to_string()
-    } else {
-        numbers.join(", ")
-    };
-    let warning = frame
-        .log
-        .iter()
-        .find(|l| {
-            matches!(
-                l.level,
-                crate::result::LogLevel::Warn | crate::result::LogLevel::Error
-            )
-        })
-        .map(|l| format!(" · warning: {}", l.text));
-    let verdict = frame
-        .verdict
-        .as_ref()
-        .map(|v| format!("{:?}: {}", v.kind, v.reason))
-        .unwrap_or_else(|| "no verdict".into());
-    format!(
-        "{} · {} · {}{}",
-        record.target_model,
-        numbers,
-        verdict,
-        warning.unwrap_or_default()
-    )
-}
-
-/// Unix seconds now.
-pub fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or_default()
 }

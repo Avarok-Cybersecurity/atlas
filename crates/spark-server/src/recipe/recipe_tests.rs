@@ -326,3 +326,47 @@ fn every_recipe_can_be_served_hermetically() {
             .unwrap_or_else(|e| panic!("{} cannot be served hermetically: {e:#}", r.id));
     }
 }
+
+/// #1242: a recipe's `env:` block is the lever set it is measured under, read
+/// verbatim — absent and `{}` both mean none, and a non-scalar entry is a
+/// parse error rather than a silently dropped lever.
+#[test]
+fn the_env_block_is_read_verbatim_and_absent_means_none() {
+    let head = "recipe_version: \"2\"\nmodel: org/m\ncontainer: c\nruntime: atlas\n\
+                defaults:\n  port: 8888\n";
+    assert!(Recipe::parse("f/s", head).unwrap().env.is_empty());
+    assert!(
+        Recipe::parse("f/s", &format!("{head}env: {{}}\n"))
+            .unwrap()
+            .env
+            .is_empty()
+    );
+    let declared = Recipe::parse(
+        "f/s",
+        &format!(
+            "{head}env:\n  AVAROK_FP8_ROWWISE: \"1\"\n  AVAROK_MTP_K_LADDER: 1:3,2:1,4:2,8:2,16:1\n"
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        declared.env.iter().collect::<Vec<_>>(),
+        [
+            (&"AVAROK_FP8_ROWWISE".to_string(), &"1".to_string()),
+            (
+                &"AVAROK_MTP_K_LADDER".to_string(),
+                &"1:3,2:1,4:2,8:2,16:1".to_string()
+            ),
+        ]
+    );
+    // The vendored corpus: only the two vLLM recipes carry the key, and they
+    // declare nothing under it.
+    assert!(all().iter().all(|r| r.env.is_empty()));
+    let e = Recipe::parse("f/s", &format!("{head}env:\n  AVAROK_X:\n    nested: 1\n"))
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("env.AVAROK_X is not a scalar"), "{e}");
+    let e = Recipe::parse("f/s", &format!("{head}env: 1\n"))
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("`env:` must be a mapping"), "{e}");
+}

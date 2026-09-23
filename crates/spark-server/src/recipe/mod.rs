@@ -45,6 +45,13 @@ pub struct Recipe {
     pub updated: String,
     /// The `defaults:` block verbatim.
     pub defaults: BTreeMap<String, String>,
+    /// The `env:` block verbatim: the `AVAROK_*` serve levers this recipe is
+    /// measured under. The same key atlas-recipes' launcher exports into the
+    /// container; here the gate applies it to the serve it starts and refuses
+    /// any lever the harness carries beyond it (`bench_serve_plan`, #1242).
+    /// Read verbatim and validated there, not here — `serve_env::declared`
+    /// names the recipe in its refusal. Absent and `{}` both read as empty.
+    pub env: BTreeMap<String, String>,
     /// `Some(provenance)` when this is a dashboard-synthesized STARTING POINT
     /// rather than a recipe fetched from the index — the provenance names the
     /// donor recipe the settings were copied from, or says none were.
@@ -91,6 +98,21 @@ impl Recipe {
             defaults.insert(key.clone(), text.to_string());
         }
 
+        // `env:` is absent on every recipe that sets no lever; empty is the
+        // format's meaning for "none", as `{}` spells it explicitly.
+        let mut env = BTreeMap::new();
+        if let Some(block) = map.get("env") {
+            let Some(entries) = block.as_map() else {
+                bail!("{id}: `env:` must be a mapping");
+            };
+            for (key, value) in entries {
+                let Some(text) = value.as_str() else {
+                    bail!("{id}: env.{key} is not a scalar");
+                };
+                env.insert(key.clone(), text.to_string());
+            }
+        }
+
         // `min_nodes` is absent on single-node recipes; 1 is the format's
         // meaning for "not stated", not an invented default.
         let min_nodes = match scalar("min_nodes") {
@@ -118,6 +140,7 @@ impl Recipe {
             kv_dtype: meta_str("kv_dtype"),
             updated: meta_str("updated"),
             defaults,
+            env,
             id,
             starting_point: None,
         })

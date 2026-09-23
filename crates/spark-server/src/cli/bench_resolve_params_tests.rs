@@ -22,6 +22,7 @@ fn entry_with_pins(pins: &[(&str, &str)]) -> gate::ModelBaseline {
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect(),
+        serve_env: BTreeMap::new(),
     }
 }
 
