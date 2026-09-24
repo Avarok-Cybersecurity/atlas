@@ -114,6 +114,31 @@ pub(crate) fn clamp_stride_override(bytes: usize) -> usize {
     (bytes.saturating_add(7) & !7).clamp(PROPOSE_META_STRIDE_FLOOR, PROPOSE_META_STRIDE_CAP)
 }
 
+/// The weight-layout half of the batched-propose scope: a BF16-forward head
+/// with BF16 KV, BF16 fc/k/v (the drafter prefill and the batched K/V GEMMs
+/// read them as BF16), and q/o plus a dense FFN that are each BF16 or the
+/// weight-only NVFP4 stream of a dense head under `--mtp-quantization nvfp4`
+/// (`forward_batch::proj_rows`). `proj` is `[fc, q, k, v, o]`.
+fn batch_weight_layout_ok(
+    quant: MtpQuantization,
+    kv_bf16: bool,
+    proj: [&ProjectionWeight; 5],
+    dense_ffn: Option<&(ProjectionWeight, ProjectionWeight, ProjectionWeight)>,
+) -> bool {
+    let bf16_proj = |p: &ProjectionWeight| matches!(p, ProjectionWeight::Bf16(_));
+    let row_proj =
+        |p: &ProjectionWeight| matches!(p, ProjectionWeight::Bf16(_) | ProjectionWeight::Nvfp4(_));
+    let [fc, q, k, v, o] = proj;
+    matches!(quant, MtpQuantization::Bf16)
+        && kv_bf16
+        && bf16_proj(fc)
+        && row_proj(q)
+        && bf16_proj(k)
+        && bf16_proj(v)
+        && row_proj(o)
+        && dense_ffn.is_some_and(|(g, u, d)| row_proj(g) && row_proj(u) && row_proj(d))
+}
+
 impl MtpHead {
     /// Narrowest resolved `w4a16_gemv_batch{M}` kernel covering `n` rows, or
     /// a 0 handle when none is resolved (`try_kernel` misses are a silent 0 —
@@ -140,24 +165,18 @@ impl MtpHead {
     /// Whether the BF16-everything scope + non-width-dependent kernels the
     /// batched propose needs are all present. Width is [`Self::propose_batch_max`].
     fn propose_batch_scope_ok(&self) -> bool {
-        let bf16_proj = |p: &ProjectionWeight| matches!(p, ProjectionWeight::Bf16(_));
-        // q/o and the dense FFN may also be the weight-only NVFP4 stream of a
-        // dense head under `--mtp-quantization nvfp4` (`forward_batch::proj_rows`).
-        let row_proj = |p: &ProjectionWeight| {
-            matches!(p, ProjectionWeight::Bf16(_) | ProjectionWeight::Nvfp4(_))
-        };
-        matches!(self.quant, MtpQuantization::Bf16)
-            && self.kv_bf16
-            && bf16_proj(&self.fc)
-            && row_proj(&self.q_proj)
-            && bf16_proj(&self.k_proj)
-            && bf16_proj(&self.v_proj)
-            && row_proj(&self.o_proj)
-            && self
-                .dense_ffn_generic
-                .as_ref()
-                .is_some_and(|(g, u, d)| row_proj(g) && row_proj(u) && row_proj(d))
-            && self.dense_gemm_pipelined_k.0 != 0
+        batch_weight_layout_ok(
+            self.quant,
+            self.kv_bf16,
+            [
+                &self.fc,
+                &self.q_proj,
+                &self.k_proj,
+                &self.v_proj,
+                &self.o_proj,
+            ],
+            self.dense_ffn_generic.as_ref(),
+        ) && self.dense_gemm_pipelined_k.0 != 0
             && self.dense_gemv_k.is_some()
             && self.deinterleave_qg_k.is_some()
             && self.moe_silu_mul_k.is_some()
@@ -213,6 +232,122 @@ impl MtpHead {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::weight_map::{DenseWeight, Fp8DenseWeight, QuantizedWeight};
+    use spark_runtime::gpu::DevicePtr;
+
+    type Ffn = (ProjectionWeight, ProjectionWeight, ProjectionWeight);
+
+    /// A weight of the variant `MtpHead::quantize_proj` produces for `q`
+    /// (the pointers are never dereferenced: the predicate reads variants).
+    fn at(q: MtpQuantization) -> ProjectionWeight {
+        match q {
+            MtpQuantization::Nvfp4 => ProjectionWeight::Nvfp4(QuantizedWeight::null()),
+            MtpQuantization::Fp8 => ProjectionWeight::Fp8(Fp8DenseWeight {
+                weight: DevicePtr::NULL,
+                row_scale: DevicePtr::NULL,
+            }),
+            MtpQuantization::Bf16 => ProjectionWeight::Bf16(DenseWeight {
+                weight: DevicePtr::NULL,
+            }),
+        }
+    }
+
+    /// The layout `MtpHead::new` builds for a dense-FFN head under
+    /// `requested`: fc/k/v at the forward precision
+    /// (`effective_for_head`), q/o + the dense FFN at the requested one.
+    fn dense_head(requested: MtpQuantization) -> (MtpQuantization, [ProjectionWeight; 5], Ffn) {
+        let fwd = requested.effective_for_head(true);
+        (
+            fwd,
+            [at(fwd), at(requested), at(fwd), at(fwd), at(requested)],
+            (at(requested), at(requested), at(requested)),
+        )
+    }
+
+    fn layout_ok(
+        quant: MtpQuantization,
+        kv_bf16: bool,
+        p: &[ProjectionWeight; 5],
+        ffn: Option<&Ffn>,
+    ) -> bool {
+        batch_weight_layout_ok(quant, kv_bf16, [&p[0], &p[1], &p[2], &p[3], &p[4]], ffn)
+    }
+
+    #[test]
+    fn effective_for_head_rewrites_only_dense_nvfp4() {
+        use MtpQuantization::*;
+        assert_eq!(Nvfp4.effective_for_head(true), Bf16);
+        assert_eq!(Nvfp4.effective_for_head(false), Nvfp4);
+        for q in [Fp8, Bf16] {
+            assert_eq!(q.effective_for_head(true), q);
+            assert_eq!(q.effective_for_head(false), q);
+        }
+    }
+
+    #[test]
+    fn dense_nvfp4_head_keeps_the_bf16_forward_and_drafter_prefill() {
+        // KV dtype and the prompt-capture allocation key off the forward
+        // precision: a dense NVFP4 head must look exactly like a BF16 one
+        // there, or the KV pool is reserved at half size (FP8) and the
+        // drafter prefill buffer is skipped.
+        let fwd = MtpQuantization::Nvfp4.effective_for_head(true);
+        assert!(fwd.supports_drafter_prefill());
+        assert!(
+            !MtpQuantization::Nvfp4
+                .effective_for_head(false)
+                .supports_drafter_prefill()
+        );
+    }
+
+    #[test]
+    fn batched_propose_admits_the_dense_nvfp4_layout() {
+        let (fwd, p, ffn) = dense_head(MtpQuantization::Nvfp4);
+        assert!(
+            matches!(p[1], ProjectionWeight::Nvfp4(_)),
+            "q is the NVFP4 stream"
+        );
+        assert!(
+            matches!(p[4], ProjectionWeight::Nvfp4(_)),
+            "o is the NVFP4 stream"
+        );
+        assert!(layout_ok(fwd, true, &p, Some(&ffn)));
+    }
+
+    #[test]
+    fn batched_propose_admits_the_default_bf16_layout() {
+        let (fwd, p, ffn) = dense_head(MtpQuantization::Bf16);
+        assert_eq!(fwd, MtpQuantization::Bf16);
+        assert!(layout_ok(fwd, true, &p, Some(&ffn)));
+    }
+
+    #[test]
+    fn batched_propose_refuses_fp8_and_non_dense_layouts() {
+        let (fwd, p, ffn) = dense_head(MtpQuantization::Fp8);
+        assert!(!layout_ok(fwd, true, &p, Some(&ffn)), "FP8 head");
+        let (fwd, p, _) = dense_head(MtpQuantization::Bf16);
+        assert!(!layout_ok(fwd, true, &p, None), "MoE head (no dense FFN)");
+        let (_, p, ffn) = dense_head(MtpQuantization::Nvfp4);
+        // The legacy (MoE-head) NVFP4 forward: quant stays Nvfp4, FP8 KV.
+        assert!(!layout_ok(MtpQuantization::Nvfp4, false, &p, Some(&ffn)));
+        assert!(
+            !layout_ok(MtpQuantization::Bf16, false, &p, Some(&ffn)),
+            "FP8 KV"
+        );
+    }
+
+    #[test]
+    fn batched_propose_refuses_nvfp4_fc_k_v() {
+        // fc/k/v are read as BF16 by the batched GEMMs and the drafter
+        // prefill; an NVFP4 one in any of those slots must not be admitted.
+        for slot in [0usize, 2, 3] {
+            let (fwd, mut p, ffn) = dense_head(MtpQuantization::Nvfp4);
+            p[slot] = at(MtpQuantization::Nvfp4);
+            assert!(!layout_ok(fwd, true, &p, Some(&ffn)), "slot {slot}");
+        }
+        let (fwd, p, mut ffn) = dense_head(MtpQuantization::Nvfp4);
+        ffn.2 = at(MtpQuantization::Fp8);
+        assert!(!layout_ok(fwd, true, &p, Some(&ffn)), "FP8 down_proj");
+    }
 
     #[test]
     fn propose_meta_stride_floor_at_4k() {
