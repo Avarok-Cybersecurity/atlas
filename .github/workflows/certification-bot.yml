@@ -320,7 +320,13 @@ jobs:
                 # The content hash makes each certificate its own permanent URL.
                 hash=$(sha256sum /tmp/cert.png | cut -c1-8)
                 path="pr-$PR-$hash.png"
-                b64=$(base64 -w0 /tmp/cert.png)
+                # Base64 goes to a FILE and gh reads it with `-F content=@file`:
+                # a rendered certificate is ~80 KB of PNG, ~110 KB encoded, which
+                # is already most of the kernel's 128 KiB cap on ONE argument. As
+                # `-f content="$b64"` a slightly larger render fails to exec
+                # (E2BIG), the PUT's `|| return 1` swallows it, and the
+                # certificate posts imageless under the wrong diagnosis.
+                base64 -w0 /tmp/cert.png > /tmp/cert.b64
                 # Upload under the App identity when it has the grant, else under
                 # GITHUB_TOKEN, which the job's own `contents: write` guarantees.
                 # The App was missing contents:write in practice (certification
@@ -333,12 +339,12 @@ jobs:
                 put_cert() {
                   local tok="$1" sha
                   GH_TOKEN="$tok" gh api -X PUT "repos/$REPO/contents/$path" \
-                    -f message="certificate for #$PR" -f content="$b64" -f branch=bot-cards \
+                    -f message="certificate for #$PR" -F content=@/tmp/cert.b64 -f branch=bot-cards \
                     >/dev/null 2>&1 || {
                       sha=$(GH_TOKEN="$tok" gh api "repos/$REPO/contents/$path?ref=bot-cards" --jq .sha 2>/dev/null)
                       [ -n "$sha" ] || return 1
                       GH_TOKEN="$tok" gh api -X PUT "repos/$REPO/contents/$path" \
-                        -f message="certificate for #$PR" -f content="$b64" \
+                        -f message="certificate for #$PR" -F content=@/tmp/cert.b64 \
                         -f branch=bot-cards -f sha="$sha" >/dev/null 2>&1 || return 1
                     }
                 }

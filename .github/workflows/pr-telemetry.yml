@@ -90,10 +90,18 @@ jobs:
             # length-based check turns `{"message":"Not Found",...}` into a
             # single bogus "filename" that renders as a real path. (The first
             # version of this fix did exactly that.)
+            #
+            # ★ The path list travels through a FILE, never argv. It used to be
+            # `--argjson p "$paths"`, and one argument is capped by the kernel
+            # at 128 KiB (MAX_ARG_STRLEN): a PR touching a few thousand files
+            # made exec fail with `jq: Argument list too long` (exit 126), and
+            # every scheduled and push run died here while that PR was open.
+            # `printf` is a builtin (no exec), so the pipe below is unbounded;
+            # `--slurpfile` reads the array back without it ever being an arg.
             if raw=$(gh api "repos/$REPO/pulls/$number/files?per_page=100" \
                        --paginate --jq '.[].filename' 2>/dev/null); then
-              paths=$(printf '%s' "$raw" \
-                      | jq -R -s -c 'split("\n") | map(select(length > 0))')
+              printf '%s' "$raw" \
+                | jq -R -s -c 'split("\n") | map(select(length > 0))' > paths.json
               unknown=false
             else
               # ★ A failed files call is NOT "this PR changes nothing". It used
@@ -112,11 +120,11 @@ jobs:
               # blocking. Marked, the renderer counts it at maximum radius and
               # labels every row it contributes as assumed.
               echo "::warning::PR #$number: changed files unreadable; recorded as paths_unknown, counted at maximum blast radius." >&2
-              paths='[]'
+              echo '[]' > paths.json
               unknown=true
             fi
-            jq -c --argjson p "$paths" --argjson u "$unknown" \
-              '. + {changed_paths: $p, paths_unknown: $u}' <<<"$pr" >> enriched.ndjson
+            jq -c --slurpfile p paths.json --argjson u "$unknown" \
+              '. + {changed_paths: $p[0], paths_unknown: $u}' <<<"$pr" >> enriched.ndjson
           done < prs.ndjson
           jq -s '.' enriched.ndjson > facts.json
 

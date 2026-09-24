@@ -2725,6 +2725,79 @@ want_out CANNOTLOOK "control: an absent base sha is could-not-look, not all-clea
 # CONTROL: no base sha at all.
 want_out CANNOTLOOK "control: a missing base argument refuses" qb "$qbE" "" HEAD
 
+echo "== large payloads travel by file, never argv =="
+# The kernel caps ONE exec argument at 128 KiB (MAX_ARG_STRLEN). A payload
+# that grows with the data -- a PR's changed-path list, a rendered PNG in
+# base64 -- passed as `--argjson x "$v"` or `-f k="$v"` works until the data
+# is big, then exec fails with "Argument list too long" (exit 126). That is
+# how PR telemetry died on every run: one PR's path list outgrew the cap.
+# Each check feeds a payload well past the cap; the first control proves the
+# fixture really is past it on this host, so a pass is not a small-input pass.
+bigpaths() { awk 'BEGIN { for (i = 0; i < 3000; i++)
+  printf "crates/some-crate/src/deeply/nested/module_%04d/and_a_long_file_name.rs\n", i }'; }
+bigpaths | jq -R -s -c 'split("\n") | map(select(length > 0))' > "$TMP/bigpaths.json"
+want_nonzero "control: the 3000-path fixture cannot ride argv on this host" \
+  jq -n --argjson p "$(cat "$TMP/bigpaths.json")" '$p | length'
+
+python3 - > "$TMP/telemetry.sh" <<'PY'
+import yaml
+d = yaml.safe_load(open(".github/workflows/pr-telemetry.yml"))
+for st in d["jobs"]["render"]["steps"]:
+    if st.get("name") == "Collect open PRs and their changed paths":
+        print(st["run"])
+PY
+if [ -s "$TMP/telemetry.sh" ]; then
+  mkdir -p "$TMP/tbin" "$TMP/tel"
+  # PR 1 changes 3000 files; PR 2's files call fails. The stub answers with
+  # what gh's own --jq would have printed.
+  cat > "$TMP/tbin/gh" <<'STUB'
+#!/bin/bash
+case "$*" in
+  *"pulls?state=all"*) echo '[{"number":1,"title":"big","author":"a","draft":false,"merged":false},{"number":2,"title":"unreadable","author":"b","draft":false,"merged":false}]' ;;
+  *"pulls/1/files"*) awk 'BEGIN { for (i = 0; i < 3000; i++)
+    printf "crates/some-crate/src/deeply/nested/module_%04d/and_a_long_file_name.rs\n", i }' ;;
+  *) echo '{"message":"Not Found"}'; exit 1 ;;
+esac
+STUB
+  chmod +x "$TMP/tbin/gh"
+  ( cd "$TMP/tel" && PATH="$TMP/tbin:$PATH" REPO=o/r bash "$TMP/telemetry.sh" >/dev/null 2>&1 )
+  rc=$?
+  n=$(jq '.[] | select(.number == 1) | .changed_paths | length' "$TMP/tel/facts.json" 2>/dev/null)
+  [ "$rc" = 0 ] && [ "$n" = 3000 ] \
+    && ok "PR telemetry records all 3000 paths of an over-cap PR" \
+    || bad "PR telemetry on an over-cap PR: rc=$rc, recorded ${n:-no} paths (want 0, 3000)"
+  # CONTROL: the list now lives in a file reused across PRs. A failed files
+  # call must reset it, or PR 2 silently inherits PR 1's blast radius as a
+  # measurement instead of being marked unknown.
+  u=$(jq -c '.[] | select(.number == 2) | [.paths_unknown, (.changed_paths | length)]' \
+        "$TMP/tel/facts.json" 2>/dev/null)
+  [ "$u" = '[true,0]' ] \
+    && ok "control: a failed files call is marked unknown, not handed the previous PR's paths" \
+    || bad "control: PR 2 after a failed files call read ${u:-nothing} (want [true,0])"
+else
+  bad "could not extract the collect step from pr-telemetry.yml"
+fi
+
+if [ -s "$TMP/bot.sh" ]; then
+  # The certificate PNG is uploaded as base64. A render big enough to cross
+  # the cap must still reach bot-cards: the PUT is `|| return 1`, so an exec
+  # failure there is silent and the certificate just posts without a picture.
+  botstub 0
+  cat > "$TMP/bin/rsvg-convert" <<'STUB'
+#!/bin/bash
+out=""; while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift 2;; *) shift;; esac; done
+[ -n "$out" ] && head -c 150000 /dev/urandom > "$out"
+exit 0
+STUB
+  chmod +x "$TMP/bin/rsvg-convert"
+  ( PATH="$TMP/bin:$PATH" BCALLS="$TMP/bcalls" REPO=o/r PR=1 DEFAULT_BRANCH=main \
+    STATE=pr-certification-merged HEADLINE=h COMMENT_ID= HEAD_SHA=abc1234567 \
+    bash "$TMP/bot.sh" >/dev/null 2>&1 )
+  grep -q 'PUT.*contents/pr-1-' "$TMP/bcalls" \
+    && ok "a 200 KB-encoded certificate still reaches the upload" \
+    || bad "an over-cap certificate never reached the PUT -- it would post imageless"
+fi
+
 echo
 echo "  $PASS passed, $FAIL failed"
 REACHED_SUMMARY=1
