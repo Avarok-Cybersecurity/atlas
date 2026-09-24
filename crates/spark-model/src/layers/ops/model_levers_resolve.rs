@@ -76,6 +76,8 @@ pub(super) fn from_values(
         dflash_debug_dump_full: opt_in(value("AVAROK_DFLASH_DEBUG_DUMP_FULL").as_deref()),
         mtp_debug_norms: opt_in(value("AVAROK_MTP_DEBUG_NORMS").as_deref()),
         mtp_chain_postnorm: opt_in(value("AVAROK_MTP_CHAIN_POSTNORM").as_deref()),
+        moe_fp8_grouped_decode_target: opt_in(value("AVAROK_FP8_MOE_GROUPED_DECODE").as_deref()),
+        fp8_attn_m32: opt_in(value("AVAROK_FP8_ATTN_M32").as_deref()),
         draft_conf_tau,
         // The compiled target declares this (`kernels/<hw>/HARDWARE.toml`
         // `[defaults] decode_split_silu`); every current target declares it

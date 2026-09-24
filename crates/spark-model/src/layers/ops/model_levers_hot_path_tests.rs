@@ -133,7 +133,7 @@ fn the_decode_step_levers_keep_their_two_different_spellings() {
     assert!(resolve(&[("AVAROK_LORA_EAGER", "TRUE")]).lora_eager);
 }
 
-/// The MoE-forward and MTP-drafter levers. All six are strict `=1` opt-ins
+/// The MoE-forward and MTP-drafter levers. All eight are strict `=1` opt-ins
 /// read on a per-layer-per-decode-token or per-drafted-token path.
 ///
 /// `fp32_routing` is the one to watch: it is the LAST term of a five-way
@@ -150,8 +150,10 @@ fn the_moe_forward_and_mtp_levers_are_strict_opt_ins() {
     assert!(!d.k2_diag);
     assert!(!d.mtp_debug_norms);
     assert!(!d.mtp_chain_postnorm);
+    assert!(!d.moe_fp8_grouped_decode_target);
+    assert!(!d.fp8_attn_m32);
 
-    let cases: [(&str, fn(&ModelLevers) -> bool); 6] = [
+    let cases: [(&str, fn(&ModelLevers) -> bool); 8] = [
         ("AVAROK_FP32_ROUTING", |l| l.fp32_routing),
         ("AVAROK_FP32_GATE", |l| l.fp32_gate),
         ("AVAROK_FRANKENSTEIN_DECODE_VIA_PREFILL", |l| {
@@ -160,6 +162,10 @@ fn the_moe_forward_and_mtp_levers_are_strict_opt_ins() {
         ("AVAROK_K2_DIAG", |l| l.k2_diag),
         ("AVAROK_MTP_DEBUG_NORMS", |l| l.mtp_debug_norms),
         ("AVAROK_MTP_CHAIN_POSTNORM", |l| l.mtp_chain_postnorm),
+        ("AVAROK_FP8_MOE_GROUPED_DECODE", |l| {
+            l.moe_fp8_grouped_decode_target
+        }),
+        ("AVAROK_FP8_ATTN_M32", |l| l.fp8_attn_m32),
     ];
     for (name, read) in cases {
         assert!(read(&resolve(&[(name, "1")])), "{name} did not arm at =1");

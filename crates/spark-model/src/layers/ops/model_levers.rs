@@ -303,6 +303,31 @@ pub struct ModelLevers {
     /// verified by the target, so emitted tokens cannot change. Read by BOTH
     /// chains through `MtpHead::chain_hidden`. Opt-in until its A/B lands.
     pub mtp_chain_postnorm: bool,
+    /// `AVAROK_FP8_MOE_GROUPED_DECODE=1` — serve the TARGET model's multi-row
+    /// FP8 MoE decode (batched verify, multi-sequence decode, attention-layer
+    /// FFN) through the cross-row grouped kernels
+    /// (`MoeLayer::forward_fp8_grouped_decode`) instead of the per-token loop.
+    ///
+    /// Opt-in because it is NOT bit-identical end to end: each row's expert
+    /// compute is (the GPU oracle proves it given the same routing), but the
+    /// routing is the batched GEMM + top-k pair, which sums in a different
+    /// FP32 order than the per-token GEMV and can flip a razor-margin expert.
+    /// Measured on dgx1 (Qwen3.6-35B-A3B-FP8, concurrency ladder, 3 reps per
+    /// arm) for the MoE lever set as a WHOLE — this path plus the batched
+    /// drafter, GDN M32 tile and attention M32 twin, all armed: C=16
+    /// ~108 -> ~213 tok/s (alone, single rep: C=4 68 -> 89 tok/s). The MTP
+    /// drafter's own grouped decode is NOT behind this lever — a draft cannot
+    /// change an emitted token — and stays on unless
+    /// `AVAROK_NO_FP8_MOE_GROUPED_DECODE` (presence) kills both.
+    pub moe_fp8_grouped_decode_target: bool,
+    /// `AVAROK_FP8_ATTN_M32=1` — route 17+ concurrent verify rows of the
+    /// native-FP8 attention Q/K/V and o_proj to the 32-row M-tile tensor-core
+    /// twin (`w8a16_gemm_pipelined_m32`) instead of the per-row scalar loop /
+    /// 16-row batch16 groups. Opt-in because MMA reassociation makes it NOT
+    /// bit-identical to the GEMV tiers (the GPU oracle grades it on the
+    /// tensor-core budget). Resolved once, at layer construction: without it
+    /// the layer holds a zero twin handle, the no-twin path.
+    pub fp8_attn_m32: bool,
     /// `AVAROK_MTP_DRAFT_CONF=<t>` — confidence floor for submitting drafts
     /// to verification, clamped to `[0.0, 0.99]`. `0.0` (unset) disables.
     ///

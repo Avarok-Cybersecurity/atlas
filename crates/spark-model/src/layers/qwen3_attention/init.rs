@@ -305,11 +305,17 @@ impl Qwen3AttentionLayer {
                 "w8a16_gemm_pipelined",
                 "w8a16_gemm_pipelined",
             ),
-            w8a16_gemm_pipelined_m32_k: super::super::try_target_kernel(
-                gpu,
-                "w8a16_gemm_pipelined_m32",
-                "w8a16_gemm_pipelined_m32",
-            ),
+            // Opt-in (`ModelLevers::fp8_attn_m32`): a zero handle is the
+            // no-twin path, so every reader of the band stays on the GEMVs.
+            w8a16_gemm_pipelined_m32_k: if crate::layers::ops::ModelLevers::get().fp8_attn_m32 {
+                super::super::try_target_kernel(
+                    gpu,
+                    "w8a16_gemm_pipelined_m32",
+                    "w8a16_gemm_pipelined_m32",
+                )
+            } else {
+                KernelHandle(0)
+            },
             w4a16_gemv_dual_k: gpu.kernel("w4a16_gemv_fused", "w4a16_gemv_dual")?,
             rope_k: gpu.kernel("rope", "rope_forward")?,
             rope_strided_k: super::super::try_kernel(gpu, "rope", "rope_forward_strided"),
