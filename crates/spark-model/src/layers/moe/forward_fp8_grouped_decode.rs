@@ -28,8 +28,39 @@ use super::*;
 /// `forward_prefill_fp8` exists for >64; keep the envelope explicit.
 pub const FP8_GROUPED_DECODE_MAX_ROWS: usize = 64;
 
+/// The grouped decode's four kernels, resolved optionally (a zero handle
+/// declines the path in [`MoeLayer::fp8_grouped_decode_arena_ok`]).
+pub(super) struct GroupedKernels {
+    pub gate_up: KernelHandle,
+    pub silu_down: KernelHandle,
+    pub blend: KernelHandle,
+    pub compact: KernelHandle,
+}
+
+impl GroupedKernels {
+    /// Direct `try_kernel` calls, not a closure: `try_kernel` is
+    /// `#[track_caller]`, so each lookup keeps its own line in the audit.
+    pub(super) fn resolve(gpu: &dyn GpuBackend) -> Self {
+        use super::super::try_kernel;
+        const FUSED: &str = "moe_shared_expert_fused_fp8_grouped";
+        Self {
+            gate_up: try_kernel(gpu, FUSED, "moe_expert_gate_up_shared_fp8_grouped"),
+            silu_down: try_kernel(gpu, FUSED, "moe_expert_silu_down_shared_fp8_grouped"),
+            blend: try_kernel(
+                gpu,
+                "moe_fp8_grouped_blend",
+                "moe_weighted_sum_blend_fp8_grouped",
+            ),
+            compact: try_kernel(gpu, FUSED, "moe_fp8_grouped_compact"),
+        }
+    }
+}
+
 /// Kill switch: PRESENCE of `AVAROK_NO_FP8_MOE_GROUPED_DECODE` (any value)
-/// restores the per-token loop — the house convention for `AVAROK_NO_*`.
+/// restores the per-token loop — the house convention for `AVAROK_NO_*`. It
+/// covers both users: the MTP drafter's batched propose (on by default) and
+/// the target model's multi-row decode, which additionally needs the opt-in
+/// `ModelLevers::moe_fp8_grouped_decode_target` (`FfnComponent`'s gate).
 fn fp8_grouped_decode_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var_os("AVAROK_NO_FP8_MOE_GROUPED_DECODE").is_none())

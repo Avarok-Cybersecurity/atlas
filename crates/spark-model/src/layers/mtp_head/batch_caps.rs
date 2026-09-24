@@ -342,7 +342,10 @@ mod tests {
         let (fwd, p, ffn) = dense_head(MtpQuantization::Fp8);
         assert!(!layout_ok(fwd, true, &p, Some(&ffn)), "FP8 head");
         let (fwd, p, _) = dense_head(MtpQuantization::Bf16);
-        assert!(!layout_ok(fwd, true, &p, None), "no dense FFN, no dense arm");
+        assert!(
+            !layout_ok(fwd, true, &p, None),
+            "no dense FFN, no dense arm"
+        );
         let (_, p, ffn) = dense_head(MtpQuantization::Nvfp4);
         // The legacy (MoE-head) NVFP4 forward: quant stays Nvfp4, FP8 KV.
         assert!(!layout_ok(MtpQuantization::Nvfp4, false, &p, Some(&ffn)));

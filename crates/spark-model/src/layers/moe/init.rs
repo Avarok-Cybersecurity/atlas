@@ -65,6 +65,7 @@ impl MoeLayer {
 
         let _ = num_experts;
         let rms_norm_k = gpu.kernel("norm", "rms_norm")?;
+        let grouped = super::forward_fp8_grouped_decode::GroupedKernels::resolve(gpu);
         Ok(Self {
             weights,
             // Default: standard NVFP4 (FP8-E4M3 per-16 + f32 global). The
@@ -449,26 +450,10 @@ impl MoeLayer {
                 "moe_shared_expert_fused_fp8_batch3",
                 "moe_weighted_sum_blend_fp8_batch3",
             )?,
-            moe_expert_gate_up_shared_fp8_grouped_k: super::super::try_kernel(
-                gpu,
-                "moe_shared_expert_fused_fp8_grouped",
-                "moe_expert_gate_up_shared_fp8_grouped",
-            ),
-            moe_expert_silu_down_shared_fp8_grouped_k: super::super::try_kernel(
-                gpu,
-                "moe_shared_expert_fused_fp8_grouped",
-                "moe_expert_silu_down_shared_fp8_grouped",
-            ),
-            moe_weighted_sum_blend_fp8_grouped_k: super::super::try_kernel(
-                gpu,
-                "moe_fp8_grouped_blend",
-                "moe_weighted_sum_blend_fp8_grouped",
-            ),
-            moe_fp8_grouped_compact_k: super::super::try_kernel(
-                gpu,
-                "moe_shared_expert_fused_fp8_grouped",
-                "moe_fp8_grouped_compact",
-            ),
+            moe_expert_gate_up_shared_fp8_grouped_k: grouped.gate_up,
+            moe_expert_silu_down_shared_fp8_grouped_k: grouped.silu_down,
+            moe_weighted_sum_blend_fp8_grouped_k: grouped.blend,
+            moe_fp8_grouped_compact_k: grouped.compact,
             fp8_gate_weight_ptrs: None,
             fp8_up_weight_ptrs: None,
             fp8_down_weight_ptrs: None,
