@@ -212,7 +212,15 @@ fn every_finish_site_is_a_recorded_decision() {
     // Unnamed remainder (deliberate): natural stops — the model sampled EOS,
     // the token budget / context ceiling hit, the cooperative cancel flag,
     // and `<|im_start|>` (eos-registered; see INTENTIONAL_STOP above for
-    // why naming it would reintroduce the opposite mislabel).
+    // why naming it would reintroduce the opposite mislabel). emit_step also
+    // carries one more unnamed site added 2026-09-24 (A143 part B): the
+    // plain-chat `</tool_call>` hard stop (no tools declared, no grammar) —
+    // the MTP/DFlash-verify twin of `decode_logits_step`'s own unnamed
+    // `</tool_call>` site (same file, same rationale: the stop token is
+    // pushed and streamed normally, `derive_finish_reason` wires
+    // `finish_reason="tool_calls"` off it via `is_eos`/legacy tool-call
+    // detection — this is a content-based natural stop, not a server
+    // watchdog cut, so it does not get a `GUARD_STOP_*` name).
     const LEDGER: &[(&str, &str, usize, usize)] = &[
         (
             "decode_logits_step.rs",
@@ -220,7 +228,7 @@ fn every_finish_site_is_a_recorded_decision() {
             11,
             3,
         ),
-        ("emit_step.rs", include_str!("emit_step.rs"), 11, 6),
+        ("emit_step.rs", include_str!("emit_step.rs"), 12, 6),
         (
             "decode_logits_content.rs",
             include_str!("decode_logits_content.rs"),

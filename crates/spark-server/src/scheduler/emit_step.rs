@@ -159,6 +159,25 @@ pub fn emit_token(
     // `tool_eos_escape_enabled()` (default OFF).
     if a.tool_call_end_token == Some(tok) && !a.inside_thinking {
         a.tool_call_completed = true;
+        // A143 part B (2026-09-24): mirror the plain-chat hard stop in
+        // `decode_logits_step::process_decode_logits` (the `</tool_call>`
+        // handling block, ~line 642). That serial-path guard ends the turn
+        // when a request with NO tools declared and no active grammar emits
+        // `</tool_call>` — but this speculative emit path (MTP/K3, DFlash
+        // verify-accept) never had the twin, so a spec-on turn kept
+        // generating past the first (and only legitimate) call. Setting
+        // `a.finished` here does NOT truncate this token: emit_token still
+        // falls through and pushes/streams `tok` normally below (unlike the
+        // serial path's explicit push + `continue`, this path's fallthrough
+        // achieves the same "the `</tool_call>` itself IS emitted, nothing
+        // after it" outcome) — every verify-accept caller
+        // (mtp_step/verify_k3_step/verify_dflash_step/
+        // verify_dflash_batch_step) checks `a.finished` after each
+        // `emit_token` call and stops emitting the rest of that window's
+        // accepted tokens once it's set.
+        if a.grammar_state.is_none() && !a.tools_present {
+            a.finished = true;
+        }
     }
 
     // F2 mirror (Iter 46, 2026-06-02): reset the inter-tool prose budget when
