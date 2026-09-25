@@ -129,7 +129,11 @@ pub(super) fn effective_min_p(
 ///    cloned) it computed for this step.
 ///  * `Verify` → the MTP verify/bootstrap emission is a penalty-aware
 ///    greedy ARGMAX, so callers pass `temperature = 0.0`, `seed = None`,
-///    empty base bias.
+///    and the base bias DECODE would apply at the same position
+///    ([`speculative_base_logit_bias`], A144) — the request's
+///    `ActiveSeq.logit_bias` (incl. the server's `<tool_call>` nudge) when
+///    decode runs the host pipeline for this row, empty when decode's GPU
+///    argmax fast path would skip it.
 pub(super) fn penalty_params_for(
     a: &ActiveSeq,
     kind: PositionKind,
@@ -138,13 +142,15 @@ pub(super) fn penalty_params_for(
     base_logit_bias: Vec<(u32, f32)>,
 ) -> SamplingParams {
     // `Verify` positions are a penalty-aware greedy ARGMAX, so the contract
-    // is temperature 0.0, no seed, no caller-supplied base bias. Pin it so a
-    // future caller can't silently pass stochastic params on the speculative
-    // path. The A4 floor below is appended for BOTH kinds (intended delta).
+    // is temperature 0.0 and no seed. Pin it so a future caller can't
+    // silently pass stochastic params on the speculative path. The base bias
+    // is NOT pinned empty any more (A144): verify must carry the same
+    // `logit_bias` decode applies, else spec-on != spec-off on every
+    // tools-present request (the server's `<tool_call>` +3.0 nudge). The A4
+    // floor below is appended for BOTH kinds (intended delta).
     debug_assert!(
-        kind != PositionKind::Verify
-            || (temperature == 0.0 && seed.is_none() && base_logit_bias.is_empty()),
-        "Verify positions must pass temperature=0.0, seed=None, empty base bias"
+        kind != PositionKind::Verify || (temperature == 0.0 && seed.is_none()),
+        "Verify positions must pass temperature=0.0, seed=None"
     );
     let in_tool = a.inside_tool_body && !a.inside_thinking;
     let mut logit_bias = base_logit_bias;
@@ -218,6 +224,76 @@ pub(super) fn penalty_params_for(
         stop_token_ids: Vec::new(),
         seed,
     }
+}
+
+/// A144: the base `logit_bias` a SPECULATIVE position (MTP/DFlash verify,
+/// MTP bootstrap) must hand to [`penalty_params_for`] so its pick matches
+/// what the single-row decode path would emit at the same position.
+///
+/// Decode (`process_decode_logits`) applies `a.logit_bias` iff it runs the
+/// host pipeline for the row. Its GPU-argmax fast path skips the bias
+/// entirely ([`decode_row_uses_gpu_argmax`]), EXCEPT when that argmax lands
+/// on a post-think `</think>`/`<think>` id — then it redoes the step on the
+/// host, bias included. Lossless parity with decode — not "always apply" —
+/// is the contract, so this mirrors all three cases:
+///  * bias empty → empty;
+///  * decode would run the host pipeline at `a.output_tokens.len() +
+///    verify_pos` → `a.logit_bias`;
+///  * decode would take the GPU argmax → empty, unless `a.think_ended` and
+///    the position's RAW argmax (`raw_argmax`, evaluated lazily — only in
+///    this last case) is `think_end_token`/`a.think_start_token`.
+///
+/// `a` must reflect the position's state (the verify K-loop advances the
+/// think / tool-body flags per position — `pick_positions_from_host`). The
+/// in-tool-body opener strip is NOT done here: [`penalty_params_for`] applies
+/// it from the same per-position `a`.
+pub(super) fn speculative_base_logit_bias(
+    a: &ActiveSeq,
+    verify_pos: usize,
+    think_end_token: Option<u32>,
+    raw_argmax: impl FnOnce() -> u32,
+) -> Vec<(u32, f32)> {
+    if a.logit_bias.is_empty() {
+        return Vec::new();
+    }
+    let admit = super::decode_logits_step::think_ended_gpu_argmax_enabled();
+    if !super::decode_logits_step::decode_row_uses_gpu_argmax(
+        a,
+        a.output_tokens.len() + verify_pos,
+        admit,
+    ) {
+        return a.logit_bias.clone();
+    }
+    if a.think_ended {
+        let tok = raw_argmax();
+        if Some(tok) == think_end_token || Some(tok) == a.think_start_token {
+            return a.logit_bias.clone();
+        }
+    }
+    Vec::new()
+}
+
+/// A144: true when a speculative GPU-argmax-only shortcut (the verify
+/// grammar / grammarless fast-greedy paths, the DFlash chat fast path, the
+/// DFlash raw-argmax verdict, the DFlash cross-sequence batched verify) must
+/// NOT be taken because decode would apply a non-empty `logit_bias` at this
+/// row — the bias can raise a competitor above the raw argmax, and those
+/// shortcuts never see it. Mirrors decode: when decode itself would take its
+/// GPU argmax (bias skipped) the shortcut stays legal; the post-think
+/// structural-hit exception is covered by the callers' existing
+/// `think_structural_hit` / structural-id fallbacks.
+///
+/// Evaluated on the step-START state. Sound for the fast-greedy paths
+/// because they require `!inside_thinking` (so no `</think>` can flip the
+/// think flags inside the window) and the `min_tokens` term is monotone in
+/// the position. Conservative (forces host) otherwise.
+pub(super) fn speculative_bias_forces_host(a: &ActiveSeq) -> bool {
+    !a.logit_bias.is_empty()
+        && !super::decode_logits_step::decode_row_uses_gpu_argmax(
+            a,
+            a.output_tokens.len(),
+            super::decode_logits_step::think_ended_gpu_argmax_enabled(),
+        )
 }
 
 /// Re-sample verify tokens from the logits buffer when temperature > 0.

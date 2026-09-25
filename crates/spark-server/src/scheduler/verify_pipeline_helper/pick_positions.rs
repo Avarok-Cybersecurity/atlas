@@ -41,6 +41,13 @@ pub(super) fn pick_positions_from_host(
     // restored, clean state.
     let grammar_steps_before = a.grammar_state.as_ref().map(|gs| gs.num_history_steps());
     let think_flags_before = (a.inside_thinking, a.think_ended, a.think_just_ended);
+    // A144: tool-body state per position. The `<tool_call>` opener bias is
+    // stripped INSIDE a tool body (`strip_in_tool_opener_bias`, via
+    // `penalty_params_for`), so a window that opens or closes a call must
+    // re-evaluate it at every later position against the tokens picked
+    // earlier in the SAME window — exactly what `emit_token` →
+    // `update_tool_param_state` will do on the accept path. Restored on exit.
+    let tool_body_before = a.inside_tool_body;
 
     for i in 0..k {
         let slice = &buf[i * vocab * elem_bytes..(i + 1) * vocab * elem_bytes];
@@ -57,6 +64,16 @@ pub(super) fn pick_positions_from_host(
             a.think_ended = true;
             a.think_just_ended = true;
             continue;
+        }
+
+        // Mirror `update_tool_param_state`'s opener/closer transitions (a
+        // no-op inside thinking, like the real one).
+        if !a.inside_thinking {
+            if a.tool_call_start_token == Some(pick) {
+                a.inside_tool_body = true;
+            } else if a.tool_call_end_token == Some(pick) {
+                a.inside_tool_body = false;
+            }
         }
 
         // Speculatively advance the matcher with `pick[i]` so the next
@@ -103,6 +120,7 @@ pub(super) fn pick_positions_from_host(
     // Same discipline for the thinking flags: `emit_token` owns the real
     // `</think>` transition on the accept path.
     (a.inside_thinking, a.think_ended, a.think_just_ended) = think_flags_before;
+    a.inside_tool_body = tool_body_before;
 
     picks
 }

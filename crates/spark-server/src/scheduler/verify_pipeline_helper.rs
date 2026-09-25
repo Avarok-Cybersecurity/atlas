@@ -101,6 +101,13 @@ fn fast_hits_post_think_structural(
             .any(|&tok| Some(tok) == think_end_token || Some(tok) == think_start_token)
 }
 
+/// A144: calls to [`verify_pick_all_with_pipeline`] where a non-empty
+/// decode-effective `logit_bias` (`sample_step::speculative_bias_forces_host`)
+/// suppressed the GPU-argmax fast paths and forced the host pipeline.
+/// Write-only diagnostic counter (perf attribution for tools-present steps).
+pub(crate) static VERIFY_BIAS_HOST_FALLBACKS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
 // `AVAROK_DISABLE_FAST_GREEDY` is now `SchedLevers::fast_greedy_grammar`,
 // read off `LogitsContext::sampling` at the one site that gated on it.
 
@@ -167,9 +174,20 @@ pub fn verify_pick_with_pipeline(
     let mut f32_logits = scratch::ScratchGuard(f32_logits);
 
     // 2. Build this position's penalty/bias params (Verify kind: greedy,
-    //    seed-free, no caller bias — the builder still appends the A4 floor
-    //    and the rep/presence/freq/LZ/DRY gates from `a`). Cloned before the
-    //    `&mut a` borrow in `process_position_logits`.
+    //    seed-free — the builder appends the A4 floor and the rep/presence/
+    //    freq/LZ/DRY gates from `a`). Cloned before the `&mut a` borrow in
+    //    `process_position_logits`.
+    //
+    //    A144: the base bias is the one DECODE would apply at this position
+    //    (`speculative_base_logit_bias`) — previously EMPTY, so the server's
+    //    tools-active `<tool_call>` +3.0 nudge (and any client `logit_bias`)
+    //    never reached verified tokens and spec-on diverged from spec-off on
+    //    tool-bearing requests (GPU probe: 4/4 reproduced by spec-off with
+    //    the bias cancelled). `a` carries this position's think / tool-body
+    //    state (advanced per position by `pick_positions_from_host`), so the
+    //    in-tool-body opener strip inside `penalty_params_for` is per
+    //    position too. The raw-argmax probe runs only in decode's GPU-argmax
+    //    regime on a `think_ended` row with a non-empty bias.
     //
     //    Without these penalties MTP-VERIFIED tokens were decided by a
     //    penalty-FREE argmax, so the MODEL.toml `repetition_penalty` /
@@ -178,12 +196,18 @@ pub fn verify_pick_with_pipeline(
     //    resulting emission is a penalty-aware ARGMAX (greedy) — an intended
     //    behavioral delta for speculative acceptance. Backward-compatible: a
     //    no-op when the penalties are neutral (rep==1.0, dry==0.0, etc.).
+    let base_bias = crate::scheduler::sample_step::speculative_base_logit_bias(
+        a,
+        verify_pos,
+        ctx.think_end_token,
+        || argmax::argmax_first_wins(&f32_logits),
+    );
     let penalties = crate::scheduler::sample_step::penalty_params_for(
         a,
         crate::scheduler::sample_step::PositionKind::Verify,
         0.0,
         None,
-        Vec::new(),
+        base_bias,
     );
 
     // 3. Unified per-position post-processing (SSOT shared with the non-MTP
@@ -326,13 +350,29 @@ pub fn verify_pick_all_with_pipeline(
         VERIFY_THINK_MASK_FALLBACKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
+    // ── A144 LOGIT-BIAS GUARD ──
+    //
+    // The GPU-argmax-only fast paths below never see `logit_bias`, and a bias
+    // can RAISE a competitor above the raw argmax (the tools-active
+    // `<tool_call>` +3.0 nudge does exactly that). When decode would apply a
+    // non-empty bias to this row, force the host pipeline, where
+    // `verify_pick_with_pipeline` applies it per position. When decode itself
+    // would take its GPU argmax (bias skipped), the fast paths stay legal —
+    // parity with decode, not "always apply".
+    let bias_forces_host = crate::scheduler::sample_step::speculative_bias_forces_host(a);
+    if bias_forces_host {
+        VERIFY_BIAS_HOST_FALLBACKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
     // ── CHAT FAST PATH (2026-07-08): masked-greedy == raw-argmax guard ──
     // See `fast_masked` module docs: for a grammarless request with no
     // forced/stateful stage armed and argmax-preserving penalties, the
     // pipeline provably cannot change any pick, so the raw argmax IS the
     // masked pick and the [K, vocab] D2H is skipped entirely. Any
     // ineligible position falls through to the slow path for the call.
-    if let Some(picks) = fast_masked::try_chat_fast_path(model, argmax_ids, a, ctx, row_base) {
+    if !bias_forces_host
+        && let Some(picks) = fast_masked::try_chat_fast_path(model, argmax_ids, a, ctx, row_base)
+    {
         return picks;
     }
 
@@ -396,6 +436,7 @@ pub fn verify_pick_all_with_pipeline(
     };
     if fast_penalty_gate != crate::scheduler::fast_greedy::PenaltyGate::Blocked
         && !think_structural_hit
+        && !bias_forces_host
     {
         let t_fast = std::time::Instant::now();
         let vocab = model.vocab_size();
@@ -513,6 +554,7 @@ pub fn verify_pick_all_with_pipeline(
     };
     if chat_fast_gate != crate::scheduler::fast_greedy::PenaltyGate::Blocked
         && !think_structural_hit
+        && !bias_forces_host
     {
         let t_fast = std::time::Instant::now();
         let vocab = model.vocab_size();

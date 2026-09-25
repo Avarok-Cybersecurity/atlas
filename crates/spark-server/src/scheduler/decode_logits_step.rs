@@ -53,7 +53,7 @@ fn logits_ctx<'a>(
 
 /// Admit `think_ended` rows (which need only a 2-token mask) to the GPU argmax
 /// fast path. Kill switch: `AVAROK_NO_THINKENDED_GPU_ARGMAX=1`.
-fn think_ended_gpu_argmax_enabled() -> bool {
+pub(super) fn think_ended_gpu_argmax_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| {
         std::env::var("AVAROK_NO_THINKENDED_GPU_ARGMAX")
@@ -61,6 +61,46 @@ fn think_ended_gpu_argmax_enabled() -> bool {
             .as_deref()
             != Some("1")
     })
+}
+
+/// A144 SSOT: would the single-row decode step emit this row straight from
+/// the GPU argmax (NO host pipeline, so NO penalties and NO `logit_bias`)?
+///
+/// This is exactly the per-row half of `process_decode_logits`'s fast-path
+/// gate (the model-level `decode_logits_fp32` term stays at the call site):
+/// greedy temperature, no grammar, no logprobs, the `min_tokens` floor met at
+/// `emitted_len`, and either outside the thinking state entirely or a
+/// `think_ended` row with exactly-neutral penalties (the kill-switchable
+/// `think_ended_gpu_ok` admission). `emitted_len` is the output length at the
+/// position being decided — `a.output_tokens.len()` on the decode path,
+/// `+ verify_pos` on the speculative paths.
+///
+/// The speculative paths (verify / MTP bootstrap / DFlash) consult this to
+/// apply `logit_bias` exactly when decode would — including the regime where
+/// decode's GPU argmax skips it. A `true` row still falls back to the host
+/// pipeline (bias applied) when the argmax lands on a post-think `</think>` /
+/// `<think>` id; callers mirror that separately.
+pub(super) fn decode_row_uses_gpu_argmax(
+    a: &ActiveSeq,
+    emitted_len: usize,
+    admit_think_ended: bool,
+) -> bool {
+    let think_ended_gpu_ok = a.think_ended
+        && !a.inside_thinking
+        && a.grammar_state.is_none()
+        && a.repetition_penalty == 1.0
+        && a.presence_penalty == 0.0
+        && a.frequency_penalty == 0.0
+        && a.lz_penalty == 0.0
+        && a.dry_multiplier == 0.0;
+    let excused = admit_think_ended && think_ended_gpu_ok;
+    let row_needs_host =
+        (a.inside_thinking || a.think_ended || a.grammar_state.is_some()) && !excused;
+    a.temperature == 0.0
+        && a.grammar_state.is_none()
+        && a.top_logprobs.is_none()
+        && a.min_tokens <= emitted_len
+        && !row_needs_host
 }
 
 /// Steps that fell back to the host path because a GPU argmax landed on a
@@ -129,9 +169,7 @@ pub fn process_decode_logits(
     let n = active.len();
 
     // Grammar bitmask is CPU-side, so any sequence with active grammar forces
-    // the host-side sampling path for its logits slice.
-    let any_grammar = active.iter().any(|a| a.grammar_state.is_some());
-    let any_logprobs = active.iter().any(|a| a.top_logprobs.is_some());
+    // the host-side sampling path for its logits slice (as do logprobs).
     // FP32 lm_head models (Gemma-4 dense) MUST use the host-side path —
     // `argmax_batch` assumes BF16 layout and would interpret 4-byte FP32
     // values as 2-byte BF16 pairs, returning garbage tokens.
@@ -151,61 +189,51 @@ pub fn process_decode_logits(
     // also the MLPerf-edge config.
     //
     // Kill switch: AVAROK_NO_THINKENDED_GPU_ARGMAX=1.
-    let think_ended_gpu_ok = |a: &ActiveSeq| {
-        a.think_ended
-            && !a.inside_thinking
-            && a.grammar_state.is_none()
-            && a.repetition_penalty == 1.0
-            && a.presence_penalty == 0.0
-            && a.frequency_penalty == 0.0
-            && a.lz_penalty == 0.0
-            && a.dry_multiplier == 0.0
-    };
+    // Per-row eligibility is the SSOT `decode_row_uses_gpu_argmax` (A144: the
+    // speculative paths consult the same predicate to decide whether decode
+    // would have applied `logit_bias`). `fast` == the pre-A144 conjunction
+    // `all(temp==0) && !any_grammar && !needs_host_logits` term for term.
     let admit_think_ended = think_ended_gpu_argmax_enabled();
-    let needs_host_logits = active.iter().any(|a| {
-        let excused = admit_think_ended && think_ended_gpu_ok(a);
-        (a.inside_thinking || a.think_ended || a.grammar_state.is_some()) && !excused
-    }) || any_logprobs
-        || model_logits_fp32
-        // GPU argmax bypasses the pre-sampling EOS mask. Keep requests with
-        // an active minimum-token floor on the host pipeline.
-        || active.iter().any(|a| a.min_tokens > a.output_tokens.len());
+    let gpu_argmax_eligible = !model_logits_fp32
+        && active
+            .iter()
+            .all(|a| decode_row_uses_gpu_argmax(a, a.output_tokens.len(), admit_think_ended));
 
     // Try the GPU argmax first. `None` here means "not eligible, or the result
     // needs the host pipeline after all" and falls through to the host branch —
     // it must never mean "emit nothing".
-    let fast_tokens: Option<Vec<(u32, Option<crate::api::TokenLogprobs>)>> =
-        if active.iter().all(|a| a.temperature == 0.0) && !any_grammar && !needs_host_logits {
-            match model.argmax_batch(logits, n, 0) {
-                Ok(t) => {
-                    // The two masked ids are the ONLY thing the host pipeline
-                    // would have done differently for a think_ended row. If an
-                    // argmax actually landed on one (rare — the model seldom
-                    // re-opens <think> mid-response), fall through and redo the
-                    // step on the host so the emitted token is exactly what the
-                    // pipeline would produce.
-                    let hit_mask = t.iter().zip(active.iter()).any(|(&tok, a)| {
-                        a.think_ended
-                            && (Some(tok) == think_end_token || Some(tok) == a.think_start_token)
-                    });
-                    if hit_mask {
-                        THINK_MASK_FALLBACKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        None
-                    } else {
-                        Some(t.into_iter().map(|tok| (tok, None)).collect())
-                    }
-                }
-                Err(e) => {
-                    tracing::error!("argmax_batch error: {e:#}");
-                    for mut a in active.drain(..) {
-                        send_error(model, &mut a, &format!("{e:#}"));
-                    }
-                    return;
+    let fast_tokens: Option<Vec<(u32, Option<crate::api::TokenLogprobs>)>> = if gpu_argmax_eligible
+    {
+        match model.argmax_batch(logits, n, 0) {
+            Ok(t) => {
+                // The two masked ids are the ONLY thing the host pipeline
+                // would have done differently for a think_ended row. If an
+                // argmax actually landed on one (rare — the model seldom
+                // re-opens <think> mid-response), fall through and redo the
+                // step on the host so the emitted token is exactly what the
+                // pipeline would produce.
+                let hit_mask = t.iter().zip(active.iter()).any(|(&tok, a)| {
+                    a.think_ended
+                        && (Some(tok) == think_end_token || Some(tok) == a.think_start_token)
+                });
+                if hit_mask {
+                    THINK_MASK_FALLBACKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    None
+                } else {
+                    Some(t.into_iter().map(|tok| (tok, None)).collect())
                 }
             }
-        } else {
-            None
-        };
+            Err(e) => {
+                tracing::error!("argmax_batch error: {e:#}");
+                for mut a in active.drain(..) {
+                    send_error(model, &mut a, &format!("{e:#}"));
+                }
+                return;
+            }
+        }
+    } else {
+        None
+    };
 
     let new_tokens: Vec<(u32, Option<crate::api::TokenLogprobs>)> = if let Some(t) = fast_tokens {
         t

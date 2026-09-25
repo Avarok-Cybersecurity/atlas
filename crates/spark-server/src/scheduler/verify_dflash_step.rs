@@ -72,7 +72,12 @@ pub fn step_verify_dflash(
     // drafter judge on the SAME (GOLD) basis. For non-DFlash callers (unreachable
     // today since step_verify_dflash is only dispatched at drafts.len()>=4 which
     // only DFlash produces), apply the full pre-sample pipeline as in K=2/3/4.
-    let verified = if dflash_verify_raw_argmax && !sched.levers.dflash_masked_verify {
+    // A144: raw argmax never sees `logit_bias`; when decode would apply a
+    // non-empty bias to this row, take the masked pipeline instead.
+    let verified = if dflash_verify_raw_argmax
+        && !sched.levers.dflash_masked_verify
+        && !crate::scheduler::sample_step::speculative_bias_forces_host(a)
+    {
         verified_argmax
     } else {
         crate::scheduler::verify_pipeline_helper::verify_pick_all_with_pipeline(

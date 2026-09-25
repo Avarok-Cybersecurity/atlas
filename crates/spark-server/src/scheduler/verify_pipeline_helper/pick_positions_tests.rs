@@ -402,3 +402,168 @@ fn verify_fast_path_takes_the_fast_path_when_no_structural_hit() {
     });
     assert_eq!(picks, vec![HELLO]);
 }
+
+// ── A144: speculative paths apply the SAME `logit_bias` as decode ─────────
+//
+// Server-side, a tools-active request carries `(<tool_call>, +3.0)` in
+// `ActiveSeq.logit_bias` (`sampling_setup.rs`). Decode applied it; verify
+// passed an EMPTY bias, so spec-on picked the raw prose token where spec-off
+// opened a call (GPU probe: spec-off + client bias -3 reproduced K3 4/4).
+
+/// Post-think, grammarless, greedy, tools-active: `repetition_penalty` 1.05
+/// keeps decode on the HOST pipeline for this row (the `think_ended` GPU
+/// admission needs exactly-neutral penalties), so decode APPLIES the bias.
+fn tools_present_seq() -> ActiveSeq {
+    let mut a = post_think_grammarless_seq();
+    a.min_tokens = 0;
+    a.repetition_penalty = 1.05;
+    a.tool_call_start_token = Some(TOOL_CALL_OPEN);
+    a.tool_call_end_token = Some(TOOL_CALL_CLOSE);
+    a.logit_bias = vec![(TOOL_CALL_OPEN, 3.0)];
+    a
+}
+
+/// `<tool_call>` 2.0 below the prose argmax: +3.0 flips it, 0.0 does not.
+fn opener_near_miss_row() -> Vec<f32> {
+    row(&[(HELLO, 10.0), (TOOL_CALL_OPEN, 8.0)])
+}
+
+#[test]
+fn a144_verify_applies_the_same_bias_as_decode_at_a_tools_present_position() {
+    use crate::scheduler::sample_step::{
+        PositionKind, penalty_params_for, speculative_base_logit_bias,
+    };
+    let mut a = tools_present_seq();
+    // Param-level parity: the Verify params carry exactly decode's bias.
+    let decode = penalty_params_for(
+        &a,
+        PositionKind::FinalDecode,
+        0.0,
+        None,
+        a.logit_bias.clone(),
+    );
+    let verify_bias = speculative_base_logit_bias(&a, 0, Some(THINK_END), || {
+        unreachable!("host-regime row never probes the raw argmax")
+    });
+    let verify = penalty_params_for(&a, PositionKind::Verify, 0.0, None, verify_bias);
+    assert_eq!(verify.logit_bias, decode.logit_bias);
+    assert_eq!(verify.logit_bias, vec![(TOOL_CALL_OPEN, 3.0)]);
+
+    // End to end through the slow path (fast paths off in `with_ctx`).
+    let model = FastPathStubModel::new(VOCAB, &[opener_near_miss_row()]);
+    let picks = with_ctx(|ctx| verify_pick_all_with_pipeline(&model, &[HELLO], &mut a, ctx, 0));
+    assert_eq!(
+        picks,
+        vec![TOOL_CALL_OPEN],
+        "verify must pick what decode picks: HELLO 10.0 < <tool_call> 8.0 + 3.0"
+    );
+}
+
+#[test]
+fn a144_opener_bias_is_stripped_per_position_inside_a_tool_body() {
+    // One window opens a call, stays in its body, closes it, then sits at a
+    // fresh opener decision. The +3.0 must be OFF at position 1 (inside the
+    // body opened by position 0 — else a spurious mid-body re-open) and ON
+    // again at position 3 (after position 2's `</tool_call>`). The step-start
+    // state (outside a body) is wrong for positions 1 and 2.
+    let mut a = tools_present_seq();
+    let buf = bf16_rows(&[
+        row(&[(TOOL_CALL_OPEN, 10.0)]),
+        opener_near_miss_row(),
+        row(&[(TOOL_CALL_CLOSE, 10.0)]),
+        opener_near_miss_row(),
+    ]);
+    let picks = with_ctx(|ctx| pick_positions_from_host(&buf, VOCAB, 2, 4, &mut a, ctx));
+    assert_eq!(
+        picks,
+        vec![TOOL_CALL_OPEN, HELLO, TOOL_CALL_CLOSE, TOOL_CALL_OPEN]
+    );
+    assert!(
+        !a.inside_tool_body,
+        "tool-body flag restored after the loop"
+    );
+
+    // Starting INSIDE a body: position 0 is stripped; after the close the
+    // nudge returns.
+    let mut a = tools_present_seq();
+    a.inside_tool_body = true;
+    let buf = bf16_rows(&[
+        opener_near_miss_row(),
+        row(&[(TOOL_CALL_CLOSE, 10.0)]),
+        opener_near_miss_row(),
+    ]);
+    let picks = with_ctx(|ctx| pick_positions_from_host(&buf, VOCAB, 2, 3, &mut a, ctx));
+    assert_eq!(picks, vec![HELLO, TOOL_CALL_CLOSE, TOOL_CALL_OPEN]);
+    assert!(a.inside_tool_body, "tool-body flag restored after the loop");
+}
+
+#[test]
+fn a144_fast_greedy_falls_back_to_host_when_bias_present() {
+    // `fast_greedy_chat` armed and the penalties reduce-only: absent the
+    // A144 guard the grammarless fast arm returns the raw GPU argmax (HELLO)
+    // with no D2H, never seeing the bias.
+    let mut a = tools_present_seq();
+    assert!(crate::scheduler::sample_step::speculative_bias_forces_host(
+        &a
+    ));
+    let model = FastPathStubModel::new(VOCAB, &[opener_near_miss_row()]);
+    let picks = with_ctx_fast_greedy_chat(|ctx| {
+        verify_pick_all_with_pipeline(&model, &[HELLO], &mut a, ctx, 0)
+    });
+    assert_eq!(picks, vec![TOOL_CALL_OPEN]);
+
+    // Control: without a bias the same fixture takes the fast arm.
+    let mut a = tools_present_seq();
+    a.logit_bias.clear();
+    assert!(!crate::scheduler::sample_step::speculative_bias_forces_host(&a));
+    let picks = with_ctx_fast_greedy_chat(|ctx| {
+        verify_pick_all_with_pipeline(&model, &[HELLO], &mut a, ctx, 0)
+    });
+    assert_eq!(picks, vec![HELLO]);
+}
+
+#[test]
+fn a144_bias_skipped_exactly_where_decode_gpu_argmax_skips_it() {
+    use crate::scheduler::sample_step::{
+        speculative_base_logit_bias, speculative_bias_forces_host,
+    };
+    // Neutral penalties + think_ended + greedy + no grammar: decode admits
+    // the row to its GPU argmax and never applies `logit_bias`. Parity with
+    // decode means verify must not apply it either.
+    let mut a = tools_present_seq();
+    a.repetition_penalty = 1.0;
+    assert!(!speculative_bias_forces_host(&a));
+    assert!(speculative_base_logit_bias(&a, 0, Some(THINK_END), || HELLO).is_empty());
+    let model = FastPathStubModel::new(VOCAB, &[opener_near_miss_row()]);
+    let picks = with_ctx(|ctx| verify_pick_all_with_pipeline(&model, &[HELLO], &mut a, ctx, 0));
+    assert_eq!(
+        picks,
+        vec![HELLO],
+        "decode's GPU argmax emits HELLO; so must verify"
+    );
+
+    // ...except when that GPU argmax lands on a post-think `</think>`/`<think>`:
+    // decode then redoes the step on the host, bias included.
+    assert_eq!(
+        speculative_base_logit_bias(&a, 0, Some(THINK_END), || THINK_END),
+        vec![(TOOL_CALL_OPEN, 3.0)]
+    );
+    assert_eq!(
+        speculative_base_logit_bias(&a, 0, Some(THINK_END), || THINK_START),
+        vec![(TOOL_CALL_OPEN, 3.0)]
+    );
+
+    // A `min_tokens` floor keeps decode on the host until it is met; the
+    // floor is judged at `output_len + verify_pos`.
+    a.min_tokens = 2;
+    assert_eq!(
+        speculative_base_logit_bias(&a, 1, Some(THINK_END), || HELLO),
+        vec![(TOOL_CALL_OPEN, 3.0)]
+    );
+    assert!(speculative_base_logit_bias(&a, 2, Some(THINK_END), || HELLO).is_empty());
+
+    // Temperature > 0 always runs decode's host sampler.
+    a.min_tokens = 0;
+    a.temperature = 0.7;
+    assert!(speculative_bias_forces_host(&a));
+}

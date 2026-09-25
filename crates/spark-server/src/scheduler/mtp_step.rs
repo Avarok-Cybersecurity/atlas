@@ -204,12 +204,22 @@ pub fn step_mtp(
         // non-MTP path applies — the root-cause fix for repetition_penalty /
         // dry_multiplier never reaching MTP-emitted tokens. Cloned before the
         // mutable `grammar_state` borrow to satisfy the borrow checker.
+        // A144: the bootstrap token carries the SAME base `logit_bias` decode
+        // would apply at this position (the tools-active `<tool_call>` nudge
+        // included); a non-empty bias blocks `sample_token_with_grammar`'s
+        // GPU fast path via `classify_penalties`, so it is applied on host.
+        let base_bias = crate::scheduler::sample_step::speculative_base_logit_bias(
+            a,
+            0,
+            verify_ctx.think_end_token,
+            || model.argmax_on_device(logits, 0).unwrap_or(u32::MAX),
+        );
         let penalties = crate::scheduler::sample_step::penalty_params_for(
             a,
             crate::scheduler::sample_step::PositionKind::Verify,
             0.0,
             None,
-            Vec::new(),
+            base_bias,
         );
         // #192: same per-tool-call-segment scoping as the main pipeline
         // (`penalty_history_scope`) so MTP bootstrap tokens see the identical
@@ -392,7 +402,14 @@ pub fn step_mtp(
         for &idx in &verify_idxs {
             let a = &active[idx];
             let g = a.pending_drafts.len();
-            if a.grammar_state.is_some() || g < 1 {
+            // A144: the batched DFlash verdict is raw argmax only (no
+            // pipeline, no `logit_bias`); a row whose decode-effective bias is
+            // non-empty (tools-active `<tool_call>` nudge) takes the
+            // per-sequence step, which routes it through the masked pipeline.
+            if a.grammar_state.is_some()
+                || g < 1
+                || crate::scheduler::sample_step::speculative_bias_forces_host(a)
+            {
                 serial_idxs.push(idx);
             } else if gamma == 0 || g == gamma {
                 gamma = g;
