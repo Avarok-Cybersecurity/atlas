@@ -212,6 +212,15 @@ pub fn sample_with_params_seeded(
 /// must NOT be ported here: quantized logits produce exact ties, and flipping
 /// the tie-break would change emitted tokens.
 ///
+/// A144b (2026-09-25): `pub` so `pub use` re-exports it as the SSOT tie-break
+/// for every OTHER host-side greedy pick that must match what THIS (decode's)
+/// host path would emit at the same position — the verify slow path's final
+/// argmax (`spark-server`'s `verify_pipeline_helper.rs`) and the MTP
+/// bootstrap's host fallback (`sample_step::sample_token`/
+/// `sample_token_with_grammar`) both call here now instead of duplicating the
+/// `max_by` expression inline. Do not add a second last-wins implementation
+/// anywhere in `spark-server` — call this one.
+///
 /// NaN is the reason for the guarded structure. `partial_cmp` with a NaN
 /// returns `None`, mapped to `Equal` — and under `max_by`'s last-wins rule an
 /// "equal" NaN DISPLACES the current maximum, so a NaN anywhere after the true
@@ -222,7 +231,7 @@ pub fn sample_with_params_seeded(
 /// construction); otherwise the answer is the LAST index equal to the max,
 /// which is exactly what `max_by` returns on NaN-free input (including
 /// -0.0/+0.0 ties, where `partial_cmp` says Equal and `==` agrees).
-fn greedy_pick_last_wins(v: &[f32]) -> u32 {
+pub fn greedy_pick_last_wins(v: &[f32]) -> u32 {
     const LANES: usize = 8;
     let mut acc = [f32::NEG_INFINITY; LANES];
     let mut any_nan = false;

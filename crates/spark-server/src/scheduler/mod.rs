@@ -142,7 +142,8 @@ use spark_model::traits::{Model, SequenceState};
 use spark_runtime::gpu::DevicePtr;
 use spark_runtime::kv_spill::KvSpillManager;
 use spark_runtime::sampler::{
-    SamplingParams, apply_penalties_and_bias, sample_with_params, sample_with_params_history,
+    SamplingParams, apply_penalties_and_bias, greedy_pick_last_wins, sample_with_params,
+    sample_with_params_history,
 };
 
 use std::sync::Arc;

@@ -43,6 +43,26 @@ pub(super) fn argmax_first_wins(logits: &[f32]) -> u32 {
     spark_runtime::sampler::argmax_first_wins_f32(logits)
 }
 
+/// A144b (2026-09-25): the verify slow path's FINAL pick — the pick decode's
+/// own host pipeline would make at this position — must use decode's tie
+/// rule, which is LAST-index-wins (`greedy_pick_last_wins` in
+/// `spark_runtime::sampler::sample_impl`), NOT `argmax_first_wins` above.
+///
+/// Root cause of A144b (54/60 divergent TEB transcripts, temp=0): decode's
+/// single-row host greedy path (`sample_with_params_seeded` →
+/// `greedy_pick_last_wins`) and MTP-K3 verify's slow path both process the
+/// SAME penalty/bias/grammar-masked logits to the SAME FP32 precision (both
+/// dequant BF16→F32 via `bf16_to_f32`; no extra rounding either side — see
+/// `decode_logits_seq::process_seq_logits` vs `verify_pick_with_pipeline`
+/// above), so an exact tie is common on quantised checkpoints. Verify was
+/// picking the FIRST tied index while decode picks the LAST — a real
+/// tie-break divergence, not a precision or masking bug. This wrapper is the
+/// fix: verify's argmax call site now delegates to the exact function decode
+/// uses, instead of duplicating a different tie-break.
+pub(super) fn greedy_pick_last_wins(logits: &[f32]) -> u32 {
+    spark_runtime::sampler::greedy_pick_last_wins(logits)
+}
+
 #[cfg(test)]
 mod argmax_tests {
     use super::argmax_first_wins;
@@ -108,5 +128,56 @@ mod argmax_tests {
         v[200_003] = 999.0; // duplicate max later — first must win
         assert_eq!(argmax_first_wins(&v), reference(&v));
         assert_eq!(argmax_first_wins(&v), 123_457);
+    }
+}
+
+#[cfg(test)]
+mod greedy_pick_last_wins_tests {
+    use super::{argmax_first_wins, greedy_pick_last_wins};
+
+    /// The tie rule decode's host path (`sample_impl::greedy_pick_last_wins`)
+    /// has always used: `max_by(partial_cmp.unwrap_or(Equal))`, last-wins.
+    fn decode_reference(logits: &[f32]) -> u32 {
+        logits
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(i, _)| i as u32)
+            .unwrap_or(0)
+    }
+
+    /// A144b regression test: on an exact tie, verify's final-pick function
+    /// must agree with decode's host greedy pick — the whole point of this
+    /// wrapper existing.
+    #[test]
+    fn exact_tie_matches_decodes_host_pick() {
+        let v = [1.0f32, 5.0, 5.0, 5.0, 2.0];
+        assert_eq!(greedy_pick_last_wins(&v), decode_reference(&v));
+        assert_eq!(greedy_pick_last_wins(&v), 3, "LAST of the tied indices (1,2,3) must win");
+    }
+
+    /// The bug this fixes: `argmax_first_wins` and `greedy_pick_last_wins`
+    /// MUST disagree on a real tie (otherwise the whole A144b fix would be a
+    /// no-op). If this ever starts failing because the two functions agree,
+    /// that is not progress — it means one of them silently changed its
+    /// tie-break and the divergence this test guards is gone for the wrong
+    /// reason.
+    #[test]
+    fn diverges_from_first_wins_on_a_real_tie() {
+        let v = [1.0f32, 5.0, 5.0, 5.0, 2.0];
+        assert_eq!(argmax_first_wins(&v), 1, "first tied index");
+        assert_eq!(greedy_pick_last_wins(&v), 3, "last tied index");
+        assert_ne!(argmax_first_wins(&v), greedy_pick_last_wins(&v));
+    }
+
+    #[test]
+    fn vocab_sized_last_wins_matches_decode() {
+        let mut v: Vec<f32> = (0..248_320)
+            .map(|i| (((i * 2654435761u64 as usize) % 100_003) as f32) / 1000.0 - 50.0)
+            .collect();
+        v[100_000] = 999.0;
+        v[200_000] = 999.0; // duplicate max — LAST must win, matching decode
+        assert_eq!(greedy_pick_last_wins(&v), decode_reference(&v));
+        assert_eq!(greedy_pick_last_wins(&v), 200_000);
     }
 }

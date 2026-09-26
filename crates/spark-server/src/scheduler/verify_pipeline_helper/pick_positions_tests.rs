@@ -567,3 +567,31 @@ fn a144_bias_skipped_exactly_where_decode_gpu_argmax_skips_it() {
     a.temperature = 0.7;
     assert!(speculative_bias_forces_host(&a));
 }
+
+// ── A144b (2026-09-25): verify's final pick must use decode's tie-break ──
+//
+// decode's host greedy path (`sample_impl::greedy_pick_last_wins`) and this
+// slow path both process the identical dequantised (BF16→F32, no extra
+// rounding either side) logits, so an exact tie on a quantised checkpoint is
+// real and common. Before this fix the slow path's final argmax
+// (`argmax::argmax_first_wins`) resolved ties to the FIRST equal-valued id;
+// decode always resolves to the LAST. That mismatch — not a masking or
+// precision bug — is what produced the K3-vs-spec-off synonym-swap
+// divergence (54/60 divergent TEB transcripts at temperature 0).
+
+#[test]
+fn a144b_verify_exact_tie_matches_decodes_last_wins_tie_break() {
+    // HELLO (104) and TOOL_CALL_OPEN (128) tied at the row max, 9.0 — exactly
+    // bf16-representable, so the D2H round-trip introduces no rounding that
+    // could break the tie by accident.
+    let mut a = post_think_grammarless_seq();
+    a.min_tokens = 0;
+    let buf = bf16_rows(&[row(&[(HELLO, 9.0), (TOOL_CALL_OPEN, 9.0)])]);
+    let picks = with_ctx(|ctx| pick_positions_from_host(&buf, VOCAB, 2, 1, &mut a, ctx));
+    assert_eq!(
+        picks,
+        vec![TOOL_CALL_OPEN],
+        "TOOL_CALL_OPEN (id 128) is the LAST of the two tied ids (104, 128) — \
+         decode's `greedy_pick_last_wins` must win here, not first-wins' HELLO"
+    );
+}

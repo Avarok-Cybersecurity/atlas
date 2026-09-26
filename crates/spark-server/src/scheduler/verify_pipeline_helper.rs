@@ -292,10 +292,21 @@ pub fn verify_pick_with_pipeline(
         return sampled;
     }
 
-    // 4. Argmax over the (now-masked-and-penalised) vector. Matches the
-    //    sampler's argmax branch behaviour.
+    // 4. Argmax over the (now-masked-and-penalised) vector.
+    //
+    // A144b (2026-09-25): this IS decode's host greedy pick for this
+    // position (temp==0 reaches here only when the forced-token bypass in
+    // step 3 didn't fire), so it must use decode's tie-break — LAST-index-
+    // wins (`greedy_pick_last_wins`) — not the FIRST-index-wins
+    // `argmax_first_wins`. Using the wrong tie rule was the root cause of
+    // A144b: on quantised checkpoints exact logit ties are common, and
+    // spec-off decode vs K3 verify disagreed on which tied index to emit
+    // (54/60 divergent TEB transcripts at temperature 0). `argmax_first_wins`
+    // remains correct where it is still used (`speculative_base_logit_bias`'s
+    // raw-argmax probe above) — that call mirrors the GPU kernel's argmax,
+    // a different, UNVERIFIED tie order, not decode's host pick.
     let t_argmax = std::time::Instant::now();
-    let best_id = argmax::argmax_first_wins(&f32_logits);
+    let best_id = argmax::greedy_pick_last_wins(&f32_logits);
     ctx.timing.record(Phase::Argmax, t_argmax);
     best_id
 }
