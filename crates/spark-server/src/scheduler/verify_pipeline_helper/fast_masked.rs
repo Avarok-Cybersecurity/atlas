@@ -76,7 +76,13 @@ pub(super) fn try_chat_fast_path(
     }
     let fast_masked_enabled = ctx.sampling.fast_masked;
     let adadec_recording = ctx.sampling.adadec_diagnostic;
-    if !fast_masked_enabled || a.grammar_state.is_some() || adadec_recording {
+    // Spec-in-think parity: the (b) preconditions below are judged on the
+    // step-START state, but inside `<think>` the window itself can cross the
+    // F2 >=400 gate, the thinking budget or a THINK_LOOP stride (arming the
+    // forced `</think>` mid-window), and the stateful F2 / defer-tick stages
+    // must run per position. Decode never takes a GPU argmax for a thinking
+    // row (`decode_row_uses_gpu_argmax`), so neither does this shortcut.
+    if !fast_masked_enabled || a.grammar_state.is_some() || adadec_recording || a.inside_thinking {
         return None;
     }
     use crate::scheduler::confidence::{

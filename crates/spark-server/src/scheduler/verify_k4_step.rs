@@ -97,7 +97,8 @@ pub fn step_verify_k4(
     // non-empty bias to this row, take the masked pipeline instead.
     let (v0, v1, v2, v3) = if dflash_verify_raw_argmax
         && !sched.levers.dflash_masked_verify
-        && !crate::scheduler::sample_step::speculative_bias_forces_host(a)
+        // Spec-in-think parity: thinking rows never take the raw verdict.
+        && !crate::scheduler::sample_step::speculative_raw_argmax_forbidden(a)
     {
         // DFlash drafter proposes on raw argmax; verify on the SAME (GOLD)
         // basis so verifier/drafter judge identically. No rep_pen/DRY here.

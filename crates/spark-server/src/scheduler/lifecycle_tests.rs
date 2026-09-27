@@ -232,6 +232,7 @@ fn test_seq(
         think_just_ended: false,
         post_think_emitted: 0,
         spec_adapt: Default::default(),
+        spec_think_trail: Default::default(),
         think_skip_count: 0,
         tool_call_end_token: TOOL_END,
         require_tool_call: false,

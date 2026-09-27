@@ -287,6 +287,21 @@ pub(super) fn speculative_base_logit_bias(
 /// because they require `!inside_thinking` (so no `</think>` can flip the
 /// think flags inside the window) and the `min_tokens` term is monotone in
 /// the position. Conservative (forces host) otherwise.
+pub(super) fn speculative_raw_argmax_forbidden(a: &ActiveSeq) -> bool {
+    // Spec-in-think parity (AVAROK_DFLASH_SPEC_THINK): decode NEVER emits a
+    // thinking row from its GPU argmax (`decode_row_uses_gpu_argmax` is false
+    // while `inside_thinking`) — every thinking token goes through the host
+    // pipeline (forced `</think>` injection, mid-word mask, A4 floor, F2).
+    // The raw-argmax verify verdicts (DFlash GOLD basis, batched DFlash)
+    // skip that pipeline, so a window STARTING inside `<think>` must take
+    // the masked pipeline (`verify_pick_all_with_pipeline`) instead. Inert
+    // without the opt-in: speculation never starts inside `<think>` then
+    // (`mtp_gate::spec_dispatch_eligible`).
+    a.inside_thinking || speculative_bias_forces_host(a)
+}
+
+/// A144 half of [`speculative_raw_argmax_forbidden`] (also consulted on its
+/// own by the fast-greedy blocks, which already require `!inside_thinking`).
 pub(super) fn speculative_bias_forces_host(a: &ActiveSeq) -> bool {
     !a.logit_bias.is_empty()
         && !super::decode_logits_step::decode_row_uses_gpu_argmax(

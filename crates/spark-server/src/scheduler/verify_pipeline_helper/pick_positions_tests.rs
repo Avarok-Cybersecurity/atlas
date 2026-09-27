@@ -94,6 +94,7 @@ fn with_ctx<R>(f: impl FnOnce(&LogitsContext) -> R) -> R {
         think_start_token: Some(THINK_START),
         tool_call_start_token: Some(TOOL_CALL_OPEN),
         tool_call_end_token: Some(TOOL_CALL_CLOSE),
+        code_fence_token: None,
         // Inert here: this file's `pick_positions_from_host` never reads
         // `verify_pos`. The real verify path rebuilds the context per
         // position (`LogitsContext { verify_pos, ..ctx.clone() }` in
@@ -199,6 +200,7 @@ fn with_ctx_fast_greedy_chat<R>(f: impl FnOnce(&LogitsContext) -> R) -> R {
         think_start_token: Some(THINK_START),
         tool_call_start_token: Some(TOOL_CALL_OPEN),
         tool_call_end_token: Some(TOOL_CALL_CLOSE),
+        code_fence_token: None,
         verify_pos: 0,
     };
     f(&ctx)
@@ -594,4 +596,283 @@ fn a144b_verify_exact_tie_matches_decodes_last_wins_tie_break() {
         "TOOL_CALL_OPEN (id 128) is the LAST of the two tied ids (104, 128) — \
          decode's `greedy_pick_last_wins` must win here, not first-wins' HELLO"
     );
+}
+
+// ── Spec-in-think parity (A146, AVAROK_DFLASH_SPEC_THINK) ────────────────
+//
+// Contract: with speculation inside `<think>`, every committed token must be
+// the token spec-off decode would commit. Decode = "pipeline on the live
+// state, then commit" once per token; here that is `pick_positions_from_host`
+// with k=1 followed by `emit_token` (the k=1 window re-applies its own trail
+// entry, i.e. exactly decode's pipeline-then-commit). The window path picks
+// K positions first, then commits an accepted prefix. The tests drive both
+// over the same synthetic rows and assert identical picks AND identical
+// commit state.
+
+/// ``` stand-in (any in-vocab id that is neither structural nor HELLO).
+const FENCE: u32 = 96;
+
+/// Mid-reasoning, grammarless (post-think rows then decode free-run).
+fn thinking_grammarless_seq() -> ActiveSeq {
+    let mut a = thinking_seq();
+    a.grammar_state = None;
+    a.min_tokens = 0;
+    a
+}
+
+/// Token ids marked mid-word (the `MidWordThinkEndMask` input) in every
+/// `with_ctx_think` context.
+const MID_WORD: u32 = 97;
+
+/// `with_ctx` plus the tokenizer's ``` id, a boundary mask marking `ids` and
+/// a mid-word mask marking [`MID_WORD`].
+fn with_ctx_think<R>(boundary_ids: &[u32], f: impl FnOnce(&LogitsContext) -> R) -> R {
+    let scratch = crate::scheduler::sched_ctx::DecodeScratch::default();
+    let dumps = crate::scheduler::dumps::RunDumps::default();
+    let mut mask = vec![false; VOCAB];
+    for &id in boundary_ids {
+        mask[id as usize] = true;
+    }
+    let mut mid = vec![false; VOCAB];
+    mid[MID_WORD as usize] = true;
+    let ctx = LogitsContext {
+        scratch: &scratch,
+        dumps: &dumps,
+        stats: std::sync::Arc::new(crate::scheduler::spec_stats::SpecStats::new()),
+        watchdog: crate::scheduler::helpers::WatchdogParams::default(),
+        boundary_mask: Some(mask.into()),
+        mid_word_mask: Some(mid.into()),
+        sampling: SamplingLevers::default(),
+        timing: std::sync::Arc::default(),
+        think_end_token: Some(THINK_END),
+        think_start_token: Some(THINK_START),
+        tool_call_start_token: Some(TOOL_CALL_OPEN),
+        tool_call_end_token: Some(TOOL_CALL_CLOSE),
+        code_fence_token: Some(FENCE),
+        verify_pos: 0,
+    };
+    f(&ctx)
+}
+
+fn sched_think() -> crate::scheduler::sched_ctx::SchedCtx {
+    let mut s = crate::scheduler::sched_ctx::SchedCtx::for_test();
+    s.limits.code_fence_token = Some(FENCE);
+    s
+}
+
+/// The commit state every later pick depends on.
+fn commit_state(a: &ActiveSeq) -> (Vec<u32>, bool, bool, u32, bool, u32, u32, bool, u32) {
+    (
+        a.output_tokens.clone(),
+        a.inside_thinking,
+        a.think_ended,
+        a.thinking_tokens,
+        a.force_end_thinking,
+        a.sentence_defer_count,
+        a.consecutive_confident,
+        a.in_code_fence,
+        a.think_watchdog_fires,
+    )
+}
+
+/// Spec-off reference: one position at a time, pipeline then commit.
+fn run_serial(mut a: ActiveSeq, rows: &[Vec<f32>], boundary: &[u32]) -> (Vec<u32>, ActiveSeq) {
+    let sched = sched_think();
+    let mut picks = Vec::new();
+    for r in rows {
+        let buf = bf16_rows(std::slice::from_ref(r));
+        let p = with_ctx_think(boundary, |ctx| {
+            pick_positions_from_host(&buf, VOCAB, 2, 1, &mut a, ctx)
+        });
+        crate::scheduler::emit_step::emit_token(&mut a, p[0], None, &sched);
+        picks.push(p[0]);
+    }
+    (picks, a)
+}
+
+/// Spec path: windows of `rows`, committing `commit[w]` picks of window w
+/// (the accepted prefix + bonus). Returns every committed pick.
+fn run_windows(
+    mut a: ActiveSeq,
+    windows: &[(&[Vec<f32>], usize)],
+    boundary: &[u32],
+) -> (Vec<u32>, ActiveSeq) {
+    let sched = sched_think();
+    let mut committed = Vec::new();
+    for (rows, n_commit) in windows {
+        let buf = bf16_rows(rows);
+        let picks = with_ctx_think(boundary, |ctx| {
+            pick_positions_from_host(&buf, VOCAB, 2, rows.len(), &mut a, ctx)
+        });
+        for &p in &picks[..*n_commit] {
+            crate::scheduler::emit_step::emit_token(&mut a, p, None, &sched);
+            committed.push(p);
+        }
+    }
+    (committed, a)
+}
+
+#[test]
+fn spec_think_budget_arm_mid_window_forces_think_end_at_next_position() {
+    // Gap 3 + 4: the budget is reached by the commit of position 0, so
+    // spec-off injects `</think>` as the very next token (hard override:
+    // thinking_tokens >= 3 * budget). The window must pick it at position 1
+    // (a stale thinking_tokens count picked HELLO), so any draft continuing
+    // the reasoning is rejected there and no truncation of an accepted run
+    // can ever be needed.
+    let mut a = thinking_grammarless_seq();
+    a.thinking_budget = Some(2);
+    a.thinking_tokens = 5;
+    let rows = vec![row(&[(HELLO, 10.0)]); 3];
+    let picks = with_ctx_think(&[], |ctx| {
+        pick_positions_from_host(&bf16_rows(&rows), VOCAB, 2, 3, &mut a, ctx)
+    });
+    assert_eq!(picks[..2], [HELLO, THINK_END]);
+    // Restored: the window only picks.
+    assert_eq!(a.thinking_tokens, 5);
+    assert!(!a.force_end_thinking && a.inside_thinking && a.output_tokens.is_empty());
+    assert_eq!(a.spec_think_trail.len(), 3);
+
+    let (serial_picks, serial) = run_serial(thinking_grammarless_seq_with(2, 5), &rows, &[]);
+    let (win_picks, win) = run_windows(thinking_grammarless_seq_with(2, 5), &[(&rows, 3)], &[]);
+    assert_eq!(win_picks, serial_picks);
+    assert_eq!(commit_state(&win), commit_state(&serial));
+}
+
+fn thinking_grammarless_seq_with(budget: u32, thinking_tokens: u32) -> ActiveSeq {
+    let mut a = thinking_grammarless_seq();
+    a.thinking_budget = Some(budget);
+    a.thinking_tokens = thinking_tokens;
+    a
+}
+
+#[test]
+fn spec_think_code_fence_defers_injection_per_position() {
+    // Gap 1: `</think>` is armed; FENCE and HELLO are sentence boundaries.
+    // Position 0 opens a fence, so position 1 (prev = FENCE, a boundary)
+    // must DEFER (in_code_fence) — without per-position fence tracking the
+    // window injected `</think>` inside the code block. Position 2 closes
+    // the fence; position 3 (prev FENCE, fence closed) injects.
+    let mk = || {
+        let mut a = thinking_grammarless_seq();
+        a.force_end_thinking = true;
+        a
+    };
+    let rows = vec![
+        row(&[(FENCE, 10.0)]),
+        row(&[(HELLO, 10.0)]),
+        row(&[(FENCE, 10.0)]),
+        row(&[(HELLO, 10.0)]),
+    ];
+    let boundary = [FENCE, HELLO];
+    let mut a = mk();
+    a.output_tokens = vec![1]; // non-boundary prev: position 0 defers
+    let picks = with_ctx_think(&boundary, |ctx| {
+        pick_positions_from_host(&bf16_rows(&rows), VOCAB, 2, 4, &mut a, ctx)
+    });
+    assert_eq!(picks, vec![FENCE, HELLO, FENCE, THINK_END]);
+    assert!(!a.in_code_fence, "fence state restored after the loop");
+
+    let mut s0 = mk();
+    s0.output_tokens = vec![1];
+    let mut w0 = mk();
+    w0.output_tokens = vec![1];
+    let (serial_picks, serial) = run_serial(s0, &rows, &boundary);
+    let (win_picks, win) = run_windows(w0, &[(&rows[..2], 2), (&rows[2..], 2)], &boundary);
+    assert_eq!(serial_picks, picks);
+    assert_eq!(win_picks, serial_picks);
+    assert_eq!(commit_state(&win), commit_state(&serial));
+    assert!(!serial.inside_thinking && !serial.in_code_fence);
+}
+
+#[test]
+fn spec_think_partial_accept_does_not_leak_pipeline_accumulators() {
+    // Audit fix: the F2 streak arms `force_end_thinking` inside the pipeline.
+    // Window 1 (3 positions) arms it at position 2, but only position 0
+    // commits (rejection at 1). The window used to keep position 2's
+    // accumulators (streak 60, armed), so window 2 injected `</think>` one
+    // token early. Serial: HELLO, HELLO, `</think>` (F2 arms at step 2 and
+    // prev HELLO is a boundary), then post-think HELLO.
+    let mk = || {
+        let mut a = thinking_grammarless_seq();
+        a.thinking_tokens = 400;
+        a.consecutive_confident = 57;
+        a
+    };
+    let rows = vec![row(&[(HELLO, 10.0)]); 4];
+    let boundary = [HELLO];
+    let (serial_picks, serial) = run_serial(mk(), &rows, &boundary);
+    assert_eq!(serial_picks, vec![HELLO, HELLO, THINK_END, HELLO]);
+    let (win_picks, win) = run_windows(mk(), &[(&rows[..3], 1), (&rows[1..], 3)], &boundary);
+    assert_eq!(win_picks, serial_picks);
+    assert_eq!(commit_state(&win), commit_state(&serial));
+}
+
+#[test]
+fn spec_think_loop_watchdog_parity_window_vs_serial() {
+    // Gap 2: a period-4 reasoning loop. THINK_LOOP must arm at the same
+    // committed token on both paths (it used to run on decode only), and the
+    // window must see it arm mid-window (history + thinking_tokens advanced
+    // per position) so the injection lands on the same position.
+    let ids = [10u32, 11, 12, 13];
+    let rows: Vec<Vec<f32>> = (0..72).map(|i| row(&[(ids[i % 4], 10.0)])).collect();
+    let boundary = [13u32];
+    let (serial_picks, serial) = run_serial(thinking_grammarless_seq(), &rows, &boundary);
+    assert!(
+        serial.think_watchdog_fires >= 1,
+        "THINK_LOOP fired on the serial path"
+    );
+    assert!(serial_picks.contains(&THINK_END));
+    let windows: Vec<(&[Vec<f32>], usize)> = rows.chunks(3).map(|c| (c, c.len())).collect();
+    let (win_picks, win) = run_windows(thinking_grammarless_seq(), &windows, &boundary);
+    assert_eq!(win_picks, serial_picks);
+    assert_eq!(commit_state(&win), commit_state(&serial));
+}
+
+#[test]
+fn spec_think_mid_word_mask_reads_the_window_prev_token() {
+    // GPU class (A), "think-close one sentence late": the committed history
+    // ends mid-word; position 0 finishes the sentence ('.' stand-in = HELLO,
+    // not mid-word) and position 1's argmax is `</think>`. Spec-off sees
+    // prev = HELLO and closes. The window used to read the STALE committed
+    // `output_tokens.last()` (mid-word) at position 1, masked `</think>`, and
+    // kept reasoning with the runner-up.
+    let mk = || {
+        let mut a = thinking_grammarless_seq();
+        a.thinking_tokens = 50;
+        a.output_tokens = vec![MID_WORD];
+        a
+    };
+    let rows = vec![
+        row(&[(HELLO, 10.0)]),
+        row(&[(THINK_END, 10.0), (TOOL_CALL_CLOSE, 9.0)]),
+    ];
+    let (serial_picks, serial) = run_serial(mk(), &rows, &[]);
+    assert_eq!(serial_picks, vec![HELLO, THINK_END]);
+    let (win_picks, win) = run_windows(mk(), &[(&rows, 2)], &[]);
+    assert_eq!(win_picks, serial_picks);
+    assert_eq!(commit_state(&win), commit_state(&serial));
+}
+
+#[test]
+fn spec_think_penalty_history_includes_earlier_window_picks() {
+    // GPU class (B) candidate: with any history penalty armed, position i
+    // must be penalised against picks 0..i-1 exactly as decode (which has
+    // committed them) penalises it. Position 1: HELLO 10.0 vs 9.0 runner-up;
+    // rep-penalty 2.0 on the already-picked HELLO flips it (10/2 < 9).
+    let mk = || {
+        let mut a = thinking_grammarless_seq();
+        a.thinking_tokens = 50;
+        a.repetition_penalty = 2.0;
+        a
+    };
+    let rows = vec![
+        row(&[(HELLO, 10.0)]),
+        row(&[(HELLO, 10.0), (TOOL_CALL_CLOSE, 9.0)]),
+    ];
+    let (serial_picks, serial) = run_serial(mk(), &rows, &[]);
+    assert_eq!(serial_picks, vec![HELLO, TOOL_CALL_CLOSE]);
+    let (win_picks, win) = run_windows(mk(), &[(&rows, 2)], &[]);
+    assert_eq!(win_picks, serial_picks);
+    assert_eq!(commit_state(&win), commit_state(&serial));
 }

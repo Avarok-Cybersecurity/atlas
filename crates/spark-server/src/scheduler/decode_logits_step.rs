@@ -33,12 +33,14 @@ fn logits_ctx<'a>(
     think_start_token: Option<u32>,
     tool_call_start_token: Option<u32>,
     tool_call_end_token: Option<u32>,
+    code_fence_token: Option<u32>,
 ) -> crate::scheduler::logit_processors::LogitsContext<'a> {
     crate::scheduler::logit_processors::LogitsContext {
         think_end_token,
         think_start_token,
         tool_call_start_token,
         tool_call_end_token,
+        code_fence_token,
         verify_pos: 0,
         watchdog: sched.watchdog,
         scratch,
@@ -308,6 +310,7 @@ pub fn process_decode_logits(
                             think_start_token,
                             tool_call_start_token,
                             tool_call_end_token,
+                            code_fence_token,
                             verify_pos: 0,
                             watchdog,
                             scratch,
@@ -340,6 +343,7 @@ pub fn process_decode_logits(
                 think_start_token,
                 tool_call_start_token,
                 tool_call_end_token,
+                code_fence_token,
             );
             active
                 .iter_mut()
@@ -418,6 +422,8 @@ pub fn process_decode_logits(
         // each successive re-entry has a tighter window. After 4+
         // fires, the budget is 1/16 of normal — the watchdog kills
         // re-entry within a handful of tokens.
+        // Twins: `emit_step::emit_token` + `pick_positions_from_host` use
+        // `think_commit::spontaneous_think_budget` (same decay, same floor).
         if !a.inside_thinking && think_start_token == Some(tok) {
             let decay_shift = a.think_watchdog_fires.min(4);
             let decayed = a.spontaneous_think_budget >> decay_shift;
@@ -488,6 +494,9 @@ pub fn process_decode_logits(
         if a.inside_thinking {
             a.consume_generation_budget();
             if think_end_token == Some(tok) {
+                // Twins: `emit_step::emit_token` (`</think>` branch) and the
+                // speculative flip in `pick_positions_from_host` reset the
+                // same fields — keep all three in step.
                 a.inside_thinking = false;
                 a.force_end_thinking = false;
                 a.sentence_defer_count = 0;
@@ -500,64 +509,29 @@ pub fn process_decode_logits(
                 // branch below on the next emit.
                 a.think_just_ended = true;
             } else {
-                a.thinking_tokens += 1;
-                // Track ``` code-fence parity within the thinking block:
-                // each fence token flips in/out of a fenced code span.
-                // The F2 confidence early-stop (process_seq_logits) is
-                // suppressed while `in_code_fence` — code is near-
-                // deterministic (high top-1 prob) but that is NOT a
-                // "done reasoning" signal; braking here truncates the
-                // model mid-statement. THINK_LOOP (below) deliberately
-                // stays active even inside fences: it catches
-                // *repeating* fence-narration, not one coherent block.
-                a.in_code_fence = toggle_code_fence(a.in_code_fence, tok, code_fence_token);
-                // Set force_end_thinking when budget exhausted (picked up next iteration)
-                if let Some(budget) = a.thinking_budget
-                    && a.thinking_tokens >= budget
-                    && !a.force_end_thinking
-                {
-                    a.force_end_thinking = true;
-                    a.sentence_defer_count = 0;
-                    // Name the budget's SOURCE: a 256-class cut with a large
-                    // --max-thinking-budget in force means the CLIENT sent the
-                    // budget (explicit tokens or a reasoning_effort rung) —
-                    // the knob to turn is in the request, not the server.
-                    tracing::info!(
-                        source = if a.enable_thinking {
-                            "request (client budget/effort; scaled by --max-thinking-budget)"
-                        } else {
-                            "spontaneous <think> (--max-thinking-budget / MODEL.toml)"
-                        },
-                        "Thinking budget exhausted ({budget} tokens), arming </think>; \
-                         deferring up to {MAX_SENTENCE_DEFER_TOKENS} tokens for sentence boundary"
-                    );
-                }
-                // Token-level fence-loop detection. Catches the Qwen3.5-35B
-                // phrase attractor (`Running:\`\`\`bash cmd\`\`\`Executing:…`
-                // cycling) within ~24-60 tokens of the loop starting,
-                // instead of waiting for the 256-token thinking budget.
-                if !sched.levers.disable_watchdogs
-                    && sched.watchdog.enable_think_loop_watchdog
-                    && !a.force_end_thinking
-                    && a.thinking_tokens >= THINK_LOOP_MIN_TOKENS
-                    && a.thinking_tokens.is_multiple_of(THINK_LOOP_CHECK_STRIDE)
-                    && detect_thinking_token_loop_with(
-                        &a.output_tokens,
-                        a.repetition_detection,
-                        sched.watchdog,
-                    )
-                {
-                    a.force_end_thinking = true;
-                    a.sentence_defer_count = 0;
-                    a.think_watchdog_fires = a.think_watchdog_fires.saturating_add(1);
-                    tracing::warn!(
-                        thinking_tokens = a.thinking_tokens,
-                        watchdog_fires = a.think_watchdog_fires,
-                        "Thinking-loop watchdog fired (period-{}…{} repeat in tail); forcing </think> early",
-                        THINK_LOOP_PERIOD_MIN,
-                        THINK_LOOP_PERIOD_MAX,
-                    );
-                }
+                // thinking_tokens / ``` fence parity / budget arm / THINK_LOOP.
+                // SSOT `think_commit::advance_thinking_token` — the SAME body
+                // runs at commit in `emit_step::emit_token` (spec verify-accept
+                // twin) and speculatively per position in
+                // `pick_positions_from_host` (verify-window twin), so a token
+                // committed inside `<think>` advances identical state on every
+                // path. `tok` is not pushed yet: history = all of output_tokens.
+                // The F2 confidence early-stop is suppressed-at-injection while
+                // `in_code_fence` (`should_inject_think_end`); THINK_LOOP stays
+                // active inside fences (it catches *repeating* fence-narration).
+                let history_len = a.output_tokens.len();
+                crate::scheduler::think_commit::advance_thinking_token(
+                    a,
+                    tok,
+                    history_len,
+                    crate::scheduler::think_commit::ThinkTokenEnv {
+                        code_fence_token,
+                        think_loop_enabled: !sched.levers.disable_watchdogs
+                            && sched.watchdog.enable_think_loop_watchdog,
+                        watchdog: sched.watchdog,
+                    },
+                    true,
+                );
             }
         } else {
             // Content-phase token: budget bookkeeping + the content-loop
@@ -628,6 +602,8 @@ pub fn process_decode_logits(
                 }
             }
         }
+        // Twins: `emit_step::emit_token` (before its push) and
+        // `pick_positions_from_host` apply the same 512-token clear.
         // Safety: if require_tool_call is still set after 512 tokens, the model
         // isn't generating a tool call (grammar may have failed to compile).
         // Clear the flag so EOS is no longer suppressed — prevents infinite gen.

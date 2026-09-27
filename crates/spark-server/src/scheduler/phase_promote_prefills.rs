@@ -216,6 +216,7 @@ fn build_active_seq_from_prefill(
         think_just_ended: false,
         post_think_emitted: 0,
         spec_adapt: Default::default(),
+        spec_think_trail: Default::default(),
         think_skip_count: 0,
         require_tool_call: use_legacy_tool_call,
         tool_request,

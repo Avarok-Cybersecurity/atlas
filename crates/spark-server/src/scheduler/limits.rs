@@ -32,6 +32,11 @@ pub struct SchedLimits {
     /// long think block cannot run past it. `0` = unset → every guard that
     /// reads it becomes a no-op.
     pub max_seq_len: usize,
+    /// The tokenizer's atomic ``` code-fence token, when it has one. Not a
+    /// stop: `emit_token` needs it to track `in_code_fence` exactly like
+    /// `process_decode_logits` (which receives it as a parameter), so the
+    /// forced-`</think>` fence deferral agrees across the two commit paths.
+    pub code_fence_token: Option<u32>,
 }
 
 impl SchedLimits {
@@ -42,6 +47,7 @@ impl SchedLimits {
         im_start_hard_stop: None,
         tool_response_hard_stop: None,
         max_seq_len: 0,
+        code_fence_token: None,
     };
 }
 

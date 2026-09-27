@@ -24,6 +24,8 @@ mod decode_step;
 pub mod dflash_rung;
 #[cfg(test)]
 mod emit_eos_thinking_tests;
+#[cfg(test)]
+mod emit_spec_think_tests;
 mod emit_step;
 #[cfg(test)]
 mod emit_tool_call_finish_tests;
@@ -81,6 +83,7 @@ mod swap_out_tests;
 mod teardown;
 #[cfg(test)]
 mod test_support;
+mod think_commit;
 #[cfg(test)]
 mod think_skip_tests;
 mod types;
@@ -95,7 +98,6 @@ mod verify_pipeline_helper;
 pub mod vocab_masks;
 
 use beam_prefill::resolve_beam_hyp;
-use confidence::*;
 use decode_logits_content::*;
 use decode_logits_seq::*;
 use decode_logits_step::*;
@@ -718,6 +720,7 @@ pub fn run(
                 think_start_token,
                 tool_call_start_token,
                 tool_call_end_token,
+                code_fence_token,
                 verify_pos: 0,
                 boundary_mask: sched.masks.boundary.clone(),
                 mid_word_mask: sched.masks.mid_word.clone(),

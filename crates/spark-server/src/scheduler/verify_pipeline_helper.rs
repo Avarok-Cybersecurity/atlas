@@ -61,6 +61,7 @@ use crate::scheduler::ActiveSeq;
 use crate::scheduler::helpers::bf16_to_f32;
 use crate::scheduler::logit_processors::LogitsContext;
 use spark_model::traits::Model;
+use spark_runtime::gpu::DevicePtr;
 
 /// Verify-time analogue of `decode_logits_step::THINK_MASK_FALLBACKS`:
 /// counts calls to [`verify_pick_all_with_pipeline`] where the post-think
@@ -309,6 +310,29 @@ pub fn verify_pick_with_pipeline(
     let best_id = argmax::greedy_pick_last_wins(&f32_logits);
     ctx.timing.record(Phase::Argmax, t_argmax);
     best_id
+}
+
+/// Spec-in-think parity: pick ONE decode row (the MTP bootstrap token) through
+/// the full host pipeline, as `process_decode_logits` does for every thinking
+/// row. The bootstrap's `sample_token_with_grammar` applies penalties/bias
+/// only — no forced `</think>` injection, mid-word mask, F2, pin — so a
+/// bootstrap inside `<think>` (every Serial→spec entry and propose fallback
+/// under AVAROK_DFLASH_SPEC_THINK) could emit a token spec-off never would.
+/// `None` on a D2H failure (caller fails the step as before).
+pub fn pick_decode_row_with_pipeline(
+    model: &dyn Model,
+    row_logits: DevicePtr,
+    a: &mut ActiveSeq,
+    ctx: &LogitsContext,
+) -> Option<u32> {
+    let vocab = model.vocab_size();
+    let is_fp32 = model.decode_logits_fp32();
+    let mut buf = vec![0u8; vocab * if is_fp32 { 4 } else { 2 }];
+    model.copy_logits_to_host(row_logits, &mut buf).ok()?;
+    // The pipeline mutates the accumulators on `a` directly here (decode
+    // semantics); a stale verify-window trail must not overwrite them.
+    a.spec_think_trail.clear();
+    Some(verify_pick_with_pipeline(&buf, is_fp32, vocab, a, ctx, 0))
 }
 
 /// Convenience: copy the full `[K, vocab]` verify logits buffer to

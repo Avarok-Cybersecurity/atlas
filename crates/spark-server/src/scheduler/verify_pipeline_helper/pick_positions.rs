@@ -5,7 +5,55 @@
 
 use super::verify_pick_with_pipeline;
 use crate::scheduler::logit_processors::LogitsContext;
+use crate::scheduler::think_commit::{
+    SpecThinkTrail, ThinkTokenEnv, advance_thinking_token, spontaneous_think_budget,
+};
 use crate::scheduler::types::ActiveSeq;
+
+/// Step-start snapshot of the commit state the window advances speculatively
+/// (restored on exit — the window only picks; `emit_token` commits).
+struct SpecThinkState {
+    thinking_tokens: u32,
+    in_code_fence: bool,
+    force_end_thinking: bool,
+    sentence_defer_count: u32,
+    consecutive_confident: u32,
+    think_watchdog_fires: u32,
+    thinking_budget: Option<u32>,
+    think_skip_count: u32,
+    require_tool_call: bool,
+    tool_call_opened: bool,
+}
+
+impl SpecThinkState {
+    fn capture(a: &ActiveSeq) -> Self {
+        Self {
+            thinking_tokens: a.thinking_tokens,
+            in_code_fence: a.in_code_fence,
+            force_end_thinking: a.force_end_thinking,
+            sentence_defer_count: a.sentence_defer_count,
+            consecutive_confident: a.consecutive_confident,
+            think_watchdog_fires: a.think_watchdog_fires,
+            thinking_budget: a.thinking_budget,
+            think_skip_count: a.think_skip_count,
+            require_tool_call: a.require_tool_call,
+            tool_call_opened: a.tool_call_opened,
+        }
+    }
+
+    fn restore(&self, a: &mut ActiveSeq) {
+        a.thinking_tokens = self.thinking_tokens;
+        a.in_code_fence = self.in_code_fence;
+        a.force_end_thinking = self.force_end_thinking;
+        a.sentence_defer_count = self.sentence_defer_count;
+        a.consecutive_confident = self.consecutive_confident;
+        a.think_watchdog_fires = self.think_watchdog_fires;
+        a.thinking_budget = self.thinking_budget;
+        a.think_skip_count = self.think_skip_count;
+        a.require_tool_call = self.require_tool_call;
+        a.tool_call_opened = self.tool_call_opened;
+    }
+}
 
 /// Run the pre-sample pipeline over `k` host-resident logits rows and return
 /// the processed pick per position.
@@ -24,6 +72,19 @@ use crate::scheduler::types::ActiveSeq;
 /// position is picked under the pristine grammar; drafts that disagree are
 /// simply rejected by the verifier. The flags are restored on exit — this
 /// loop only picks, it never commits.
+///
+/// Spec-in-think parity (A146, 2026-09-26): the window now advances EVERY
+/// piece of commit state a later position's pipeline reads — the picks
+/// themselves (pushed onto `output_tokens`: mid-word / sentence-boundary
+/// `prev` token, penalty history), `thinking_tokens`, `in_code_fence`,
+/// budget / THINK_LOOP arming (SSOT `think_commit::advance_thinking_token`,
+/// shared with `process_decode_logits` and `emit_token`), `</think>` resets,
+/// spontaneous `<think>`, the post-`</think>` pin inputs — and restores all
+/// of it on exit. Because a position's pick already reflects any close that
+/// spec-off would force right after an earlier position, an accepted run
+/// never needs truncating: a draft that disagrees with the forced token is
+/// rejected there. The pipeline's own accumulators are restored too and
+/// left per position in `a.spec_think_trail` for `emit_token`.
 pub(super) fn pick_positions_from_host(
     buf: &[u8],
     vocab: usize,
@@ -48,32 +109,98 @@ pub(super) fn pick_positions_from_host(
     // earlier in the SAME window — exactly what `emit_token` →
     // `update_tool_param_state` will do on the accept path. Restored on exit.
     let tool_body_before = a.inside_tool_body;
+    // Spec-in-think parity (A146, AVAROK_DFLASH_SPEC_THINK): every piece of
+    // per-token commit state the pipeline READS at a later position must be
+    // advanced here per position, exactly as the commit twins
+    // (`process_decode_logits` / `emit_token`) will advance it, and restored
+    // on exit. The pipeline reads: `thinking_tokens` (F2 >=400 gate, A4
+    // floor, forced-`</think>` hard override), `in_code_fence` (fence
+    // deferral), `force_end_thinking` (budget / THINK_LOOP arming),
+    // `output_tokens` (mid-word mask + sentence-boundary gate via `.last()`,
+    // penalty history), `think_just_ended` / `require_tool_call` /
+    // `tool_call_opened` (post-think `<tool_call>` pin), and the
+    // spontaneous-`<think>` budget.
+    let think_state_before = SpecThinkState::capture(a);
+    let out_len_before = a.output_tokens.len();
+    let think_env = ThinkTokenEnv {
+        code_fence_token: ctx.code_fence_token,
+        think_loop_enabled: !ctx.sampling.disable_watchdogs
+            && ctx.watchdog.enable_think_loop_watchdog,
+        watchdog: ctx.watchdog,
+    };
+    a.spec_think_trail.clear();
 
     for i in 0..k {
         let slice = &buf[i * vocab * elem_bytes..(i + 1) * vocab * elem_bytes];
-        // P1-3 (2026-07-09): `i` threads the verify-position index down for
-        // the per-position seed offset of the temp>0 sampling branch.
-        let pick = verify_pick_with_pipeline(slice, false, vocab, a, ctx, i);
+        // The window's earlier picks are pushed onto `output_tokens` below
+        // (speculative history), so every `output_tokens.len() + verify_pos`
+        // consumer (seed offset, min_tokens mask, forced-token, A144 base
+        // bias) already sees this position's emitted length: pass 0.
+        let pick = verify_pick_with_pipeline(slice, false, vocab, a, ctx, 0);
         picks.push(pick);
+        // What the pipeline left in its accumulators for THIS position —
+        // re-applied by `emit_token` if (and only if) this position commits.
+        a.spec_think_trail
+            .push_back(SpecThinkTrail::capture(a, pick));
+
+        // ── Mirror of the commit transitions (emit_token / decode) ──
+        // Spontaneous `<think>`: enters thinking, never pushed.
+        if !a.inside_thinking && a.think_start_token == Some(pick) {
+            a.inside_thinking = true;
+            a.think_ended = false;
+            a.think_skip_count = 0;
+            a.thinking_budget = Some(spontaneous_think_budget(a));
+            continue;
+        }
+        // Stray `</think>` outside thinking: skipped, never pushed.
+        if !a.inside_thinking && ctx.think_end_token == Some(pick) {
+            continue;
+        }
+        if a.require_tool_call && a.tool_call_start_token == Some(pick) && !a.inside_thinking {
+            a.require_tool_call = false;
+            a.tool_call_opened = true;
+        }
+        // Twin of the 512-token safety clear (decode / emit_token).
+        if a.require_tool_call && a.output_tokens.len() > 512 {
+            a.require_tool_call = false;
+        }
+        let is_eos = a.eos_tokens.contains(&pick);
 
         // `</think>` closes the span for every later position. It is never
         // fed to the matcher (the grammar only sees content tokens), so no
-        // speculative advance here either.
+        // speculative advance here either. Same resets as the commit twins.
         if a.inside_thinking && ctx.think_end_token == Some(pick) {
             a.inside_thinking = false;
+            a.force_end_thinking = false;
+            a.sentence_defer_count = 0;
+            a.consecutive_confident = 0;
+            a.in_code_fence = false;
             a.think_ended = true;
             a.think_just_ended = true;
+            a.output_tokens.push(pick);
             continue;
         }
-
-        // Mirror `update_tool_param_state`'s opener/closer transitions (a
-        // no-op inside thinking, like the real one).
-        if !a.inside_thinking {
+        if a.inside_thinking {
+            // SSOT `advance_thinking_token` (thinking_tokens, fence, budget
+            // arm, THINK_LOOP) — decode runs it for a (discarded) EOS too.
+            let history_len = a.output_tokens.len();
+            advance_thinking_token(a, pick, history_len, think_env, false);
+        } else {
+            // `emit_token` clears the post-`</think>` one-shot on the first
+            // content token; without this a later position would re-pin.
+            a.think_just_ended = false;
+            // Mirror `update_tool_param_state`'s opener/closer transitions (a
+            // no-op inside thinking, like the real one).
             if a.tool_call_start_token == Some(pick) {
                 a.inside_tool_body = true;
             } else if a.tool_call_end_token == Some(pick) {
                 a.inside_tool_body = false;
             }
+        }
+        // Decode never pushes an EOS it keeps generating past (an EOS it
+        // honours ends the sequence, so later positions are moot).
+        if !is_eos {
+            a.output_tokens.push(pick);
         }
 
         // Speculatively advance the matcher with `pick[i]` so the next
@@ -121,6 +248,8 @@ pub(super) fn pick_positions_from_host(
     // `</think>` transition on the accept path.
     (a.inside_thinking, a.think_ended, a.think_just_ended) = think_flags_before;
     a.inside_tool_body = tool_body_before;
+    think_state_before.restore(a);
+    a.output_tokens.truncate(out_len_before);
 
     picks
 }
