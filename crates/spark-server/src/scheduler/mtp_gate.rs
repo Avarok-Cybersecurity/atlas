@@ -127,10 +127,41 @@ pub fn entry_pin_forces_verify(min_post_think_emitted: u32) -> bool {
     min_post_think_emitted < entry_pin_tokens()
 }
 
+/// Per-MODEL default for MTP-lane speculation inside `<think>`, keyed on
+/// `ModelConfig::model_type` exactly like the other glm5_next-specific
+/// serve behaviour (`avarok_core::config::kv_completeness`). ON only for
+/// architectures that independently passed the spec-in-think quality/safety
+/// gates: GLM-5.3 (`glm5_next` / its text-only `glm5_next_text`) — K=3
+/// byte-identical 6/6 vs spec-off, TEB 156/176 identical to spec-off per
+/// scenario (2026-09-26). Every other model keeps the pre-split behaviour
+/// (serial in think unless opted in) until it passes the same gates.
+pub fn mtp_spec_think_default(model_type: &str) -> bool {
+    matches!(model_type, "glm5_next" | "glm5_next_text")
+}
+
+/// The per-lane spec-in-think lever `spec_dispatch_eligible` must receive.
+/// `dflash_lane` is `dflash_verify_raw_argmax` (= `args.dflash`,
+/// serve_load.rs), i.e. true for EVERY DFlash verify mode. The MTP lane
+/// uses `SchedLevers::mtp_spec_think(model default)`; the DFlash lane stays
+/// opt-in (`SchedLevers::dflash_spec_think`) on every model.
+pub fn spec_think_for_lane(
+    dflash_lane: bool,
+    mtp_spec_think: bool,
+    dflash_spec_think: bool,
+) -> bool {
+    if dflash_lane {
+        dflash_spec_think
+    } else {
+        mtp_spec_think
+    }
+}
+
 /// Existing scheduler dispatch predicate for the throughput gate — not a
-/// second gate. Standard MTP verifies during `<think>` (ForcedThinkEnd
-/// stays on that path). DFlash raw-argmax stays serial-in-think unless
-/// `AVAROK_DFLASH_SPEC_THINK=1`.
+/// second gate. `spec_think` is the ACTIVE lane's lever, resolved by
+/// [`spec_think_for_lane`]: MTP speculates inside `<think>` by default on
+/// models whose [`mtp_spec_think_default`] is on (`AVAROK_MTP_SPEC_THINK=0`
+/// / `AVAROK_DFLASH_SPEC_THINK=0` disable) and on others only when opted in
+/// (`=1`); DFlash stays serial-in-think unless `AVAROK_DFLASH_SPEC_THINK=1`.
 pub fn spec_dispatch_eligible(
     inside_thinking: bool,
     post_think_emitted: u32,
@@ -144,12 +175,17 @@ pub fn spec_dispatch_eligible(
     if suppress_tool_call || disable_mtp {
         return false;
     }
-    // Speculation never enters `<think>` without the AVAROK_DFLASH_SPEC_THINK
-    // opt-in, for BOTH lanes: batch-K verify is not byte-lossless at T=0 (the
-    // numerics floor can flip a low-margin token mid-reasoning), and the
-    // agentic-webserver gate measured the damage as deterministic 8-9/10
-    // trajectory failures (2026-08-16 bisect: main+this-hunk fails, main
-    // without it passes 10/10).
+    // Speculation enters `<think>` only when the active lane's lever is on.
+    // History: this was once opt-in for BOTH lanes because batch-K verify
+    // committed low-margin tokens spec-off decode would not, and the
+    // agentic-webserver gate measured deterministic 8-9/10 trajectory
+    // failures (2026-08-16 bisect). The spec-in-think parity chain (verify
+    // window + emit_token commit thinking state exactly like spec-off
+    // decode, plus A143/A144/A144b) closed that for MTP: GLM-5.3 K=3
+    // byte-identical 6/6 vs spec-off and TEB 156/176 identical to spec-off
+    // per scenario (2026-09-26). So MTP is default-ON for GLM-5.3 only
+    // (`mtp_spec_think_default`); other models and DFlash stay opt-in until
+    // they pass their own GPU + TEB qualification.
     if inside_thinking && !spec_think {
         return false;
     }

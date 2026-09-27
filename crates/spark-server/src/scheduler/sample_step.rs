@@ -129,7 +129,11 @@ pub(super) fn effective_min_p(
 ///    cloned) it computed for this step.
 ///  * `Verify` → the MTP verify/bootstrap emission is a penalty-aware
 ///    greedy ARGMAX, so callers pass `temperature = 0.0`, `seed = None`,
-///    empty base bias.
+///    and the base bias DECODE would apply at the same position
+///    ([`speculative_base_logit_bias`], A144) — the request's
+///    `ActiveSeq.logit_bias` (incl. the server's `<tool_call>` nudge) when
+///    decode runs the host pipeline for this row, empty when decode's GPU
+///    argmax fast path would skip it.
 pub(super) fn penalty_params_for(
     a: &ActiveSeq,
     kind: PositionKind,
@@ -138,13 +142,15 @@ pub(super) fn penalty_params_for(
     base_logit_bias: Vec<(u32, f32)>,
 ) -> SamplingParams {
     // `Verify` positions are a penalty-aware greedy ARGMAX, so the contract
-    // is temperature 0.0, no seed, no caller-supplied base bias. Pin it so a
-    // future caller can't silently pass stochastic params on the speculative
-    // path. The A4 floor below is appended for BOTH kinds (intended delta).
+    // is temperature 0.0 and no seed. Pin it so a future caller can't
+    // silently pass stochastic params on the speculative path. The base bias
+    // is NOT pinned empty any more (A144): verify must carry the same
+    // `logit_bias` decode applies, else spec-on != spec-off on every
+    // tools-present request (the server's `<tool_call>` +3.0 nudge). The A4
+    // floor below is appended for BOTH kinds (intended delta).
     debug_assert!(
-        kind != PositionKind::Verify
-            || (temperature == 0.0 && seed.is_none() && base_logit_bias.is_empty()),
-        "Verify positions must pass temperature=0.0, seed=None, empty base bias"
+        kind != PositionKind::Verify || (temperature == 0.0 && seed.is_none()),
+        "Verify positions must pass temperature=0.0, seed=None"
     );
     let in_tool = a.inside_tool_body && !a.inside_thinking;
     let mut logit_bias = base_logit_bias;
@@ -218,6 +224,91 @@ pub(super) fn penalty_params_for(
         stop_token_ids: Vec::new(),
         seed,
     }
+}
+
+/// A144: the base `logit_bias` a SPECULATIVE position (MTP/DFlash verify,
+/// MTP bootstrap) must hand to [`penalty_params_for`] so its pick matches
+/// what the single-row decode path would emit at the same position.
+///
+/// Decode (`process_decode_logits`) applies `a.logit_bias` iff it runs the
+/// host pipeline for the row. Its GPU-argmax fast path skips the bias
+/// entirely ([`decode_row_uses_gpu_argmax`]), EXCEPT when that argmax lands
+/// on a post-think `</think>`/`<think>` id — then it redoes the step on the
+/// host, bias included. Lossless parity with decode — not "always apply" —
+/// is the contract, so this mirrors all three cases:
+///  * bias empty → empty;
+///  * decode would run the host pipeline at `a.output_tokens.len() +
+///    verify_pos` → `a.logit_bias`;
+///  * decode would take the GPU argmax → empty, unless `a.think_ended` and
+///    the position's RAW argmax (`raw_argmax`, evaluated lazily — only in
+///    this last case) is `think_end_token`/`a.think_start_token`.
+///
+/// `a` must reflect the position's state (the verify K-loop advances the
+/// think / tool-body flags per position — `pick_positions_from_host`). The
+/// in-tool-body opener strip is NOT done here: [`penalty_params_for`] applies
+/// it from the same per-position `a`.
+pub(super) fn speculative_base_logit_bias(
+    a: &ActiveSeq,
+    verify_pos: usize,
+    think_end_token: Option<u32>,
+    raw_argmax: impl FnOnce() -> u32,
+) -> Vec<(u32, f32)> {
+    if a.logit_bias.is_empty() {
+        return Vec::new();
+    }
+    let admit = super::decode_logits_step::think_ended_gpu_argmax_enabled();
+    if !super::decode_logits_step::decode_row_uses_gpu_argmax(
+        a,
+        a.output_tokens.len() + verify_pos,
+        admit,
+    ) {
+        return a.logit_bias.clone();
+    }
+    if a.think_ended {
+        let tok = raw_argmax();
+        if Some(tok) == think_end_token || Some(tok) == a.think_start_token {
+            return a.logit_bias.clone();
+        }
+    }
+    Vec::new()
+}
+
+/// A144: true when a speculative GPU-argmax-only shortcut (the verify
+/// grammar / grammarless fast-greedy paths, the DFlash chat fast path, the
+/// DFlash raw-argmax verdict, the DFlash cross-sequence batched verify) must
+/// NOT be taken because decode would apply a non-empty `logit_bias` at this
+/// row — the bias can raise a competitor above the raw argmax, and those
+/// shortcuts never see it. Mirrors decode: when decode itself would take its
+/// GPU argmax (bias skipped) the shortcut stays legal; the post-think
+/// structural-hit exception is covered by the callers' existing
+/// `think_structural_hit` / structural-id fallbacks.
+///
+/// Evaluated on the step-START state. Sound for the fast-greedy paths
+/// because they require `!inside_thinking` (so no `</think>` can flip the
+/// think flags inside the window) and the `min_tokens` term is monotone in
+/// the position. Conservative (forces host) otherwise.
+pub(super) fn speculative_raw_argmax_forbidden(a: &ActiveSeq) -> bool {
+    // Spec-in-think parity (A146): decode NEVER emits a
+    // thinking row from its GPU argmax (`decode_row_uses_gpu_argmax` is false
+    // while `inside_thinking`) — every thinking token goes through the host
+    // pipeline (forced `</think>` injection, mid-word mask, A4 floor, F2).
+    // The raw-argmax verify verdicts (DFlash GOLD basis, batched DFlash)
+    // skip that pipeline, so a window STARTING inside `<think>` must take
+    // the masked pipeline (`verify_pick_all_with_pipeline`) instead. Inert
+    // without the opt-in: speculation never starts inside `<think>` then
+    // (`mtp_gate::spec_dispatch_eligible`).
+    a.inside_thinking || speculative_bias_forces_host(a)
+}
+
+/// A144 half of [`speculative_raw_argmax_forbidden`] (also consulted on its
+/// own by the fast-greedy blocks, which already require `!inside_thinking`).
+pub(super) fn speculative_bias_forces_host(a: &ActiveSeq) -> bool {
+    !a.logit_bias.is_empty()
+        && !super::decode_logits_step::decode_row_uses_gpu_argmax(
+            a,
+            a.output_tokens.len(),
+            super::decode_logits_step::think_ended_gpu_argmax_enabled(),
+        )
 }
 
 /// Re-sample verify tokens from the logits buffer when temperature > 0.
@@ -353,14 +444,13 @@ pub fn sample_token(
         }
     }
     if temperature == 0.0 {
-        // Greedy argmax over FP32
-        let best = f32_logits
-            .iter()
-            .enumerate()
-            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
-            .map(|(i, _)| i as u32)
-            .unwrap_or(0);
-        return Ok(best);
+        // Greedy argmax over FP32. A144b: reuse decode's SSOT tie-break
+        // (`greedy_pick_last_wins`, LAST-index-wins) instead of duplicating
+        // the `max_by` expression — this is a stochastic-sampling helper
+        // used off the MTP bootstrap/DFlash paths, so it must agree with
+        // decode on an exact tie exactly like `sample_token_with_grammar`'s
+        // host path below does.
+        return Ok(greedy_pick_last_wins(&f32_logits));
     }
     let f32_bytes: &[u8] =
         unsafe { std::slice::from_raw_parts(f32_logits.as_ptr() as *const u8, vocab_size * 4) };
@@ -490,13 +580,12 @@ pub fn sample_token_with_grammar(
     // output-token history — identical stage to the non-MTP path.
     apply_penalties_and_bias(&mut f32_logits, penalties, history);
     if temperature == 0.0 {
-        let best = f32_logits
-            .iter()
-            .enumerate()
-            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
-            .map(|(i, _)| i as u32)
-            .unwrap_or(0);
-        return Ok(best);
+        // A144b (2026-09-25): this is the MTP bootstrap's host-pipeline
+        // greedy pick — decode's tie rule (LAST-index-wins) applies here for
+        // the same reason it applies to decode itself. This duplicated the
+        // exact `max_by` expression `greedy_pick_last_wins` already is (see
+        // its doc comment); call the shared SSOT instead of re-deriving it.
+        return Ok(greedy_pick_last_wins(&f32_logits));
     }
     let f32_bytes: &[u8] =
         unsafe { std::slice::from_raw_parts(f32_logits.as_ptr() as *const u8, vocab_size * 4) };
@@ -747,5 +836,226 @@ mod penalty_scope_tests {
         let mut bias = vec![(OPEN, 3.0f32)];
         strip_in_tool_opener_bias(&mut bias, true, None);
         assert_eq!(bias, vec![(OPEN, 3.0f32)]);
+    }
+}
+
+/// A144b (2026-09-25): the MTP bootstrap's host slow path
+/// (`sample_token_with_grammar`, fast-greedy path off) must resolve an exact
+/// logit tie the same way decode's host path does — LAST-index-wins
+/// (`spark_runtime::sampler::greedy_pick_last_wins`) — not re-derive its own
+/// copy of the `max_by` expression. Both sides already agreed in RESULT
+/// (this path's `max_by(...).unwrap_or(Equal)` IS last-wins), but duplicating
+/// the expression instead of calling the shared SSOT let it silently
+/// diverge on a future edit to either copy; this test pins the call site.
+#[cfg(test)]
+mod a144b_bootstrap_tie_break_tests {
+    use super::sample_token_with_grammar;
+    use crate::scheduler::logit_processors::SamplingLevers;
+    use anyhow::Result;
+    use spark_model::traits::{Model, SequenceState};
+    use spark_runtime::gpu::DevicePtr;
+    use spark_runtime::sampler::{SamplingParams, greedy_pick_last_wins};
+
+    const VOCAB: usize = 8;
+    /// Two ids tied for the row max (7.0, exactly BF16-representable — the
+    /// D2H round-trip introduces no rounding that could break the tie by
+    /// accident); everything else 0.0.
+    const TIE_LOW: usize = 2;
+    const TIE_HIGH: usize = 5;
+
+    fn tied_row_bf16() -> Vec<u8> {
+        let mut row = [0.0f32; VOCAB];
+        row[TIE_LOW] = 7.0;
+        row[TIE_HIGH] = 7.0;
+        row.iter()
+            .flat_map(|&v| {
+                let b = v.to_bits();
+                [(b >> 16) as u8, (b >> 24) as u8]
+            })
+            .collect()
+    }
+
+    /// Minimal `Model`: with the fast-greedy shortcut off
+    /// (`SamplingLevers::default()`) and no grammar armed, `copy_logits_to_host`
+    /// + `vocab_size` are the only methods this call path reaches; every
+    /// other method is `unreachable!()`, mirroring the "functional slice"
+    /// stub pattern used elsewhere in this crate
+    /// (`verify_pipeline_helper::pick_positions_tests::FastPathStubModel`,
+    /// `prefill_fifo_tests::PrefillStubModel`).
+    struct TiedRowModel {
+        buf: Vec<u8>,
+    }
+
+    impl Model for TiedRowModel {
+        fn vocab_size(&self) -> usize {
+            VOCAB
+        }
+        fn copy_logits_to_host(&self, _logits_ptr: DevicePtr, dst: &mut [u8]) -> Result<()> {
+            dst.copy_from_slice(&self.buf);
+            Ok(())
+        }
+        fn logits_buffer_ptr(&self) -> DevicePtr {
+            DevicePtr::NULL
+        }
+        fn bind_gpu_to_thread(&self) -> Result<()> {
+            Ok(())
+        }
+        fn alloc_sequence(&self) -> Result<SequenceState> {
+            Ok(SequenceState::host_only(0))
+        }
+        fn cache_sequence(&self, _seq: &SequenceState) {}
+        fn free_sequence(&self, _seq: &mut SequenceState) -> Result<()> {
+            Ok(())
+        }
+        fn detach_slot_for_reuse(&self, _seq: &mut SequenceState) {}
+        fn has_proposer(&self) -> bool {
+            false
+        }
+        fn has_self_speculative(&self) -> bool {
+            false
+        }
+        fn trim_proposer_state(&self, _s: &mut SequenceState, _n: usize, _st: u64) -> Result<()> {
+            Ok(())
+        }
+        fn checkpoint_ssm_states(&self, _seq: &mut SequenceState) -> Result<()> {
+            Ok(())
+        }
+        fn rollback_ssm_states(&self, _seq: &mut SequenceState, _n: usize) -> Result<()> {
+            Ok(())
+        }
+        fn compact_sequence(&self, _seq: &mut SequenceState, _new_slot: usize) -> Result<()> {
+            unreachable!("no compaction in this harness")
+        }
+        fn prefill(&self, _t: &[u32], _s: &mut SequenceState, _st: u64) -> Result<DevicePtr> {
+            unreachable!("no prefill in this harness")
+        }
+        fn prefill_chunk(
+            &self,
+            _t: &[u32],
+            _s: &mut SequenceState,
+            _cs: usize,
+            _cl: usize,
+            _last: bool,
+            _st: u64,
+        ) -> Result<DevicePtr> {
+            unreachable!("no prefill in this harness")
+        }
+        fn decode(&self, _t: u32, _s: &mut SequenceState, _st: u64) -> Result<DevicePtr> {
+            unreachable!("no decode in this harness")
+        }
+        fn decode_batch(
+            &self,
+            _t: &[u32],
+            _s: &mut [&mut SequenceState],
+            _st: u64,
+        ) -> Result<DevicePtr> {
+            unreachable!("no decode in this harness")
+        }
+        fn decode_draft(&self, _t: u32, _s: &mut SequenceState, _st: u64) -> Result<DevicePtr> {
+            unreachable!("no speculation in this harness")
+        }
+        fn decode_verify(&self, _t: &[u32], _s: &mut SequenceState, _st: u64) -> Result<Vec<u32>> {
+            unreachable!("no speculation in this harness")
+        }
+        fn decode_verify_graphed(
+            &self,
+            _t: &[u32; 2],
+            _s: &mut SequenceState,
+            _st: u64,
+        ) -> Result<[u32; 2]> {
+            unreachable!("no speculation in this harness")
+        }
+        fn decode_verify_graphed_k3(
+            &self,
+            _t: &[u32; 3],
+            _s: &mut SequenceState,
+            _st: u64,
+        ) -> Result<[u32; 3]> {
+            unreachable!("no speculation in this harness")
+        }
+        fn decode_verify_graphed_k4(
+            &self,
+            _t: &[u32; 4],
+            _s: &mut SequenceState,
+            _st: u64,
+        ) -> Result<[u32; 4]> {
+            unreachable!("no speculation in this harness")
+        }
+        fn argmax_on_device(&self, _p: DevicePtr, _st: u64) -> Result<u32> {
+            unreachable!("fast path disabled in this harness")
+        }
+        fn argmax_batch(&self, _p: DevicePtr, _n: usize, _st: u64) -> Result<Vec<u32>> {
+            unreachable!("not exercised in this harness")
+        }
+        fn hidden_after_norm(&self) -> DevicePtr {
+            unreachable!("no MTP in this harness")
+        }
+        fn generate_speculative(
+            &self,
+            _p: &[u32],
+            _params: &SamplingParams,
+            _n: usize,
+        ) -> Result<spark_model::engine::GenerateResult> {
+            unreachable!("no speculation in this harness")
+        }
+        fn run_mtp_propose(
+            &self,
+            _t: u32,
+            _p: usize,
+            _s: &mut SequenceState,
+            _st: u64,
+        ) -> Result<Option<u32>> {
+            unreachable!("no MTP in this harness")
+        }
+        fn run_mtp_propose_multi(
+            &self,
+            _t: u32,
+            _p: usize,
+            _n: usize,
+            _s: &mut SequenceState,
+            _st: u64,
+            _bm: Option<&[i32]>,
+        ) -> Result<Vec<u32>> {
+            unreachable!("no MTP in this harness")
+        }
+        fn save_hidden_for_mtp(&self, _token_idx: usize, _st: u64) -> Result<()> {
+            unreachable!("no MTP in this harness")
+        }
+    }
+
+    #[test]
+    fn exact_tie_matches_decodes_host_pick() {
+        let model = TiedRowModel {
+            buf: tied_row_bf16(),
+        };
+        let penalties = SamplingParams::greedy(0);
+        // Default => `fast_greedy_grammar: false`, forcing the host slow
+        // path this test targets.
+        let levers = SamplingLevers::default();
+        let pick = sample_token_with_grammar(
+            &model,
+            DevicePtr::NULL,
+            0.0,
+            0,
+            1.0,
+            &[],
+            None,
+            &penalties,
+            &[],
+            &levers,
+        )
+        .expect("host slow path never errors on this fixture");
+
+        // Ground truth: decode's own tie-break on the identically-dequantised row.
+        let mut f32_logits = vec![0.0f32; VOCAB];
+        f32_logits[TIE_LOW] = 7.0;
+        f32_logits[TIE_HIGH] = 7.0;
+        let decode_pick = greedy_pick_last_wins(&f32_logits);
+
+        assert_eq!(pick as usize, TIE_HIGH, "LAST tied index must win");
+        assert_eq!(
+            pick, decode_pick,
+            "MTP bootstrap's host pick must match decode's host pick on a tie"
+        );
     }
 }

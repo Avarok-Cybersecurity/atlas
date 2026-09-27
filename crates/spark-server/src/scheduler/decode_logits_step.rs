@@ -33,12 +33,14 @@ fn logits_ctx<'a>(
     think_start_token: Option<u32>,
     tool_call_start_token: Option<u32>,
     tool_call_end_token: Option<u32>,
+    code_fence_token: Option<u32>,
 ) -> crate::scheduler::logit_processors::LogitsContext<'a> {
     crate::scheduler::logit_processors::LogitsContext {
         think_end_token,
         think_start_token,
         tool_call_start_token,
         tool_call_end_token,
+        code_fence_token,
         verify_pos: 0,
         watchdog: sched.watchdog,
         scratch,
@@ -53,7 +55,7 @@ fn logits_ctx<'a>(
 
 /// Admit `think_ended` rows (which need only a 2-token mask) to the GPU argmax
 /// fast path. Kill switch: `AVAROK_NO_THINKENDED_GPU_ARGMAX=1`.
-fn think_ended_gpu_argmax_enabled() -> bool {
+pub(super) fn think_ended_gpu_argmax_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| {
         std::env::var("AVAROK_NO_THINKENDED_GPU_ARGMAX")
@@ -61,6 +63,46 @@ fn think_ended_gpu_argmax_enabled() -> bool {
             .as_deref()
             != Some("1")
     })
+}
+
+/// A144 SSOT: would the single-row decode step emit this row straight from
+/// the GPU argmax (NO host pipeline, so NO penalties and NO `logit_bias`)?
+///
+/// This is exactly the per-row half of `process_decode_logits`'s fast-path
+/// gate (the model-level `decode_logits_fp32` term stays at the call site):
+/// greedy temperature, no grammar, no logprobs, the `min_tokens` floor met at
+/// `emitted_len`, and either outside the thinking state entirely or a
+/// `think_ended` row with exactly-neutral penalties (the kill-switchable
+/// `think_ended_gpu_ok` admission). `emitted_len` is the output length at the
+/// position being decided — `a.output_tokens.len()` on the decode path,
+/// `+ verify_pos` on the speculative paths.
+///
+/// The speculative paths (verify / MTP bootstrap / DFlash) consult this to
+/// apply `logit_bias` exactly when decode would — including the regime where
+/// decode's GPU argmax skips it. A `true` row still falls back to the host
+/// pipeline (bias applied) when the argmax lands on a post-think `</think>` /
+/// `<think>` id; callers mirror that separately.
+pub(super) fn decode_row_uses_gpu_argmax(
+    a: &ActiveSeq,
+    emitted_len: usize,
+    admit_think_ended: bool,
+) -> bool {
+    let think_ended_gpu_ok = a.think_ended
+        && !a.inside_thinking
+        && a.grammar_state.is_none()
+        && a.repetition_penalty == 1.0
+        && a.presence_penalty == 0.0
+        && a.frequency_penalty == 0.0
+        && a.lz_penalty == 0.0
+        && a.dry_multiplier == 0.0;
+    let excused = admit_think_ended && think_ended_gpu_ok;
+    let row_needs_host =
+        (a.inside_thinking || a.think_ended || a.grammar_state.is_some()) && !excused;
+    a.temperature == 0.0
+        && a.grammar_state.is_none()
+        && a.top_logprobs.is_none()
+        && a.min_tokens <= emitted_len
+        && !row_needs_host
 }
 
 /// Steps that fell back to the host path because a GPU argmax landed on a
@@ -129,9 +171,7 @@ pub fn process_decode_logits(
     let n = active.len();
 
     // Grammar bitmask is CPU-side, so any sequence with active grammar forces
-    // the host-side sampling path for its logits slice.
-    let any_grammar = active.iter().any(|a| a.grammar_state.is_some());
-    let any_logprobs = active.iter().any(|a| a.top_logprobs.is_some());
+    // the host-side sampling path for its logits slice (as do logprobs).
     // FP32 lm_head models (Gemma-4 dense) MUST use the host-side path —
     // `argmax_batch` assumes BF16 layout and would interpret 4-byte FP32
     // values as 2-byte BF16 pairs, returning garbage tokens.
@@ -151,61 +191,51 @@ pub fn process_decode_logits(
     // also the MLPerf-edge config.
     //
     // Kill switch: AVAROK_NO_THINKENDED_GPU_ARGMAX=1.
-    let think_ended_gpu_ok = |a: &ActiveSeq| {
-        a.think_ended
-            && !a.inside_thinking
-            && a.grammar_state.is_none()
-            && a.repetition_penalty == 1.0
-            && a.presence_penalty == 0.0
-            && a.frequency_penalty == 0.0
-            && a.lz_penalty == 0.0
-            && a.dry_multiplier == 0.0
-    };
+    // Per-row eligibility is the SSOT `decode_row_uses_gpu_argmax` (A144: the
+    // speculative paths consult the same predicate to decide whether decode
+    // would have applied `logit_bias`). `fast` == the pre-A144 conjunction
+    // `all(temp==0) && !any_grammar && !needs_host_logits` term for term.
     let admit_think_ended = think_ended_gpu_argmax_enabled();
-    let needs_host_logits = active.iter().any(|a| {
-        let excused = admit_think_ended && think_ended_gpu_ok(a);
-        (a.inside_thinking || a.think_ended || a.grammar_state.is_some()) && !excused
-    }) || any_logprobs
-        || model_logits_fp32
-        // GPU argmax bypasses the pre-sampling EOS mask. Keep requests with
-        // an active minimum-token floor on the host pipeline.
-        || active.iter().any(|a| a.min_tokens > a.output_tokens.len());
+    let gpu_argmax_eligible = !model_logits_fp32
+        && active
+            .iter()
+            .all(|a| decode_row_uses_gpu_argmax(a, a.output_tokens.len(), admit_think_ended));
 
     // Try the GPU argmax first. `None` here means "not eligible, or the result
     // needs the host pipeline after all" and falls through to the host branch —
     // it must never mean "emit nothing".
-    let fast_tokens: Option<Vec<(u32, Option<crate::api::TokenLogprobs>)>> =
-        if active.iter().all(|a| a.temperature == 0.0) && !any_grammar && !needs_host_logits {
-            match model.argmax_batch(logits, n, 0) {
-                Ok(t) => {
-                    // The two masked ids are the ONLY thing the host pipeline
-                    // would have done differently for a think_ended row. If an
-                    // argmax actually landed on one (rare — the model seldom
-                    // re-opens <think> mid-response), fall through and redo the
-                    // step on the host so the emitted token is exactly what the
-                    // pipeline would produce.
-                    let hit_mask = t.iter().zip(active.iter()).any(|(&tok, a)| {
-                        a.think_ended
-                            && (Some(tok) == think_end_token || Some(tok) == a.think_start_token)
-                    });
-                    if hit_mask {
-                        THINK_MASK_FALLBACKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        None
-                    } else {
-                        Some(t.into_iter().map(|tok| (tok, None)).collect())
-                    }
-                }
-                Err(e) => {
-                    tracing::error!("argmax_batch error: {e:#}");
-                    for mut a in active.drain(..) {
-                        send_error(model, &mut a, &format!("{e:#}"));
-                    }
-                    return;
+    let fast_tokens: Option<Vec<(u32, Option<crate::api::TokenLogprobs>)>> = if gpu_argmax_eligible
+    {
+        match model.argmax_batch(logits, n, 0) {
+            Ok(t) => {
+                // The two masked ids are the ONLY thing the host pipeline
+                // would have done differently for a think_ended row. If an
+                // argmax actually landed on one (rare — the model seldom
+                // re-opens <think> mid-response), fall through and redo the
+                // step on the host so the emitted token is exactly what the
+                // pipeline would produce.
+                let hit_mask = t.iter().zip(active.iter()).any(|(&tok, a)| {
+                    a.think_ended
+                        && (Some(tok) == think_end_token || Some(tok) == a.think_start_token)
+                });
+                if hit_mask {
+                    THINK_MASK_FALLBACKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    None
+                } else {
+                    Some(t.into_iter().map(|tok| (tok, None)).collect())
                 }
             }
-        } else {
-            None
-        };
+            Err(e) => {
+                tracing::error!("argmax_batch error: {e:#}");
+                for mut a in active.drain(..) {
+                    send_error(model, &mut a, &format!("{e:#}"));
+                }
+                return;
+            }
+        }
+    } else {
+        None
+    };
 
     let new_tokens: Vec<(u32, Option<crate::api::TokenLogprobs>)> = if let Some(t) = fast_tokens {
         t
@@ -280,6 +310,7 @@ pub fn process_decode_logits(
                             think_start_token,
                             tool_call_start_token,
                             tool_call_end_token,
+                            code_fence_token,
                             verify_pos: 0,
                             watchdog,
                             scratch,
@@ -312,6 +343,7 @@ pub fn process_decode_logits(
                 think_start_token,
                 tool_call_start_token,
                 tool_call_end_token,
+                code_fence_token,
             );
             active
                 .iter_mut()
@@ -390,6 +422,8 @@ pub fn process_decode_logits(
         // each successive re-entry has a tighter window. After 4+
         // fires, the budget is 1/16 of normal — the watchdog kills
         // re-entry within a handful of tokens.
+        // Twins: `emit_step::emit_token` + `pick_positions_from_host` use
+        // `think_commit::spontaneous_think_budget` (same decay, same floor).
         if !a.inside_thinking && think_start_token == Some(tok) {
             let decay_shift = a.think_watchdog_fires.min(4);
             let decayed = a.spontaneous_think_budget >> decay_shift;
@@ -460,6 +494,9 @@ pub fn process_decode_logits(
         if a.inside_thinking {
             a.consume_generation_budget();
             if think_end_token == Some(tok) {
+                // Twins: `emit_step::emit_token` (`</think>` branch) and the
+                // speculative flip in `pick_positions_from_host` reset the
+                // same fields — keep all three in step.
                 a.inside_thinking = false;
                 a.force_end_thinking = false;
                 a.sentence_defer_count = 0;
@@ -472,64 +509,29 @@ pub fn process_decode_logits(
                 // branch below on the next emit.
                 a.think_just_ended = true;
             } else {
-                a.thinking_tokens += 1;
-                // Track ``` code-fence parity within the thinking block:
-                // each fence token flips in/out of a fenced code span.
-                // The F2 confidence early-stop (process_seq_logits) is
-                // suppressed while `in_code_fence` — code is near-
-                // deterministic (high top-1 prob) but that is NOT a
-                // "done reasoning" signal; braking here truncates the
-                // model mid-statement. THINK_LOOP (below) deliberately
-                // stays active even inside fences: it catches
-                // *repeating* fence-narration, not one coherent block.
-                a.in_code_fence = toggle_code_fence(a.in_code_fence, tok, code_fence_token);
-                // Set force_end_thinking when budget exhausted (picked up next iteration)
-                if let Some(budget) = a.thinking_budget
-                    && a.thinking_tokens >= budget
-                    && !a.force_end_thinking
-                {
-                    a.force_end_thinking = true;
-                    a.sentence_defer_count = 0;
-                    // Name the budget's SOURCE: a 256-class cut with a large
-                    // --max-thinking-budget in force means the CLIENT sent the
-                    // budget (explicit tokens or a reasoning_effort rung) —
-                    // the knob to turn is in the request, not the server.
-                    tracing::info!(
-                        source = if a.enable_thinking {
-                            "request (client budget/effort; scaled by --max-thinking-budget)"
-                        } else {
-                            "spontaneous <think> (--max-thinking-budget / MODEL.toml)"
-                        },
-                        "Thinking budget exhausted ({budget} tokens), arming </think>; \
-                         deferring up to {MAX_SENTENCE_DEFER_TOKENS} tokens for sentence boundary"
-                    );
-                }
-                // Token-level fence-loop detection. Catches the Qwen3.5-35B
-                // phrase attractor (`Running:\`\`\`bash cmd\`\`\`Executing:…`
-                // cycling) within ~24-60 tokens of the loop starting,
-                // instead of waiting for the 256-token thinking budget.
-                if !sched.levers.disable_watchdogs
-                    && sched.watchdog.enable_think_loop_watchdog
-                    && !a.force_end_thinking
-                    && a.thinking_tokens >= THINK_LOOP_MIN_TOKENS
-                    && a.thinking_tokens.is_multiple_of(THINK_LOOP_CHECK_STRIDE)
-                    && detect_thinking_token_loop_with(
-                        &a.output_tokens,
-                        a.repetition_detection,
-                        sched.watchdog,
-                    )
-                {
-                    a.force_end_thinking = true;
-                    a.sentence_defer_count = 0;
-                    a.think_watchdog_fires = a.think_watchdog_fires.saturating_add(1);
-                    tracing::warn!(
-                        thinking_tokens = a.thinking_tokens,
-                        watchdog_fires = a.think_watchdog_fires,
-                        "Thinking-loop watchdog fired (period-{}…{} repeat in tail); forcing </think> early",
-                        THINK_LOOP_PERIOD_MIN,
-                        THINK_LOOP_PERIOD_MAX,
-                    );
-                }
+                // thinking_tokens / ``` fence parity / budget arm / THINK_LOOP.
+                // SSOT `think_commit::advance_thinking_token` — the SAME body
+                // runs at commit in `emit_step::emit_token` (spec verify-accept
+                // twin) and speculatively per position in
+                // `pick_positions_from_host` (verify-window twin), so a token
+                // committed inside `<think>` advances identical state on every
+                // path. `tok` is not pushed yet: history = all of output_tokens.
+                // The F2 confidence early-stop is suppressed-at-injection while
+                // `in_code_fence` (`should_inject_think_end`); THINK_LOOP stays
+                // active inside fences (it catches *repeating* fence-narration).
+                let history_len = a.output_tokens.len();
+                crate::scheduler::think_commit::advance_thinking_token(
+                    a,
+                    tok,
+                    history_len,
+                    crate::scheduler::think_commit::ThinkTokenEnv {
+                        code_fence_token,
+                        think_loop_enabled: !sched.levers.disable_watchdogs
+                            && sched.watchdog.enable_think_loop_watchdog,
+                        watchdog: sched.watchdog,
+                    },
+                    true,
+                );
             }
         } else {
             // Content-phase token: budget bookkeeping + the content-loop
@@ -600,6 +602,8 @@ pub fn process_decode_logits(
                 }
             }
         }
+        // Twins: `emit_step::emit_token` (before its push) and
+        // `pick_positions_from_host` apply the same 512-token clear.
         // Safety: if require_tool_call is still set after 512 tokens, the model
         // isn't generating a tool call (grammar may have failed to compile).
         // Clear the flag so EOS is no longer suppressed — prevents infinite gen.

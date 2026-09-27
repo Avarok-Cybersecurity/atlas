@@ -301,6 +301,7 @@ pub(crate) fn resolve_tokenizer_runtime(
             im_start_hard_stop: im_start_id,
             tool_response_hard_stop: tool_response_id,
             max_seq_len: 0,
+            code_fence_token,
         },
         vocab_masks,
         reasoning_parser_box,

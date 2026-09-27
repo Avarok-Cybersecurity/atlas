@@ -29,6 +29,13 @@ pub fn emit_token(
         a.output_tokens.len(),
         tok,
     );
+    // Spec-in-think parity: re-apply the logits pipeline's accumulators
+    // (F2 streak / arming, forced-`</think>` defer ticks) as they stood after
+    // THIS position's pipeline in the verify pick window — exactly what
+    // decode's `process_seq_logits` leaves before its commit. Twin producer:
+    // `pick_positions_from_host`. No-op outside a verify commit run.
+    crate::scheduler::think_commit::apply_spec_think_trail(a, tok);
+
     // Cooperative cancellation from the streaming pipeline. The
     // stream-side guards (Bug-2 name-run cap, F11 within-dedup, F44
     // perm-fail, loop-watchdog, client stop-sequence match) flip this
@@ -100,7 +107,9 @@ pub fn emit_token(
         a.post_think_emitted = 0;
         a.think_ended = false;
         a.think_skip_count = 0;
-        a.thinking_budget = Some(a.spontaneous_think_budget);
+        // Decayed per prior THINK_LOOP fire — SSOT with the decode twin
+        // (`decode_logits_step`, spontaneous `<think>` branch).
+        a.thinking_budget = Some(crate::scheduler::think_commit::spontaneous_think_budget(a));
         tracing::debug!("Spontaneous <think> detected in emit_token, entering thinking mode");
         return; // don't emit <think> as content
     }
@@ -139,6 +148,17 @@ pub fn emit_token(
         a.require_tool_call = false;
         a.tool_call_opened = true;
     }
+    // Twin of decode's 512-token `require_tool_call` safety clear
+    // (`decode_logits_step`, evaluated on the pre-push length there too).
+    // Missing here, a long speculative `<think>` kept the flag set past 512
+    // tokens, so the post-`</think>` `<tool_call>` pin (pin_tool_call) and the
+    // legacy EOS suppression diverged from spec-off.
+    if a.require_tool_call && a.output_tokens.len() > 512 {
+        tracing::warn!(
+            "require_tool_call safety: no <tool_call> after 512 tokens, clearing EOS suppression"
+        );
+        a.require_tool_call = false;
+    }
 
     // Tool-body / parameter-body state machine.
     //
@@ -159,6 +179,25 @@ pub fn emit_token(
     // `tool_eos_escape_enabled()` (default OFF).
     if a.tool_call_end_token == Some(tok) && !a.inside_thinking {
         a.tool_call_completed = true;
+        // A143 part B (2026-09-24): mirror the plain-chat hard stop in
+        // `decode_logits_step::process_decode_logits` (the `</tool_call>`
+        // handling block, ~line 642). That serial-path guard ends the turn
+        // when a request with NO tools declared and no active grammar emits
+        // `</tool_call>` — but this speculative emit path (MTP/K3, DFlash
+        // verify-accept) never had the twin, so a spec-on turn kept
+        // generating past the first (and only legitimate) call. Setting
+        // `a.finished` here does NOT truncate this token: emit_token still
+        // falls through and pushes/streams `tok` normally below (unlike the
+        // serial path's explicit push + `continue`, this path's fallthrough
+        // achieves the same "the `</tool_call>` itself IS emitted, nothing
+        // after it" outcome) — every verify-accept caller
+        // (mtp_step/verify_k3_step/verify_dflash_step/
+        // verify_dflash_batch_step) checks `a.finished` after each
+        // `emit_token` call and stops emitting the rest of that window's
+        // accepted tokens once it's set.
+        if a.grammar_state.is_none() && !a.tools_present {
+            a.finished = true;
+        }
     }
 
     // F2 mirror (Iter 46, 2026-06-02): reset the inter-tool prose budget when
@@ -240,6 +279,10 @@ pub fn emit_token(
             a.think_force_closed = a.force_end_thinking;
             a.force_end_thinking = false;
             a.sentence_defer_count = 0;
+            // Twin resets of decode's `</think>` transition: a later re-entry
+            // into `<think>` must start with a fresh F2 streak and no fence.
+            a.consecutive_confident = 0;
+            a.in_code_fence = false;
             a.think_ended = true;
             // One-shot for the next decode step: pin to
             // tool_call_start_token if require_tool_call (Change 3b).
@@ -250,25 +293,24 @@ pub fn emit_token(
                 a.thinking_budget,
             );
         } else {
-            a.thinking_tokens += 1;
-            if let Some(budget) = a.thinking_budget
-                && a.thinking_tokens >= budget
-                && !a.force_end_thinking
-            {
-                a.force_end_thinking = true;
-                a.sentence_defer_count = 0;
-                // Twin of the decode_logits_step site: name the source so a
-                // low client budget is distinguishable from a server cap.
-                tracing::info!(
-                    source = if a.enable_thinking {
-                        "request (client budget/effort; scaled by --max-thinking-budget)"
-                    } else {
-                        "spontaneous <think> (--max-thinking-budget / MODEL.toml)"
-                    },
-                    "Thinking budget exhausted ({budget} tokens), arming </think>; \
-                     deferring to next sentence boundary"
-                );
-            }
+            // SSOT with decode (`decode_logits_step`) and the verify window
+            // (`pick_positions_from_host`): thinking_tokens, ``` fence parity
+            // (gap: never toggled here before), budget arm, and the THINK_LOOP
+            // watchdog (gap: decode-only before). `tok` is already pushed, so
+            // the loop scan sees `len - 1` — the history decode sees.
+            let history_len = a.output_tokens.len().saturating_sub(1);
+            crate::scheduler::think_commit::advance_thinking_token(
+                a,
+                tok,
+                history_len,
+                crate::scheduler::think_commit::ThinkTokenEnv {
+                    code_fence_token: sched.limits.code_fence_token,
+                    think_loop_enabled: !sched.levers.disable_watchdogs
+                        && sched.watchdog.enable_think_loop_watchdog,
+                    watchdog: sched.watchdog,
+                },
+                true,
+            );
         }
     } else {
         a.consume_generation_budget();
@@ -427,6 +469,7 @@ pub fn emit_token(
         && ((a.inside_thinking && a.grammar_state.is_some())
             || crate::grammar::grammar_blocks_stop(a.grammar_state.as_mut(), &a.eos_tokens));
     let legacy_suppresses_eos = a.require_tool_call;
+    // TODO(spec-parity follow-up): judged AFTER the push (len+1) vs decode's pre-push len; also no post-think EOS guard / honor_eos_inside_thinking twin here.
     let min_tokens_suppresses = a.output_tokens.len() < a.min_tokens;
     // Thinking EOS suppression — the twin of decode_logits_step's explicit
     // `thinking_suppresses_eos` term, which this emit path NEVER HAD (the
@@ -457,6 +500,17 @@ pub fn emit_token(
     if a.eos_tokens.contains(&tok) && suppress_eos {
         // EOS suppressed: grammar not terminated, legacy tool call not yet seen,
         // or min_tokens not reached. Don't stop — let the model continue generating.
+        //
+        // Inside `<think>` the discarded EOS must not stay in the history:
+        // decode never pushes a suppressed EOS, and the history feeds the
+        // mid-word `</think>` mask, the sentence-boundary injection gate, the
+        // penalties and the THINK_LOOP scan of every later token.
+        // (Content-phase suppressed EOS keeps the historical push — outside
+        // the spec-in-think scope; see the parity audit.)
+        if a.inside_thinking && a.output_tokens.last() == Some(&tok) {
+            a.output_tokens.pop();
+        }
+        // TODO(spec-parity follow-up): content-phase suppressed EOS stays in output_tokens here; decode (decode_logits_step.rs) never pushes it.
         return;
     }
     // OPENCODE FIX: see process_decode_logits — same gate. Suppress streaming

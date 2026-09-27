@@ -72,6 +72,10 @@ pub struct LogitsContext<'a> {
     pub think_start_token: Option<u32>,
     pub tool_call_start_token: Option<u32>,
     pub tool_call_end_token: Option<u32>,
+    /// The tokenizer's atomic ``` token. Read only by the verify pick window
+    /// (`pick_positions_from_host`), which advances `in_code_fence` per
+    /// position exactly as the commit paths do (`think_commit`).
+    pub code_fence_token: Option<u32>,
     /// Verify-position offset used by position-aware request masks.
     pub verify_pos: usize,
     /// `mask[id]` iff token `id` decodes to text ending in a generation

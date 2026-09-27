@@ -34,7 +34,15 @@ pub fn step_self_spec(
             return;
         }
     };
-    let token_0 = match model.argmax_on_device(logits, 0) {
+    // Spec-in-think parity: decode never GPU-argmaxes a thinking row.
+    let token_0 = match if a.inside_thinking {
+        crate::scheduler::verify_pipeline_helper::pick_decode_row_with_pipeline(
+            model, logits, a, verify_ctx,
+        )
+        .ok_or_else(|| anyhow::anyhow!("in-think pipeline pick: D2H failed"))
+    } else {
+        model.argmax_on_device(logits, 0)
+    } {
         Ok(t) => t,
         Err(e) => {
             tracing::error!("self-spec argmax error: {e:#}");
@@ -107,50 +115,22 @@ pub fn step_self_spec(
     // the helper copies it D2H and applies the same 8-stage pipeline
     // used in the non-MTP path. Falls back to the raw argmax on D2H
     // failure (see helper).
-    let verified = crate::scheduler::verify_pipeline_helper::verify_pick_all_with_pipeline(
-        model,
-        &verified_argmax,
-        a,
-        verify_ctx,
-        0,
-    );
-
-    // 6. Compare draft vs verified, count acceptances
-    let n_drafts = draft_tokens.len();
-    let mut num_accepted = 0;
-
-    emit_token(a, token_0, None, sched);
-    if a.finished {
+    //
+    // 6. Commit token_0, THEN pick the window and accept. Verify position 0
+    // is the token AFTER token_0, so the window's base state (history,
+    // thinking_tokens, pipeline accumulators) must already include it —
+    // spec-in-think parity; see `self_spec_commit`.
+    let Some(num_accepted) = self_spec_commit(a, token_0, &draft_tokens, sched, |a| {
+        crate::scheduler::verify_pipeline_helper::verify_pick_all_with_pipeline(
+            model,
+            &verified_argmax,
+            a,
+            verify_ctx,
+            0,
+        )
+    }) else {
         return;
-    }
-
-    for i in 0..n_drafts {
-        if draft_tokens[i] == verified[i] {
-            emit_token(a, draft_tokens[i], None, sched);
-            if a.finished {
-                return;
-            }
-            num_accepted += 1;
-        } else {
-            emit_token(a, verified[i], None, sched);
-            if a.finished {
-                return;
-            }
-            a.last_token = verified[i];
-            break;
-        }
-    }
-
-    if num_accepted == n_drafts && n_drafts > 0 {
-        emit_token(a, verified[n_drafts], None, sched);
-        if !a.finished {
-            a.last_token = verified[n_drafts];
-        }
-    } else if num_accepted < n_drafts {
-        // Already set a.last_token above in the break
-    } else {
-        a.last_token = token_0;
-    }
+    };
 
     // 7. Rollback extra verify tokens
     // tokens_added = token_0 (always kept) + accepted drafts
@@ -175,6 +155,59 @@ pub fn step_self_spec(
 /// Two-phase pipeline (same as MTP but with N-gram proposer instead):
 /// 1. Bootstrap: regular decode → argmax → N-gram propose → pending_drafts
 /// 2. Verify: decode_verify_graphed(K=2) → accept/reject → SSM rollback
+/// Self-spec commit: emit `token_0`, run the verify window (`pick`) on the
+/// post-`token_0` state, then emit the accepted drafts + the correction /
+/// bonus. Returns the number of accepted drafts, `None` when the sequence
+/// finished mid-commit.
+///
+/// Spec-in-think parity (review finding 3): the window used to run BEFORE
+/// `token_0` was committed, so every position's history and
+/// `thinking_tokens` were one short (mid-word / boundary `prev`, penalties,
+/// F2 / budget gates) and the trail never matched at commit, resetting the
+/// F2 / defer accumulators every step.
+pub(crate) fn self_spec_commit(
+    a: &mut ActiveSeq,
+    token_0: u32,
+    draft_tokens: &[u32],
+    sched: &crate::scheduler::sched_ctx::SchedCtx,
+    pick: impl FnOnce(&mut ActiveSeq) -> Vec<u32>,
+) -> Option<usize> {
+    emit_token(a, token_0, None, sched);
+    if a.finished {
+        return None;
+    }
+    let verified = pick(a);
+    let n_drafts = draft_tokens.len();
+    let mut num_accepted = 0;
+    for i in 0..n_drafts {
+        if draft_tokens[i] == verified[i] {
+            emit_token(a, draft_tokens[i], None, sched);
+            if a.finished {
+                return None;
+            }
+            num_accepted += 1;
+        } else {
+            emit_token(a, verified[i], None, sched);
+            if a.finished {
+                return None;
+            }
+            a.last_token = verified[i];
+            break;
+        }
+    }
+    if num_accepted == n_drafts && n_drafts > 0 {
+        emit_token(a, verified[n_drafts], None, sched);
+        if !a.finished {
+            a.last_token = verified[n_drafts];
+        }
+    } else if num_accepted < n_drafts {
+        // a.last_token already set in the break above
+    } else {
+        a.last_token = token_0;
+    }
+    Some(num_accepted)
+}
+
 pub fn step_ngram(
     model: &dyn Model,
     active: &mut [ActiveSeq],
@@ -204,7 +237,15 @@ pub fn step_ngram(
                 return;
             }
         };
-        let tok = match model.argmax_on_device(logits, 0) {
+        // Spec-in-think parity: decode never GPU-argmaxes a thinking row.
+        let tok = match if a.inside_thinking {
+            crate::scheduler::verify_pipeline_helper::pick_decode_row_with_pipeline(
+                model, logits, a, verify_ctx,
+            )
+            .ok_or_else(|| anyhow::anyhow!("in-think pipeline pick: D2H failed"))
+        } else {
+            model.argmax_on_device(logits, 0)
+        } {
             Ok(t) => t,
             Err(e) => {
                 tracing::error!("ngram bootstrap argmax error: {e:#}");

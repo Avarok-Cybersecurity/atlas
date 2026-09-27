@@ -24,7 +24,11 @@ mod decode_step;
 pub mod dflash_rung;
 #[cfg(test)]
 mod emit_eos_thinking_tests;
+#[cfg(test)]
+mod emit_spec_think_tests;
 mod emit_step;
+#[cfg(test)]
+mod emit_tool_call_finish_tests;
 mod fast_greedy;
 #[cfg(test)]
 mod finish_guard_tests;
@@ -46,7 +50,7 @@ pub mod limits;
 mod mtp_accept_debug;
 mod mtp_bootstrap_step;
 mod mtp_dcut;
-mod mtp_gate;
+pub(crate) mod mtp_gate;
 mod mtp_step;
 pub(crate) mod mtp_timing;
 mod phase_continue_prefills;
@@ -79,6 +83,7 @@ mod swap_out_tests;
 mod teardown;
 #[cfg(test)]
 mod test_support;
+mod think_commit;
 #[cfg(test)]
 mod think_skip_tests;
 mod types;
@@ -93,7 +98,6 @@ mod verify_pipeline_helper;
 pub mod vocab_masks;
 
 use beam_prefill::resolve_beam_hyp;
-use confidence::*;
 use decode_logits_content::*;
 use decode_logits_seq::*;
 use decode_logits_step::*;
@@ -140,7 +144,8 @@ use spark_model::traits::{Model, SequenceState};
 use spark_runtime::gpu::DevicePtr;
 use spark_runtime::kv_spill::KvSpillManager;
 use spark_runtime::sampler::{
-    SamplingParams, apply_penalties_and_bias, sample_with_params, sample_with_params_history,
+    SamplingParams, apply_penalties_and_bias, greedy_pick_last_wins, sample_with_params,
+    sample_with_params_history,
 };
 
 use std::sync::Arc;
@@ -240,6 +245,11 @@ pub fn run(
     max_batch_size: usize,
     use_speculative: bool,
     dflash_verify_raw_argmax: bool,
+    // This model's MTP-lane spec-in-think default
+    // (`mtp_gate::mtp_spec_think_default(config.model_type)`, resolved once
+    // at serve load); `AVAROK_MTP_SPEC_THINK` / `AVAROK_DFLASH_SPEC_THINK`
+    // override it through `levers`.
+    mtp_spec_think_default: bool,
     num_drafts: usize,
     policy: Box<dyn SchedulingPolicy>,
     max_prefill_tokens: usize,
@@ -699,6 +709,15 @@ pub fn run(
                 let _ = model.stream_wait_event(model.default_stream(), prefill_event);
             }
 
+            // Spec-in-think trail lifetime = ONE verify commit run. Entries
+            // left by a partial accept must never reach a later step's emit
+            // (fast-path / raw-argmax / bootstrap emits run no window), so
+            // drop them at every step boundary. `verify_pick_all_with_pipeline`
+            // also clears on entry.
+            for a in active.iter_mut() {
+                a.spec_think_trail.clear();
+            }
+
             // Build the verify-time LogitsContext once per step: the
             // tokenizer special-token IDs the verify pipeline needs to
             // run the same 8-stage logits processors the non-MTP path
@@ -715,6 +734,7 @@ pub fn run(
                 think_start_token,
                 tool_call_start_token,
                 tool_call_end_token,
+                code_fence_token,
                 verify_pos: 0,
                 boundary_mask: sched.masks.boundary.clone(),
                 mid_word_mask: sched.masks.mid_word.clone(),
@@ -728,12 +748,21 @@ pub fn run(
             // window sidesteps them while leaving the high-accept answer body
             // speculated. N=0 preserves exact prior behavior.
             let dflash_resume_guard = sched.levers.dflash_resume_guard;
-            // AVAROK_DFLASH_SPEC_THINK=1: DFlash raw-argmax may speculate
-            // inside `<think>`. Standard MTP already verifies during think.
-            // DFlash raw-argmax does not run ForcedThinkEnd, so it stays
-            // serial-in-think unless this lever is on. Resume guard still
-            // serial-decodes the spec-entry window.
-            let dflash_spec_think = sched.levers.dflash_spec_think;
+            // Spec-in-think, per lane and per model (2026-09-26): the MTP
+            // lane speculates inside `<think>` by default only on models
+            // whose `mtp_spec_think_default` is on (GLM-5.3: the parity
+            // chain made it byte-identical to spec-off, 6/6; TEB 156/176
+            // identical per scenario); `AVAROK_MTP_SPEC_THINK=0` or
+            // `AVAROK_DFLASH_SPEC_THINK=0` disables, `=1` opts other models
+            // in. The DFlash lane (`dflash_verify_raw_argmax` = `args.dflash`,
+            // every DFlash verify mode) stays serial-in-think unless
+            // `AVAROK_DFLASH_SPEC_THINK=1`. Resume guard still serial-decodes
+            // the spec-entry window.
+            let spec_think = mtp_gate::spec_think_for_lane(
+                dflash_verify_raw_argmax,
+                sched.levers.mtp_spec_think(mtp_spec_think_default),
+                sched.levers.dflash_spec_think,
+            );
             // Spec dispatch additionally requires every active sequence's
             // SSM slot to be covered by the MTP verify state pools
             // (intermediates + checkpoints), which are sized to
@@ -785,10 +814,11 @@ pub fn run(
                 && spec_width_ok
                 && spec_slots_covered
                 && (
-                    // Both lanes stay serial inside `<think>` unless
-                    // AVAROK_DFLASH_SPEC_THINK=1. Resume guard still
-                    // serial-decodes the spec-entry window. EVERY active
-                    // sequence must be eligible, not just active[0].
+                    // MTP speculates inside `<think>` by default on GLM-5.3,
+                    // elsewhere only when opted in; DFlash only with
+                    // AVAROK_DFLASH_SPEC_THINK=1 (`spec_think` above). Resume guard still serial-decodes the
+                    // spec-entry window. EVERY active sequence must be
+                    // eligible, not just active[0].
                     active.iter().all(|a| {
                         mtp_gate::spec_dispatch_eligible(
                             a.inside_thinking,
@@ -796,7 +826,7 @@ pub fn run(
                             a.output_tokens.len() as u32,
                             a.suppress_tool_call,
                             a.disable_mtp,
-                            dflash_spec_think,
+                            spec_think,
                             dflash_resume_guard,
                             dflash_verify_raw_argmax,
                         )

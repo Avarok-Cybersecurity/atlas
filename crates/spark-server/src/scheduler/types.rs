@@ -274,6 +274,12 @@ pub(super) struct ActiveSeq {
     /// + suspend/re-probe state. Transient — reset on swap/restore (a
     /// resumed sequence re-measures). See `adaptive_spec` module docs.
     pub spec_adapt: crate::scheduler::adaptive_spec::AdaptState,
+    /// Spec-in-think parity: per-position post-pipeline accumulators left by
+    /// the last verify pick window, consumed position-by-position by
+    /// `emit_token` (see `think_commit::SpecThinkTrail`). Transient — empty
+    /// outside a verify commit run; reset on swap/restore.
+    pub spec_think_trail:
+        std::collections::VecDeque<crate::scheduler::think_commit::SpecThinkTrail>,
     /// Consecutive `</think>` tokens skipped outside thinking. Safety limit: 50.
     pub think_skip_count: u32,
     /// Token ID for `</tool_call>`. Hard-stops only NON-tool requests

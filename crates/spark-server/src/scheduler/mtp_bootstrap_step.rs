@@ -184,15 +184,30 @@ pub(super) fn step_mtp_bootstrap_batched(
     // so this can only change WHICH kernel produced an identical token.
     // `decode_logits_fp32` models never reach here (`can_batch_bootstrap`).
     // Kill switch `AVAROK_NO_MTP_BOOT_ARGMAX` (PRESENCE).
+    // A144: each row's base bias is what decode would apply at this position
+    // (see `sample_step::speculative_base_logit_bias`); a non-empty bias
+    // classifies `Blocked`, so such a row leaves the batched-argmax set and
+    // its per-row sample applies the bias on host.
     let pen: Vec<_> = refs
         .iter()
-        .map(|a| {
+        .enumerate()
+        .map(|(j, a)| {
+            let base_bias = crate::scheduler::sample_step::speculative_base_logit_bias(
+                a,
+                0,
+                verify_ctx.think_end_token,
+                || {
+                    model
+                        .argmax_on_device(logits.offset(j * vocab * elem), 0)
+                        .unwrap_or(u32::MAX)
+                },
+            );
             crate::scheduler::sample_step::penalty_params_for(
                 a,
                 crate::scheduler::sample_step::PositionKind::Verify,
                 0.0,
                 None,
-                Vec::new(),
+                base_bias,
             )
         })
         .collect();
@@ -238,6 +253,20 @@ pub(super) fn step_mtp_bootstrap_batched(
         let row_logits = logits.offset(j * vocab * elem);
         let batched = batch_toks.as_ref().filter(|_| greedy[j]).map(|t| t[j]);
         let tok = match batched {
+            // Spec-in-think parity: a thinking row takes decode's full host
+            // pipeline (twin of the per-seq bootstrap in `mtp_step`).
+            _ if a.inside_thinking => {
+                match crate::scheduler::verify_pipeline_helper::pick_decode_row_with_pipeline(
+                    model, row_logits, a, verify_ctx,
+                ) {
+                    Some(t) => t,
+                    None => {
+                        tracing::error!("batched bootstrap in-think pipeline pick: D2H failed");
+                        a.finished = true;
+                        continue;
+                    }
+                }
+            }
             Some(t) => t,
             None => {
                 let history = crate::scheduler::sample_step::penalty_history_scope(

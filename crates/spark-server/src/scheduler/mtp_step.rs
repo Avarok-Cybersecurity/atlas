@@ -199,52 +199,78 @@ pub fn step_mtp(
                 continue;
             }
         };
-        // Build the seq's configured penalties (rep/presence/frequency/LZ/DRY)
-        // so the MTP bootstrap token sees the SAME penalties+history the
-        // non-MTP path applies — the root-cause fix for repetition_penalty /
-        // dry_multiplier never reaching MTP-emitted tokens. Cloned before the
-        // mutable `grammar_state` borrow to satisfy the borrow checker.
-        let penalties = crate::scheduler::sample_step::penalty_params_for(
-            a,
-            crate::scheduler::sample_step::PositionKind::Verify,
-            0.0,
-            None,
-            Vec::new(),
-        );
-        // #192: same per-tool-call-segment scoping as the main pipeline
-        // (`penalty_history_scope`) so MTP bootstrap tokens see the identical
-        // penalty landscape.
-        let history = crate::scheduler::sample_step::penalty_history_scope(
-            &a.output_tokens,
-            a.tool_call_end_token,
-        )
-        .to_vec();
-        // P1-4 (2026-07-09): the bootstrap token is one of only two
-        // stochastic sample points under MTP, and its stochastic branch
-        // previously sampled with a hardcoded `min_p: 0.0` deep inside
-        // `sample_token_with_grammar` — bypassing the MODEL.toml
-        // `min_p_floor` (0.05 on this family) that exists precisely to stop
-        // FP8/NVFP4 argmax-flip tail tokens. The sampler now reads
-        // `penalties.min_p`, which `penalty_params_for` copies from
-        // `a.min_p` (request value + floor, resolved in `sampling_setup`) —
-        // SSOT, no new channel. Kill-switch: AVAROK_NO_MTP_MINP=1.
-        let tok = match sample_token_with_grammar(
-            model,
-            logits,
-            a.temperature,
-            a.top_k,
-            a.top_p,
-            &[],
-            a.grammar_state.as_mut(),
-            &penalties,
-            &history,
-            &sched.levers.sampling(),
-        ) {
-            Ok(t) => t,
-            Err(e) => {
-                tracing::error!("bootstrap sample error: {e:#}");
-                a.finished = true;
-                continue;
+        // Spec-in-think parity: a thinking row takes decode's full host
+        // pipeline (forced `</think>`, mid-word, F2, pin), not the
+        // penalties-only sampler below.
+        let tok = if a.inside_thinking {
+            match crate::scheduler::verify_pipeline_helper::pick_decode_row_with_pipeline(
+                model, logits, a, verify_ctx,
+            ) {
+                Some(t) => t,
+                None => {
+                    tracing::error!("bootstrap in-think pipeline pick: D2H failed");
+                    a.finished = true;
+                    continue;
+                }
+            }
+        } else {
+            // Build the seq's configured penalties (rep/presence/frequency/LZ/DRY)
+            // so the MTP bootstrap token sees the SAME penalties+history the
+            // non-MTP path applies — the root-cause fix for repetition_penalty /
+            // dry_multiplier never reaching MTP-emitted tokens. Cloned before the
+            // mutable `grammar_state` borrow to satisfy the borrow checker.
+            // A144: the bootstrap token carries the SAME base `logit_bias` decode
+            // would apply at this position (the tools-active `<tool_call>` nudge
+            // included); a non-empty bias blocks `sample_token_with_grammar`'s
+            // GPU fast path via `classify_penalties`, so it is applied on host.
+            let base_bias = crate::scheduler::sample_step::speculative_base_logit_bias(
+                a,
+                0,
+                verify_ctx.think_end_token,
+                || model.argmax_on_device(logits, 0).unwrap_or(u32::MAX),
+            );
+            let penalties = crate::scheduler::sample_step::penalty_params_for(
+                a,
+                crate::scheduler::sample_step::PositionKind::Verify,
+                0.0,
+                None,
+                base_bias,
+            );
+            // #192: same per-tool-call-segment scoping as the main pipeline
+            // (`penalty_history_scope`) so MTP bootstrap tokens see the identical
+            // penalty landscape.
+            let history = crate::scheduler::sample_step::penalty_history_scope(
+                &a.output_tokens,
+                a.tool_call_end_token,
+            )
+            .to_vec();
+            // P1-4 (2026-07-09): the bootstrap token is one of only two
+            // stochastic sample points under MTP, and its stochastic branch
+            // previously sampled with a hardcoded `min_p: 0.0` deep inside
+            // `sample_token_with_grammar` — bypassing the MODEL.toml
+            // `min_p_floor` (0.05 on this family) that exists precisely to stop
+            // FP8/NVFP4 argmax-flip tail tokens. The sampler now reads
+            // `penalties.min_p`, which `penalty_params_for` copies from
+            // `a.min_p` (request value + floor, resolved in `sampling_setup`) —
+            // SSOT, no new channel. Kill-switch: AVAROK_NO_MTP_MINP=1.
+            match sample_token_with_grammar(
+                model,
+                logits,
+                a.temperature,
+                a.top_k,
+                a.top_p,
+                &[],
+                a.grammar_state.as_mut(),
+                &penalties,
+                &history,
+                &sched.levers.sampling(),
+            ) {
+                Ok(t) => t,
+                Err(e) => {
+                    tracing::error!("bootstrap sample error: {e:#}");
+                    a.finished = true;
+                    continue;
+                }
             }
         };
 
@@ -392,7 +418,15 @@ pub fn step_mtp(
         for &idx in &verify_idxs {
             let a = &active[idx];
             let g = a.pending_drafts.len();
-            if a.grammar_state.is_some() || g < 1 {
+            // A144: the batched DFlash verdict is raw argmax only (no
+            // pipeline, no `logit_bias`); a row whose decode-effective bias is
+            // non-empty (tools-active `<tool_call>` nudge) takes the
+            // per-sequence step, which routes it through the masked pipeline.
+            if a.grammar_state.is_some()
+                || g < 1
+                // Spec-in-think parity: a thinking row needs the host pipeline too.
+                || crate::scheduler::sample_step::speculative_raw_argmax_forbidden(a)
+            {
                 serial_idxs.push(idx);
             } else if gamma == 0 || g == gamma {
                 gamma = g;
