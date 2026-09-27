@@ -876,3 +876,110 @@ fn spec_think_penalty_history_includes_earlier_window_picks() {
     assert_eq!(win_picks, serial_picks);
     assert_eq!(commit_state(&win), commit_state(&serial));
 }
+
+// ── Review fixes on fc9cc8f18 ─────────────────────────────────────────────
+
+#[test]
+fn fast_path_immunity_sees_earlier_window_picks() {
+    // Finding 1: ReduceOnly (rep 1.05) grammarless fast arm, window argmax
+    // [X, X] with X new. Decode / the slow path penalise position 1 against
+    // position 0's X (9.25 / 1.05 < 9.0 → runner-up). The fast arm used to
+    // test immunity against the committed history only and returned [X, X].
+    const X: u32 = 90;
+    const Y: u32 = 91;
+    let mk = || {
+        let mut a = post_think_grammarless_seq();
+        a.min_tokens = 0;
+        a.repetition_penalty = 1.05;
+        a.logit_bias.clear();
+        a
+    };
+    let rows = [row(&[(X, 9.25)]), row(&[(X, 9.25), (Y, 9.0)])];
+    let model = FastPathStubModel::new(VOCAB, &rows);
+    let mut a = mk();
+    let picks = with_ctx_fast_greedy_chat(|ctx| {
+        verify_pick_all_with_pipeline(&model, &[X, X], &mut a, ctx, 0)
+    });
+    assert_eq!(
+        picks,
+        vec![X, Y],
+        "fast arm must agree with slow path / decode"
+    );
+    let mut a = mk();
+    let slow =
+        with_ctx(|ctx| pick_positions_from_host(&bf16_rows(&rows), VOCAB, 2, 2, &mut a, ctx));
+    assert_eq!(slow, vec![X, Y]);
+}
+
+#[test]
+fn stale_trail_never_reaches_a_windowless_verify_commit() {
+    // Finding 2: a partial accept leaves trail entries j+1..; a later verify
+    // that returns from a fast arm (no window) emits a token whose (tok,
+    // out_len) can coincide with the stale entry. It must not be applied.
+    let mut a = post_think_grammarless_seq();
+    a.min_tokens = 0;
+    a.logit_bias.clear();
+    let stale = crate::scheduler::think_commit::SpecThinkTrail {
+        tok: HELLO,
+        out_len: a.output_tokens.len(),
+        consecutive_confident: 42,
+        sentence_defer_count: 7,
+        force_end_thinking: true,
+    };
+    a.spec_think_trail.push_back(stale);
+    let model = FastPathStubModel::new(VOCAB, &[row(&[(HELLO, 10.0)])]);
+    let picks = with_ctx_fast_greedy_chat(|ctx| {
+        verify_pick_all_with_pipeline(&model, &[HELLO], &mut a, ctx, 0)
+    });
+    assert_eq!(picks, vec![HELLO]);
+    crate::scheduler::emit_step::emit_token(&mut a, HELLO, None, &sched_think());
+    assert_eq!(
+        (
+            a.consecutive_confident,
+            a.sentence_defer_count,
+            a.force_end_thinking
+        ),
+        (0, 0, false),
+        "a stale trail entry leaked into a windowless commit"
+    );
+}
+
+#[test]
+fn self_spec_commits_token_0_before_picking_the_window() {
+    // Finding 3: verify position 0 is the token AFTER token_0. History ends
+    // mid-word; token_0 (HELLO) finishes the word; position 0's argmax is
+    // `</think>`. Spec-off: commit HELLO, then prev = HELLO → close. Picking
+    // the window before committing token_0 saw prev = MID_WORD → masked.
+    let mk = || {
+        let mut a = thinking_grammarless_seq();
+        a.thinking_tokens = 50;
+        a.output_tokens = vec![MID_WORD];
+        a
+    };
+    let rows = vec![
+        row(&[(THINK_END, 10.0), (TOOL_CALL_CLOSE, 9.0)]),
+        row(&[(HELLO, 10.0)]),
+    ];
+    let (serial_picks, serial) = run_serial(
+        {
+            let mut a = mk();
+            crate::scheduler::emit_step::emit_token(&mut a, HELLO, None, &sched_think());
+            a
+        },
+        &rows[..1],
+        &[],
+    );
+    assert_eq!(serial_picks, vec![THINK_END]);
+
+    let mut a = mk();
+    let sched = sched_think();
+    let buf = bf16_rows(&rows);
+    let n = crate::scheduler::spec_step::self_spec_commit(&mut a, HELLO, &[HELLO], &sched, |a| {
+        with_ctx_think(&[], |ctx| {
+            pick_positions_from_host(&buf, VOCAB, 2, 2, a, ctx)
+        })
+    });
+    assert_eq!(n, Some(0), "draft HELLO rejected by the forced-free close");
+    assert_eq!(a.last_token, THINK_END);
+    assert_eq!(commit_state(&a), commit_state(&serial));
+}

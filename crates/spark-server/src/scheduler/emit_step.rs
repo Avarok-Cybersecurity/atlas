@@ -469,6 +469,7 @@ pub fn emit_token(
         && ((a.inside_thinking && a.grammar_state.is_some())
             || crate::grammar::grammar_blocks_stop(a.grammar_state.as_mut(), &a.eos_tokens));
     let legacy_suppresses_eos = a.require_tool_call;
+    // TODO(spec-parity follow-up): judged AFTER the push (len+1) vs decode's pre-push len; also no post-think EOS guard / honor_eos_inside_thinking twin here.
     let min_tokens_suppresses = a.output_tokens.len() < a.min_tokens;
     // Thinking EOS suppression — the twin of decode_logits_step's explicit
     // `thinking_suppresses_eos` term, which this emit path NEVER HAD (the
@@ -509,6 +510,7 @@ pub fn emit_token(
         if a.inside_thinking && a.output_tokens.last() == Some(&tok) {
             a.output_tokens.pop();
         }
+        // TODO(spec-parity follow-up): content-phase suppressed EOS stays in output_tokens here; decode (decode_logits_step.rs) never pushes it.
         return;
     }
     // OPENCODE FIX: see process_decode_logits — same gate. Suppress streaming

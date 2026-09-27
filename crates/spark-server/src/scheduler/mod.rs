@@ -704,6 +704,15 @@ pub fn run(
                 let _ = model.stream_wait_event(model.default_stream(), prefill_event);
             }
 
+            // Spec-in-think trail lifetime = ONE verify commit run. Entries
+            // left by a partial accept must never reach a later step's emit
+            // (fast-path / raw-argmax / bootstrap emits run no window), so
+            // drop them at every step boundary. `verify_pick_all_with_pipeline`
+            // also clears on entry.
+            for a in active.iter_mut() {
+                a.spec_think_trail.clear();
+            }
+
             // Build the verify-time LogitsContext once per step: the
             // tokenizer special-token IDs the verify pipeline needs to
             // run the same 8-stage logits processors the non-MTP path

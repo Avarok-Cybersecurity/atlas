@@ -312,6 +312,37 @@ pub fn verify_pick_with_pipeline(
     best_id
 }
 
+/// Committed history followed by the window's positions `0..K-1`
+/// (`argmax_ids[..K-1]`; the last position is never history for another).
+/// Pair with [`position_history`]: position `i` must be judged against the
+/// committed tokens PLUS picks `0..i-1` — what decode (which has committed
+/// them) and the slow path (`pick_positions_from_host` pushes them) see.
+/// Before this the fast arms tested immunity against the committed history
+/// only, so `[X, X]` with X new passed position 1 unpenalised while the
+/// slow path / decode penalised it.
+pub(crate) fn window_penalty_history(a: &ActiveSeq, argmax_ids: &[u32]) -> Vec<u32> {
+    let prefix = &argmax_ids[..argmax_ids.len().saturating_sub(1)];
+    let mut h = Vec::with_capacity(a.output_tokens.len() + prefix.len());
+    h.extend_from_slice(&a.output_tokens);
+    h.extend_from_slice(prefix);
+    h
+}
+
+/// Position `i`'s penalty history (scoped like the pipeline's
+/// `penalty_history_scope`) out of a [`window_penalty_history`] buffer whose
+/// committed part is `base_len` long.
+pub(crate) fn position_history<'h>(
+    h: &'h [u32],
+    base_len: usize,
+    i: usize,
+    ctx: &LogitsContext,
+) -> &'h [u32] {
+    crate::scheduler::sample_step::penalty_history_scope(
+        &h[..(base_len + i).min(h.len())],
+        ctx.tool_call_end_token,
+    )
+}
+
 /// Spec-in-think parity: pick ONE decode row (the MTP bootstrap token) through
 /// the full host pipeline, as `process_decode_logits` does for every thinking
 /// row. The bootstrap's `sample_token_with_grammar` applies penalties/bias
@@ -360,6 +391,10 @@ pub fn verify_pick_all_with_pipeline(
 ) -> Vec<u32> {
     use crate::scheduler::mtp_timing::Phase;
     let k = argmax_ids.len();
+    // A previous window's trail is dead here whichever arm returns below:
+    // only `pick_positions_from_host` may leave a trail for THIS commit run
+    // (the fast arms and the D2H fallback emit without one).
+    a.spec_think_trail.clear();
     if k == 0 {
         return Vec::new();
     }
@@ -444,9 +479,9 @@ pub fn verify_pick_all_with_pipeline(
     // token is NOT in the scoped penalty history and whose raw logit is > 0
     // (see `fast_greedy` module docs for the proof). The membership test uses
     // the SAME scoped history the slow path hands to
-    // `apply_penalties_and_bias` (`penalty_history_scope`), which is also
-    // deliberately STALE across positions ≥ 1 exactly like the slow path
-    // (output_tokens does not grow until `emit_token`, after this helper).
+    // `apply_penalties_and_bias` (`penalty_history_scope`) at each position:
+    // committed tokens + the window's picks 0..i-1 (`window_penalty_history`
+    // / `position_history`; the slow path pushes its picks the same way).
     // P1-3 (2026-07-09): this temp==0 gate is load-bearing for verify-time
     // sampling — at temperature > 0 the fast GPU-argmax shortcut must NOT
     // fire, so every position routes through the slow pipeline below where
@@ -478,16 +513,13 @@ pub fn verify_pick_all_with_pipeline(
         let logits_base = model.logits_buffer_ptr();
         // Scoped history for the ReduceOnly immunity test — cloned before the
         // `&mut a.grammar_state` borrow below.
-        let scoped_history: Vec<u32> =
+        let window_history: Vec<u32> =
             if fast_penalty_gate == crate::scheduler::fast_greedy::PenaltyGate::ReduceOnly {
-                crate::scheduler::sample_step::penalty_history_scope(
-                    &a.output_tokens,
-                    ctx.tool_call_end_token,
-                )
-                .to_vec()
+                window_penalty_history(a, argmax_ids)
             } else {
                 Vec::new()
             };
+        let base_len = a.output_tokens.len();
         let before = a.grammar_state.as_ref().map(|gs| gs.num_history_steps());
         let mut fast: Vec<u32> = Vec::with_capacity(k);
         let mut all_allowed = true;
@@ -502,15 +534,19 @@ pub fn verify_pick_all_with_pipeline(
                 // ReduceOnly regime: the argmax must be penalty-immune (not in
                 // the scoped history + raw logit > 0) or we take the slow path.
                 if fast_penalty_gate == crate::scheduler::fast_greedy::PenaltyGate::ReduceOnly
-                    && !crate::scheduler::fast_greedy::argmax_immune(tok, &scoped_history, || {
-                        crate::scheduler::fast_greedy::logit_is_positive(
-                            model,
-                            logits_base,
-                            row_base + i,
-                            vocab,
-                            tok,
-                        )
-                    })
+                    && !crate::scheduler::fast_greedy::argmax_immune(
+                        tok,
+                        position_history(&window_history, base_len, i, ctx),
+                        || {
+                            crate::scheduler::fast_greedy::logit_is_positive(
+                                model,
+                                logits_base,
+                                row_base + i,
+                                vocab,
+                                tok,
+                            )
+                        },
+                    )
                 {
                     all_allowed = false;
                     break;
@@ -594,27 +630,28 @@ pub fn verify_pick_all_with_pipeline(
         let t_fast = std::time::Instant::now();
         let vocab = model.vocab_size();
         let logits_base = model.logits_buffer_ptr();
-        let scoped_history: Vec<u32> =
+        let window_history: Vec<u32> =
             if chat_fast_gate == crate::scheduler::fast_greedy::PenaltyGate::ReduceOnly {
-                crate::scheduler::sample_step::penalty_history_scope(
-                    &a.output_tokens,
-                    ctx.tool_call_end_token,
-                )
-                .to_vec()
+                window_penalty_history(a, argmax_ids)
             } else {
                 Vec::new()
             };
+        let base_len = a.output_tokens.len();
         let all_immune = argmax_ids.iter().enumerate().all(|(i, &tok)| {
             chat_fast_gate == crate::scheduler::fast_greedy::PenaltyGate::Neutral
-                || crate::scheduler::fast_greedy::argmax_immune(tok, &scoped_history, || {
-                    crate::scheduler::fast_greedy::logit_is_positive(
-                        model,
-                        logits_base,
-                        row_base + i,
-                        vocab,
-                        tok,
-                    )
-                })
+                || crate::scheduler::fast_greedy::argmax_immune(
+                    tok,
+                    position_history(&window_history, base_len, i, ctx),
+                    || {
+                        crate::scheduler::fast_greedy::logit_is_positive(
+                            model,
+                            logits_base,
+                            row_base + i,
+                            vocab,
+                            tok,
+                        )
+                    },
+                )
         });
         ctx.timing.record(Phase::FastGreedy, t_fast);
         if all_immune {
