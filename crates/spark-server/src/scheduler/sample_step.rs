@@ -864,7 +864,7 @@ mod a144b_bootstrap_tie_break_tests {
     const TIE_HIGH: usize = 5;
 
     fn tied_row_bf16() -> Vec<u8> {
-        let mut row = vec![0.0f32; VOCAB];
+        let mut row = [0.0f32; VOCAB];
         row[TIE_LOW] = 7.0;
         row[TIE_HIGH] = 7.0;
         row.iter()

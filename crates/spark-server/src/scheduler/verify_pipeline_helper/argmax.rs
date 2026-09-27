@@ -153,7 +153,11 @@ mod greedy_pick_last_wins_tests {
     fn exact_tie_matches_decodes_host_pick() {
         let v = [1.0f32, 5.0, 5.0, 5.0, 2.0];
         assert_eq!(greedy_pick_last_wins(&v), decode_reference(&v));
-        assert_eq!(greedy_pick_last_wins(&v), 3, "LAST of the tied indices (1,2,3) must win");
+        assert_eq!(
+            greedy_pick_last_wins(&v),
+            3,
+            "LAST of the tied indices (1,2,3) must win"
+        );
     }
 
     /// The bug this fixes: `argmax_first_wins` and `greedy_pick_last_wins`
