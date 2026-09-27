@@ -63,6 +63,8 @@ fn every_opt_in_lever_ships_off() {
     let d = SchedLevers::defaults();
     assert!(!d.force_temp_zero);
     assert!(!d.dflash_masked_verify && !d.dflash_adaptive && !d.dflash_spec_think);
+    // No explicit MTP spec-in-think choice: the MODEL default applies.
+    assert_eq!(d.mtp_spec_think_env, None);
     assert!(!d.disable_watchdogs);
     assert!(!d.decode_timing && !d.mtp_timing && !d.adadec_diagnostic);
 }
@@ -77,31 +79,60 @@ fn every_opt_in_lever_ships_off() {
 /// `cargo test --workspace` passed. The regression reached the GPU gates
 /// instead, where it cost a full 11-gate campaign to find.
 ///
-/// This asserts the resolver itself, with no env set. It is deliberately
-/// narrow: `dflash_spec_think` is the one lever in this struct whose value
-/// escapes the DFlash lane. `mtp_gate::spec_dispatch_eligible` reads it as
+/// So this asserts the resolver itself. The contract changed on 2026-09-26:
+/// spec-in-think is split per lane, and the MTP lane's default is
+/// per MODEL — ON only for GLM-5.3, whose parity chain made spec-in-think
+/// commit exactly what spec-off decode would (K=3 byte-identical 6/6; TEB
+/// 156/176 identical to spec-off per scenario). Every other model, and the
+/// DFlash lane on every model, stays OPT-IN until it passes the same gates:
+/// the 2026-08-16 bisect and the 2026-09-01 graduation (agentic-webserver
+/// 10/10 -> 9/10 webserver_ok, 10/10 -> 7/10 followed_directions,
+/// bfcl-subset-echolp 0.44 below both floors) are exactly what an
+/// unqualified default-on costs. With no env set the resolver must
+/// therefore express NO opinion for MTP (`None` → model default) and keep
+/// DFlash off.
 ///
-///     if inside_thinking && !spec_think { return false; }
-///
-/// for BOTH lanes, so defaulting it on lets speculation enter `<think>` on
-/// plain MTP, where batch-K verify is not byte-lossless at T=0. Measured
-/// twice with the same signature — the 2026-08-16 bisect, and 2026-09-01
-/// on this PR: agentic-webserver 10/10 -> 9/10 webserver_ok and 10/10 ->
-/// 7/10 followed_directions, deterministically, plus bfcl-subset-echolp
-/// 0.44 below both floors on the same recipe.
+/// One test on purpose: every case mutates the same process env, and the
+/// harness runs tests on parallel threads.
 #[test]
-fn spec_think_is_off_in_the_resolver_the_server_actually_uses() {
-    // SAFETY: single-threaded test process; no other thread reads the env.
-    unsafe { std::env::remove_var("AVAROK_DFLASH_SPEC_THINK") };
+fn spec_think_per_lane_in_the_resolver_the_server_actually_uses() {
+    use crate::scheduler::mtp_gate::mtp_spec_think_default;
+    const MTP: &str = "AVAROK_MTP_SPEC_THINK";
+    const DFLASH: &str = "AVAROK_DFLASH_SPEC_THINK";
+    let glm = mtp_spec_think_default("glm5_next");
+    let other = mtp_spec_think_default("qwen3_next");
+    // SAFETY: only this test touches these two variables.
+    let set = |mtp: Option<&str>, dflash: Option<&str>| unsafe {
+        match mtp {
+            Some(v) => std::env::set_var(MTP, v),
+            None => std::env::remove_var(MTP),
+        }
+        match dflash {
+            Some(v) => std::env::set_var(DFLASH, v),
+            None => std::env::remove_var(DFLASH),
+        }
+    };
+
+    set(None, None);
     let live = SchedLevers::from_env();
+    assert_eq!(
+        live.mtp_spec_think_env, None,
+        "with no env set the resolver must defer to the MODEL default"
+    );
+    assert!(
+        live.mtp_spec_think(glm),
+        "GLM-5.3 MTP spec-in-think ships ON"
+    );
+    assert!(
+        !live.mtp_spec_think(other),
+        "non-GLM MTP spec-in-think must stay OPT-IN until independently qualified"
+    );
     assert!(
         !live.dflash_spec_think,
-        "AVAROK_DFLASH_SPEC_THINK must stay OPT-IN: from_env() resolved it ON. \
-         It is the one lever here that is not gated behind dflash_verify_raw_argmax, \
-         so defaulting it on changes plain-MTP serving and deterministically \
-         damages agentic trajectories. See mtp_gate::spec_dispatch_eligible."
+        "AVAROK_DFLASH_SPEC_THINK must stay OPT-IN for the DFlash lane: from_env() \
+         resolved it ON. DFlash-in-think has no GPU + TEB qualification yet."
     );
-    // The two levers this PR DID graduate stay graduated: both are
+    // The two DFlash levers graduated earlier stay graduated: both are
     // additionally gated on `dflash_verify_raw_argmax` (= args.dflash), so
     // they cannot reach a no-drafter serve.
     assert!(
@@ -112,6 +143,65 @@ fn spec_think_is_off_in_the_resolver_the_server_actually_uses() {
         live.dflash_seam_serial,
         "seam_serial is intentionally default-ON"
     );
+
+    set(Some("0"), None);
+    let l = SchedLevers::from_env();
+    assert!(
+        !l.mtp_spec_think(glm),
+        "AVAROK_MTP_SPEC_THINK=0 turns GLM off"
+    );
+
+    set(None, Some("0"));
+    let l = SchedLevers::from_env();
+    assert!(
+        !l.mtp_spec_think(glm),
+        "AVAROK_DFLASH_SPEC_THINK=0 must keep working as an off switch for MTP"
+    );
+    assert!(!l.dflash_spec_think);
+
+    set(None, Some("1"));
+    let l = SchedLevers::from_env();
+    assert!(
+        l.mtp_spec_think(glm) && l.mtp_spec_think(other),
+        "AVAROK_DFLASH_SPEC_THINK=1 keeps its pre-split MTP opt-in on every model"
+    );
+    assert!(
+        l.dflash_spec_think,
+        "AVAROK_DFLASH_SPEC_THINK=1 opts DFlash in"
+    );
+
+    set(Some("1"), None);
+    let l = SchedLevers::from_env();
+    assert!(
+        l.mtp_spec_think(other),
+        "AVAROK_MTP_SPEC_THINK=1 is the per-lane opt-in for qualification runs"
+    );
+    assert!(
+        !l.dflash_spec_think,
+        "the MTP switch must not opt the DFlash lane in"
+    );
+
+    set(Some("1"), Some("0"));
+    assert!(
+        !SchedLevers::from_env().mtp_spec_think(glm),
+        "an explicit =0 on either variable beats an opt-in"
+    );
+
+    set(None, None);
+}
+
+#[test]
+fn mtp_spec_think_env_resolution_table() {
+    use crate::scheduler::levers::resolve_mtp_spec_think_env as r;
+    assert_eq!(r(None, None), None);
+    assert_eq!(r(Some("0"), None), Some(false));
+    assert_eq!(r(None, Some("0")), Some(false));
+    assert_eq!(r(Some("1"), None), Some(true));
+    assert_eq!(r(None, Some("1")), Some(true));
+    assert_eq!(r(Some("1"), Some("0")), Some(false));
+    assert_eq!(r(Some("0"), Some("1")), Some(false));
+    // Anything but an exact 0/1 is no opinion, like `opt_in`/`on_unless_zero`.
+    assert_eq!(r(Some("true"), Some("")), None);
 }
 
 #[test]

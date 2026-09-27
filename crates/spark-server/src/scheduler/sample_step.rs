@@ -288,7 +288,7 @@ pub(super) fn speculative_base_logit_bias(
 /// think flags inside the window) and the `min_tokens` term is monotone in
 /// the position. Conservative (forces host) otherwise.
 pub(super) fn speculative_raw_argmax_forbidden(a: &ActiveSeq) -> bool {
-    // Spec-in-think parity (AVAROK_DFLASH_SPEC_THINK): decode NEVER emits a
+    // Spec-in-think parity (A146): decode NEVER emits a
     // thinking row from its GPU argmax (`decode_row_uses_gpu_argmax` is false
     // while `inside_thinking`) — every thinking token goes through the host
     // pipeline (forced `</think>` injection, mid-word mask, A4 floor, F2).

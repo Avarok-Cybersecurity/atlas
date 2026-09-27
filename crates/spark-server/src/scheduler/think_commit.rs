@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Spec-in-think parity (A146 / AVAROK_DFLASH_SPEC_THINK): the per-committed
+//! Spec-in-think parity (A146, speculation inside `<think>`): the per-committed
 //! thinking-token transition, shared by all three places that advance it.
 //!
 //! GLM-5.3 serving has two hand-duplicated token-commit paths — spec-off

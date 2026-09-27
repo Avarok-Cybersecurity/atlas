@@ -598,7 +598,7 @@ fn a144b_verify_exact_tie_matches_decodes_last_wins_tie_break() {
     );
 }
 
-// ── Spec-in-think parity (A146, AVAROK_DFLASH_SPEC_THINK) ────────────────
+// ── Spec-in-think parity (A146, speculation inside `<think>`) ──────
 //
 // Contract: with speculation inside `<think>`, every committed token must be
 // the token spec-off decode would commit. Decode = "pipeline on the live

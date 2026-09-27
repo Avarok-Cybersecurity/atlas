@@ -348,7 +348,7 @@ pub(crate) fn position_history<'h>(
 /// row. The bootstrap's `sample_token_with_grammar` applies penalties/bias
 /// only — no forced `</think>` injection, mid-word mask, F2, pin — so a
 /// bootstrap inside `<think>` (every Serial→spec entry and propose fallback
-/// under AVAROK_DFLASH_SPEC_THINK) could emit a token spec-off never would.
+/// with speculation inside `<think>`) could emit a token spec-off never would.
 /// `None` on a D2H failure (caller fails the step as before).
 pub fn pick_decode_row_with_pipeline(
     model: &dyn Model,

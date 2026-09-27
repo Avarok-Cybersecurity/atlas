@@ -1054,6 +1054,12 @@ pub(crate) fn load_model(
     // flip this bool — this selects the verify architecture, not the pick
     // basis.
     let dflash_verify_raw_argmax = args.dflash;
+    // MTP-lane speculation inside `<think>`: default ON only for architectures
+    // that passed the spec-in-think quality/safety gates (GLM-5.3, 2026-09-26);
+    // resolved from the model config once, here, so the scheduler never
+    // string-matches a model. The env overrides it (see `SchedLevers`).
+    let mtp_spec_think_default =
+        crate::scheduler::mtp_gate::mtp_spec_think_default(&config.model_type);
     // DS4F hard-limit lane (2026-07-21): the served-context ceiling the
     // scheduler enforces per decode step (§C-3), not just as a KV-allocation
     // ceiling trued-up on completion. Travels with the run's other hard stops.
@@ -1108,6 +1114,7 @@ pub(crate) fn load_model(
             max_batch_size,
             use_speculative,
             dflash_verify_raw_argmax,
+            mtp_spec_think_default,
             num_drafts,
             policy,
             max_prefill_tokens,

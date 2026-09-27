@@ -79,7 +79,16 @@ pub struct SchedLevers {
     pub dflash_adaptive: bool,
     pub dflash_serial_append: bool,
     pub dflash_unified_ctx: bool,
+    /// DFlash lane only: speculate inside `<think>`. Opt-in
+    /// (`AVAROK_DFLASH_SPEC_THINK=1`) until DFlash-in-think has its own
+    /// GPU + TEB qualification.
     pub dflash_spec_think: bool,
+    /// MTP lane (every non-DFlash speculative serve): the operator's explicit
+    /// spec-in-think choice, or `None` to take the MODEL's default
+    /// (`mtp_gate::mtp_spec_think_default`, resolved at serve load). Env
+    /// parsing only — see [`resolve_mtp_spec_think_env`] and
+    /// [`SchedLevers::mtp_spec_think`].
+    pub mtp_spec_think_env: Option<bool>,
     /// Pin the MTP throughput gate to the VERIFY arm for DFlash at
     /// `active.len() <= 2` (`AVAROK_DFLASH_GATE_PIN_C2=0` restores
     /// arbitration). Measured 2026-08-19 (qwen3.8-27B+DFlash2, C=2):
@@ -123,6 +132,23 @@ pub struct SchedLevers {
     /// Loop watchdog. **Runtime-mutable** — the TUI ops REPL toggles it while
     /// serving, which is why it is an atomic rather than a plain field.
     loop_watchdog: AtomicBool,
+}
+
+/// The MTP lane's explicit spec-in-think choice from
+/// `AVAROK_MTP_SPEC_THINK` / `AVAROK_DFLASH_SPEC_THINK`, or `None` to take
+/// the model's default. An explicit `=0` on EITHER wins (off switches beat
+/// opt-ins, so the historical variable still disables); otherwise `=1` on
+/// either opts in — `AVAROK_MTP_SPEC_THINK=1` is the per-lane name for
+/// qualification runs, `AVAROK_DFLASH_SPEC_THINK=1` keeps its pre-split
+/// meaning for the MTP lane.
+pub fn resolve_mtp_spec_think_env(mtp: Option<&str>, dflash: Option<&str>) -> Option<bool> {
+    if mtp == Some("0") || dflash == Some("0") {
+        Some(false)
+    } else if mtp == Some("1") || dflash == Some("1") {
+        Some(true)
+    } else {
+        None
+    }
 }
 
 /// `AVAROK_FOO=1` enables.
@@ -238,10 +264,11 @@ impl SchedLevers {
             // count +31% (PR #604). `AVAROK_DFLASH_UNIFIED_CTX=0` restores the
             // legacy append for A/B.
             dflash_unified_ctx: on_unless_zero("AVAROK_DFLASH_UNIFIED_CTX"),
-            // ★ NOT GRADUATED, and it must not be. Unlike masked_verify and
+            // ★ `dflash_spec_think` is NOT GRADUATED. History — why the guard
+            // once covered BOTH lanes: unlike masked_verify and
             // seam_serial — which are additionally gated on
             // `dflash_verify_raw_argmax` (= `args.dflash`, serve_load.rs) and
-            // so cannot touch a no-drafter serve — this lever is read by
+            // so cannot touch a no-drafter serve — this lever WAS read by
             // `mtp_gate::spec_dispatch_eligible` on BOTH lanes:
             //
             //     if inside_thinking && !spec_think { return false; }
@@ -256,7 +283,28 @@ impl SchedLevers {
             // and 10/10 -> 7/10 followed_directions DETERMINISTICALLY (three
             // identical runs), and bfcl-subset-echolp, which serves the same
             // recipe, fell 0.44 below both of its floors.
+            //
+            // 2026-09-26: the guard is now SPLIT PER LANE, and the MTP
+            // default is PER MODEL. The flips above were batch-K verify
+            // committing tokens spec-off decode would not; the spec-in-think
+            // parity chain (verify window + emit_token commit thinking state
+            // exactly like spec-off decode, plus A143/A144/A144b) closed that
+            // on the MTP lane for GLM-5.3: K=3 spec-in-think byte-identical
+            // 6/6 vs spec-off, TEB 156/176 identical to spec-off per scenario
+            // (2026-09-26). So:
+            //   * `dflash_spec_think` stays OPT-IN (`=1`) and governs the
+            //     DFlash lane (every DFlash verify mode) inside `<think>` on
+            //     every model until DFlash-in-think has its own GPU + TEB
+            //     qualification;
+            //   * the MTP lane defaults ON only for models that passed those
+            //     gates (`mtp_gate::mtp_spec_think_default`, today GLM-5.3);
+            //     every other model keeps the pre-split opt-in. The env only
+            //     overrides that default — see `resolve_mtp_spec_think_env`.
             dflash_spec_think: opt_in("AVAROK_DFLASH_SPEC_THINK"),
+            mtp_spec_think_env: resolve_mtp_spec_think_env(
+                std::env::var("AVAROK_MTP_SPEC_THINK").ok().as_deref(),
+                std::env::var("AVAROK_DFLASH_SPEC_THINK").ok().as_deref(),
+            ),
             dflash_gate_pin_c2: on_unless_zero("AVAROK_DFLASH_GATE_PIN_C2"),
             dflash_batch_verify: on_unless_zero("AVAROK_DFLASH_BATCH_VERIFY"),
             dflash_adaptive_min: num("AVAROK_DFLASH_ADAPTIVE_MIN", 2.0),
@@ -309,6 +357,7 @@ impl SchedLevers {
             dflash_serial_append: false,
             dflash_unified_ctx: true,
             dflash_spec_think: false,
+            mtp_spec_think_env: None,
             dflash_gate_pin_c2: true,
             dflash_batch_verify: true,
             dflash_adaptive_min: 2.0,
@@ -324,6 +373,13 @@ impl SchedLevers {
             adadec_diagnostic: false,
             loop_watchdog: AtomicBool::new(false),
         }
+    }
+
+    /// MTP-lane spec-in-think for THIS serve: the explicit env choice if one
+    /// was given, else `model_default` (`mtp_gate::mtp_spec_think_default`,
+    /// resolved from the model architecture at serve load).
+    pub fn mtp_spec_think(&self, model_default: bool) -> bool {
+        self.mtp_spec_think_env.unwrap_or(model_default)
     }
 
     /// Is the loop watchdog armed?

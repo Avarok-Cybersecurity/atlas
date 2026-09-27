@@ -329,7 +329,7 @@ fn stale_other_baseline_cannot_steal_mode() {
 }
 
 #[test]
-fn standard_mtp_stays_serial_in_think() {
+fn mtp_spec_think_lever_off_stays_serial_in_think() {
     assert!(!spec_dispatch_eligible(
         true, 0, 0, false, false, false, 0, false
     ));
@@ -342,7 +342,7 @@ fn standard_mtp_stays_serial_in_think() {
 }
 
 #[test]
-fn standard_mtp_spec_think_opts_in() {
+fn mtp_spec_think_lever_on_speculates_in_think() {
     assert!(spec_dispatch_eligible(
         true, 0, 50, false, false, true, 0, false
     ));
@@ -363,6 +363,77 @@ fn dflash_spec_think_opts_in() {
     assert!(spec_dispatch_eligible(
         true, 0, 0, false, false, true, 0, true
     ));
+}
+
+/// 2026-09-26 lane + model split, through the levers the server resolves
+/// with no env set (`defaults()` = no explicit choice) and the per-model
+/// default resolved at serve load.
+fn in_think_eligible(
+    levers: &crate::scheduler::levers::SchedLevers,
+    model_type: &str,
+    dflash_lane: bool,
+) -> bool {
+    let spec_think = spec_think_for_lane(
+        dflash_lane,
+        levers.mtp_spec_think(mtp_spec_think_default(model_type)),
+        levers.dflash_spec_think,
+    );
+    spec_dispatch_eligible(true, 0, 50, false, false, spec_think, 0, dflash_lane)
+}
+
+#[test]
+fn mtp_spec_think_default_is_glm53_only() {
+    assert!(mtp_spec_think_default("glm5_next"));
+    assert!(mtp_spec_think_default("glm5_next_text"));
+    for other in [
+        "qwen3_next",
+        "qwen3_5_moe",
+        "deepseek_v4",
+        "step3p7",
+        "glm5",
+        "",
+    ] {
+        assert!(!mtp_spec_think_default(other), "{other} must stay opt-in");
+    }
+}
+
+#[test]
+fn glm53_mtp_speculates_in_think_by_default() {
+    let d = crate::scheduler::levers::SchedLevers::defaults();
+    assert!(in_think_eligible(&d, "glm5_next", false));
+    assert!(in_think_eligible(&d, "glm5_next_text", false));
+}
+
+#[test]
+fn other_models_mtp_stays_serial_in_think_by_default() {
+    let d = crate::scheduler::levers::SchedLevers::defaults();
+    assert!(!in_think_eligible(&d, "qwen3_next", false));
+    // AVAROK_DFLASH_SPEC_THINK=1 (or AVAROK_MTP_SPEC_THINK=1) opts it in.
+    let mut opted = crate::scheduler::levers::SchedLevers::defaults();
+    opted.mtp_spec_think_env = Some(true);
+    assert!(in_think_eligible(&opted, "qwen3_next", false));
+}
+
+#[test]
+fn glm53_mtp_spec_think_zero_turns_it_off() {
+    let mut off = crate::scheduler::levers::SchedLevers::defaults();
+    off.mtp_spec_think_env = Some(false); // AVAROK_MTP_SPEC_THINK=0
+    assert!(!in_think_eligible(&off, "glm5_next", false));
+}
+
+#[test]
+fn dflash_lane_unchanged_opt_in_on_every_model() {
+    let d = crate::scheduler::levers::SchedLevers::defaults();
+    for m in ["glm5_next", "qwen3_next"] {
+        assert!(!in_think_eligible(&d, m, true), "{m}: DFlash stays opt-in");
+    }
+    // The MTP override never reaches the DFlash lane.
+    let mut mtp_on = crate::scheduler::levers::SchedLevers::defaults();
+    mtp_on.mtp_spec_think_env = Some(true);
+    assert!(!in_think_eligible(&mtp_on, "glm5_next", true));
+    let mut df_on = crate::scheduler::levers::SchedLevers::defaults();
+    df_on.dflash_spec_think = true; // AVAROK_DFLASH_SPEC_THINK=1
+    assert!(in_think_eligible(&df_on, "qwen3_next", true));
 }
 
 /// 3.8 `max_thinking_budget = 2048` can cross the floor twice.

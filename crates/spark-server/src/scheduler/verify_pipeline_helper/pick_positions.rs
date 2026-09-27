@@ -109,7 +109,7 @@ pub(super) fn pick_positions_from_host(
     // earlier in the SAME window — exactly what `emit_token` →
     // `update_tool_param_state` will do on the accept path. Restored on exit.
     let tool_body_before = a.inside_tool_body;
-    // Spec-in-think parity (A146, AVAROK_DFLASH_SPEC_THINK): every piece of
+    // Spec-in-think parity (A146, speculation inside `<think>`): every piece of
     // per-token commit state the pipeline READS at a later position must be
     // advanced here per position, exactly as the commit twins
     // (`process_decode_logits` / `emit_token`) will advance it, and restored
