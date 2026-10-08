@@ -77,6 +77,9 @@ pub struct CompletionRequest {
     pub stop: Vec<String>,
     /// Seed for deterministic sampling (same as chat completions).
     pub seed: Option<u64>,
+    /// Request timeout in seconds. None = server default.
+    #[serde(default)]
+    pub timeout: Option<f32>,
     /// Per-request override for the vLLM-anchored token-loop detector
     /// (see `RepetitionDetectionParams` in `chat_request.rs`). None =
     /// use server default.
@@ -387,5 +390,26 @@ mod min_tokens_tests {
             "min_tokens": 0
         }));
         assert_eq!(req.min_tokens, 0);
+    }
+}
+
+#[cfg(test)]
+mod timeout_tests {
+    use super::*;
+
+    #[test]
+    fn timeout_deserializes_like_chat() {
+        let req: CompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "m",
+            "prompt": "hi",
+            "timeout": 1800
+        }))
+        .expect("valid CompletionRequest JSON");
+        assert_eq!(req.timeout, Some(1800.0));
+
+        let req: CompletionRequest =
+            serde_json::from_value(serde_json::json!({ "model": "m", "prompt": "hi" }))
+                .expect("valid CompletionRequest JSON");
+        assert_eq!(req.timeout, None);
     }
 }
