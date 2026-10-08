@@ -120,7 +120,7 @@ pub(super) async fn run_blocking(
                 top_logprobs: p.logprobs_k,
                 prompt_logprobs: if req.echo { p.logprobs_k } else { None },
                 echo: req.echo,
-                timeout_at: state.request_deadline(None),
+                timeout_at: state.request_deadline(req.timeout),
                 response_tx: tx,
             };
 

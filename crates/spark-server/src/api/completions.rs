@@ -374,7 +374,7 @@ pub(super) async fn completions_stream(
         p,
         std::sync::Arc::new(prompt_tokens),
         session_hash,
-        state.request_deadline(None),
+        state.request_deadline(req.timeout),
         token_tx,
     );
 
