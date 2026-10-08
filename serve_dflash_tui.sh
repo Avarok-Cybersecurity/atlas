@@ -19,6 +19,7 @@
 #   ./serve_dflash_tui.sh small            # 32K ctx, 4 concurrent
 #   ./serve_dflash_tui.sh default novelist # ...with a LoRA adapter loaded
 #   ./serve_dflash_tui.sh small cyber
+#   ./serve_dflash_tui.sh small donto      # predicate-extractor (PARTIAL, see below)
 #
 # Measured on the LEAN profile (32K ctx, 8 seqs, no prefix cache), which is
 # the one with a clean baseline, aggregate tok/s at C=1/2/4/8:
@@ -115,9 +116,17 @@ fi
 # GDN FlashInfer: worth ~25% of prefill (715 -> 895 tok/s). It fails OPEN —
 # without ATLAS_GDN_LIB on LD_LIBRARY_PATH it silently falls back and you
 # just lose the speed, no error. Keep both together.
-export LD_LIBRARY_PATH="/home/ms/atlas-gdn-libs:/home/ms/nccl/build/lib:${LD_LIBRARY_PATH:-}"
-export ATLAS_GDN_FLASHINFER=1
-export ATLAS_GDN_LIB=/home/ms/atlas-gdn-libs/libatlasgdn.so
+# 2026-08-25: it fails open SILENTLY, so this box checks instead of assuming —
+# /home/ms/atlas-gdn-libs is absent here and the old unconditional export made a
+# 25%-slower prefill look like a property of the model.
+ATLAS_GDN_DIR="${ATLAS_GDN_DIR:-/home/ms/atlas-gdn-libs}"
+export LD_LIBRARY_PATH="$ATLAS_GDN_DIR:/home/ms/nccl/build/lib:${LD_LIBRARY_PATH:-}"
+if [ -f "$ATLAS_GDN_DIR/libatlasgdn.so" ]; then
+  export ATLAS_GDN_FLASHINFER=1
+  export ATLAS_GDN_LIB="$ATLAS_GDN_DIR/libatlasgdn.so"
+else
+  echo "NOTE: no $ATLAS_GDN_DIR/libatlasgdn.so — GDN FlashInfer OFF (prefill ~895 -> ~715 tok/s)." >&2
+fi
 
 # FP8 drafter weights are now DEFAULT-ON in the engine, so this export is
 # redundant and kept only as documentation of intent. Measured head-to-head
@@ -249,15 +258,27 @@ export RUST_LOG="${RUST_LOG:-info,spark::tool_parser=debug}"
 # above M=2, re-reading the whole 1.27 GB head once per token (64 times at a
 # C=8 cross-sequence verify). `dense_gemv_fp8w_batchm` reads it once per
 # chunk of 8, bit-identically — that is where C=8 77.5 -> 130.5 came from.
-TARGET=$(ls -d /mnt/gx10-hf-hub/models--unsloth--Qwen3.8-27B-NVFP4/snapshots/*/ | head -1)
+# HF hub root. /mnt/gx10-hf-hub is the gx10 box's mount; this box keeps the
+# same cache at $HF_HUB_CACHE (/tank/hf/hub). First one that exists wins, so
+# the script is portable between them without an edit.
+for _h in "${HUB:-}" /mnt/gx10-hf-hub "${HF_HUB_CACHE:-}" "${HF_HOME:-$HOME/.cache/huggingface}/hub"; do
+  [ -n "$_h" ] && [ -d "$_h" ] && HUB="$_h" && break
+done
+if [ -z "${HUB:-}" ]; then echo "no HF hub dir found — set HUB=/path/to/hub" >&2; exit 1; fi
+
+TARGET=$(ls -d "$HUB"/models--unsloth--Qwen3.8-27B-NVFP4/snapshots/*/ | head -1)
 # DRAFT_DIR overrides the drafter (e.g. the Apathy v2 block-16 drafter for
 # acceptance A/Bs — γ resolves from the drafter config, so no gamma flag).
-DRAFT="${DRAFT_DIR:-$(ls -d /mnt/gx10-hf-hub/models--incoai--Qwen3.8-27B-DFlash2/snapshots/*/ | head -1)}"
+DRAFT="${DRAFT_DIR:-$(ls -d "$HUB"/models--incoai--Qwen3.8-27B-DFlash2/snapshots/*/ | head -1)}"
 
 # ── LoRA (optional second argument) ────────────────────────────────────
-# All three tested adapters load with NO opt-in flag: dense-FFN deltas are
-# applied on all 64 layers (hybrid included), GDN out_proj is supported, and
-# PEFT regex `target_modules` parses. Select per request with either
+# The three originally-tested adapters (novelist / cyber / heresy) load with
+# NO opt-in flag: dense-FFN deltas are applied on all 64 layers (hybrid
+# included), GDN out_proj is supported, and PEFT regex `target_modules`
+# parses. That is NOT universal — an adapter that also trained the GDN
+# INPUT-side projections (in_proj_qkv/z/a/b, conv1d) is a hard refusal and
+# needs ATLAS_LORA_ALLOW_PARTIAL=1 to load at 61% of its tensors; `donto` is
+# the worked example, see the block by LORA_ARGS below. Select per request with either
 # {"model":"<name>"} or {"adapter":"<name>"}; an unnamed request gets the
 # ACTIVE adapter, not base.
 #
@@ -283,9 +304,10 @@ DRAFT="${DRAFT_DIR:-$(ls -d /mnt/gx10-hf-hub/models--incoai--Qwen3.8-27B-DFlash2
 LORA_ARGS=()
 if [ -n "$ADAPTER" ]; then
   case "$ADAPTER" in
-    novelist) APATH=$(ls -d /mnt/gx10-hf-hub/models--Dxniz--Novelist1.0-27b-Adapter/snapshots/*/ | head -1) ;;
-    cyber)    APATH=/home/ms/lora-test/cyber ;;
-    heresy)   APATH=/home/ms/lora-test/heresy ;;
+    novelist) APATH=$(ls -d "$HUB"/models--Dxniz--Novelist1.0-27b-Adapter/snapshots/*/ | head -1) ;;
+    cyber)    APATH=$(ls -d /home/ms/lora-test/cyber "$HUB"/models--nico248000000000--Qwen3.8-27B-cyber-LoRA/snapshots/*/ 2>/dev/null | head -1) ;;
+    heresy)   APATH=$(ls -d /home/ms/lora-test/heresy "$HUB"/models--MuXodious--Qwen3.8-27B-absolute-heresy-LoRA/snapshots/*/ 2>/dev/null | head -1) ;;
+    donto)    APATH=$(ls -d "$HUB"/models--ajaxdavis--donto-qwen3.8-27b-predicate-extractor/snapshots/*/ | head -1) ;;
     *)        APATH="$ADAPTER" ;;   # or pass a path directly
   esac
   if [ ! -e "$APATH" ]; then
@@ -294,6 +316,29 @@ if [ -n "$ADAPTER" ]; then
   fi
   LORA_ARGS=(--lora-adapter "${ADAPTER}=${APATH}")
   echo "LoRA: serving adapter '$ADAPTER' from $APATH"
+
+  # ── GDN INPUT-side deltas are a REFUSED load, not a silent skip ────────
+  # classify_key supports `linear_attn.out_proj` (downstream of the
+  # recurrence — an ordinary per-token linear delta) but REJECTS
+  # in_proj_qkv / in_proj_z / in_proj_a / in_proj_b / conv1d, which feed the
+  # recurrence and whose error would compound across timesteps. An adapter
+  # naming them fails the whole load unless ATLAS_LORA_ALLOW_PARTIAL=1.
+  #
+  # `donto` (ajaxdavis/donto-qwen3.8-27b-predicate-extractor, r=16 a=32) is
+  # exactly that shape — 992 tensors:
+  #     384  linear_attn.in_proj_{qkv,z,a,b}   48 layers   REJECTED
+  #      96  linear_attn.out_proj              48 layers   applied
+  #     384  mlp.{gate,up,down}_proj           64 layers   applied
+  #     128  self_attn.{q,k,v,o}_proj          16 layers   applied
+  # so a partial load applies 608/992 = 61% of the adapter and DOES NOT
+  # reproduce its training behaviour. Treat any eval under it as a lower
+  # bound on the adapter, never as a measurement OF the adapter.
+  if grep -qE 'in_proj_|conv1d' "$APATH/adapter_config.json" 2>/dev/null; then
+    export ATLAS_LORA_ALLOW_PARTIAL="${ATLAS_LORA_ALLOW_PARTIAL:-1}"
+    echo "LoRA: '$ADAPTER' names GDN input-side modules (in_proj_*/conv1d) —" >&2
+    echo "      ATLAS_LORA_ALLOW_PARTIAL=$ATLAS_LORA_ALLOW_PARTIAL, those deltas are SKIPPED." >&2
+    echo "      Output will differ from the adapter's intent. ALLOW_PARTIAL=0 to refuse instead." >&2
+  fi
 fi
 
 if [ "$MODE" = "small" ]; then
