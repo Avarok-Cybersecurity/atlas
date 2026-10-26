@@ -427,7 +427,7 @@ jobs:
           # cargo step now, so the two required checks share ONE toolchain
           # install and ONE cache restore instead of two.
           components: clippy,rustfmt
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       # Lint policy lives in the workspace `Cargo.toml` `[workspace.lints]`
       # block (deny `warnings` + `clippy::all`, with a few targeted
       # allows for kernel-style signatures). Each crate inherits via
@@ -879,7 +879,7 @@ jobs:
         # test job and the benchmark-gate job cannot drift apart.
         run: bash scripts/ci_gpu_stubs.sh
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       # Default `cargo test` skips `#[ignore]`-gated tests, which is
       # exactly what we want — every test that requires a real GPU
       # (spark-runtime, spark-storage, avarok-kernels, avarok-spark-bench
@@ -938,7 +938,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       # FAIL FAST on a runner without the Metal compiler. Without this the
       # absence surfaces as `failed to run custom build command for
       # avarok-kernels` after minutes of dependency compilation, with the real
@@ -1264,7 +1264,7 @@ jobs:
       # and had no cache, so both paid a cold build on every PR. avarok-plugin is
       # host-only and CUDA-free, so the workflow-level AVAROK_SKIP_BUILD=1 is all
       # it needs besides a warm target/.
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           shared-key: pr-categorize
       - name: Collect the changed paths
@@ -1687,7 +1687,7 @@ jobs:
         # re-validates every line and pins the PR number from the run's own API
         # record rather than trusting artifact content.
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: governance-event-pr${{ github.event.pull_request.number }}
           path: governance/pr-${{ github.event.pull_request.number }}.jsonl
@@ -1951,7 +1951,7 @@ jobs:
       - name: Generate no-GPU library stubs
         run: bash scripts/ci_gpu_stubs.sh
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: One PR, one commit, one signer
         # The SIGNATURE binds each record to a commit. This binds the records TO
         # EACH OTHER: without it a PR can present a favourable record measured at
