@@ -926,6 +926,35 @@ mod inter_tool_prose_tests {
 }
 
 #[cfg(test)]
+mod disable_watchdogs_parser_tests {
+    /// `spark-model` cannot depend on this crate, so it carries its own copy of
+    /// the `AVAROK_DISABLE_WATCHDOGS` rule. Pin the two together over one
+    /// input vector so an edit to either goes red here (#1204, item 5).
+    #[test]
+    fn server_and_model_parsers_agree() {
+        for raw in [
+            None,
+            Some("1"),
+            Some("true"),
+            Some("TRUE"),
+            Some(" true "),
+            Some("0"),
+            Some("false"),
+            Some("yes"),
+            Some("on"),
+            Some(""),
+            Some("2"),
+        ] {
+            assert_eq!(
+                super::parse_disable_watchdogs(raw),
+                spark_model::ssm_reserve::watchdogs_disabled_from_value(raw),
+                "{raw:?}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
 mod content_loop_override_tests {
     use super::{
         CONTENT_LOOP_MIN_REPEATS, CONTENT_LOOP_PERIOD_MAX, CONTENT_LOOP_PERIOD_MIN, WatchdogParams,

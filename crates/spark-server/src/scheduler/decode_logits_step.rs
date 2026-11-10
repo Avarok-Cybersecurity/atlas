@@ -415,7 +415,7 @@ pub fn process_decode_logits(
         // prompts a chance to produce content while limiting degenerate loops.
         if !a.inside_thinking && think_end_token == Some(tok) {
             a.think_skip_count += 1;
-            if a.think_skip_count >= 50 {
+            if !sched.levers.disable_watchdogs && a.think_skip_count >= 50 {
                 a.finished = true;
                 // Name the cut — same class as the `<tool_response>` stop
                 // above. `</think>` is NOT eos-registered (see
@@ -956,7 +956,8 @@ pub fn process_decode_logits(
                 (Some(_), None) => true,
                 _ => false,
             };
-            if sched.levers.loop_watchdog()
+            if !sched.levers.disable_watchdogs
+                && sched.levers.loop_watchdog()
                 && !a.finished
                 && !a.inside_thinking
                 && !inside_tool_call
