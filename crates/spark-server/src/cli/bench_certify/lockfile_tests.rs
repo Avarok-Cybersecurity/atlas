@@ -120,6 +120,25 @@ fn a_finished_campaign_with_a_dead_driver_is_reclaimed_at_once() {
     }
 }
 
+/// #1115: certify as a container entrypoint is pid 1 on every run, so the
+/// recorded driver pid is the claimer's own and always answers alive.
+#[test]
+fn a_finished_lock_naming_our_own_pid_is_reclaimed() {
+    let root = tmp();
+    let now = 1_789_313_858;
+    let me = std::process::id();
+    LockGuard::claim(&root, owner("first"), campaign(Some(me)), now, &|_| true)
+        .unwrap()
+        .release_as("campaign_done", now)
+        .unwrap();
+    // Only this process answers alive, as /proc/<own pid> does.
+    let g = LockGuard::claim(&root, owner("second"), campaign(None), now + 5, &|p| {
+        p == me
+    })
+    .unwrap();
+    assert_eq!(g.file().owner.session_id, "second");
+}
+
 #[test]
 fn a_dead_driver_with_an_old_heartbeat_is_reclaimed_and_archived() {
     let root = tmp();

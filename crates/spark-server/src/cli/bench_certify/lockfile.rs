@@ -155,7 +155,12 @@ impl LockGuard {
                 .with_context(|| format!("reading {}", path.display()))?;
             match serde_json::from_str::<LockFile>(&text) {
                 Ok(existing) => {
-                    let alive = existing.campaign.driver_pid.is_some_and(driver_alive);
+                    // A recorded pid equal to ours is us, not the old driver
+                    // (certify is pid 1 on every run as a container entrypoint).
+                    let alive = existing
+                        .campaign
+                        .driver_pid
+                        .is_some_and(|pid| pid != std::process::id() && driver_alive(pid));
                     match classify(&existing, alive, now) {
                         Existing::Live(why) => bail!(
                             "another certification campaign holds {}: {why}. Wait for it, \
