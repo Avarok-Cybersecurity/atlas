@@ -60,6 +60,17 @@
 //! to the dispatch site**, or the loader will have freed the weight that site
 //! wants. `AVAROK_DENSE_FP8_KEEP_NVFP4` is the escape hatch that restores the
 //! pre-#915 behaviour wholesale while such a gap is diagnosed.
+//!
+//! **The native-BF16 dense-FFN overlay (`Bf16Raw` checkpoints) follows the same
+//! rule.** `set_bf16_weights` installs gate/up/down, and every `DenseFfnLayer`
+//! entry point then returns from inside its `bf16_weights` arm: `forward` and
+//! `forward_prefill_inner` branch on it ahead of any NVFP4 read, and
+//! `forward_k2`/`k3`/`km` redirect to `forward_prefill` through
+//! `native_small_batch_uses_prefill`, which is true for a BF16 overlay exactly
+//! as it is for an FP8 one. No batch size and no speculative setting reaches an
+//! NVFP4 kernel, so the runtime-quantized gate/up/down and their transposed
+//! twins (about 2.4 GiB on a 4B model by [`dense_ffn_nvfp4_bytes`], before the
+//! MMQ repacks) are never read. The same escape hatch keeps them.
 
 use crate::layers::ops::GemmDispatch;
 use crate::layers::qwen3_attention::Fp8TwinSet;
@@ -97,6 +108,10 @@ pub struct DenseFp8Inputs {
     /// The native FP8 dense-FFN overlay will be installed on this layer
     /// (`AVAROK_DENSE_FP8=1`, tp_size 1, `Fp8Dequanted`, gate_proj native FP8).
     pub ffn_fp8: bool,
+    /// The native BF16 dense-FFN overlay (`DenseFfnLayer::set_bf16_weights`)
+    /// will be installed on this layer. Exclusive with `ffn_fp8`: BF16 comes
+    /// from `Bf16Raw` checkpoints, FP8 from `Fp8Dequanted` ones.
+    pub ffn_bf16: bool,
     /// The native FP8 attention overlay will be installed on this layer.
     pub attn_fp8: bool,
     /// `AVAROK_DENSE_FP8_KEEP_NVFP4` — restore the pre-#915 behaviour.
@@ -124,10 +139,10 @@ pub struct DenseFp8Inputs {
 impl DenseFp8Plan {
     /// The decision table. Pure — no environment reads, no allocation.
     ///
-    /// * **FFN NVFP4** — unreachable the moment `set_fp8_weights` runs (see the
-    ///   module docs: every entry point returns from inside the FP8 arm and the
-    ///   `w8_gemm!` transposed operands are a literal `None`). Built only under
-    ///   the escape hatch.
+    /// * **FFN NVFP4** — unreachable the moment `set_fp8_weights` or
+    ///   `set_bf16_weights` runs (see the module docs: every entry point
+    ///   returns from inside the native arm and the `w8_gemm!` transposed
+    ///   operands are a literal `None`). Built only under the escape hatch.
     /// * **Attention NVFP4** — `set_fp8_weights` *overwrites*
     ///   `q_weight`/`k_weight`/`v_weight`/`o_weight` with `QuantWeight::Fp8`,
     ///   so the base NVFP4 weights are orphaned at load. The transposed and
@@ -176,7 +191,7 @@ impl DenseFp8Plan {
             }
         };
         Self {
-            ffn_nvfp4: !i.ffn_fp8,
+            ffn_nvfp4: !(i.ffn_fp8 || i.ffn_bf16),
             attn_nvfp4: !i.attn_fp8 || cutlass_nvfp4_attn || i.attn_w4a4,
             attn_fp8_twins: fp8_twins,
         }
@@ -218,6 +233,7 @@ impl RouteEnv {
     pub fn plan(&self, ffn_fp8: bool, attn_fp8: bool, w8a8_kernels: bool) -> DenseFp8Plan {
         DenseFp8Plan::resolve(DenseFp8Inputs {
             ffn_fp8,
+            ffn_bf16: false,
             attn_fp8,
             keep_nvfp4: self.keep_nvfp4,
             dispatch: self.dispatch,
@@ -225,6 +241,24 @@ impl RouteEnv {
             attn_w4a4: self.attn_w4a4,
             attn_prefill_q_t: self.attn_prefill_q_t,
         })
+    }
+
+    /// Whether a dense layer's FFN needs its NVFP4 gate/up/down (and their
+    /// transposed twins) built beside the checkpoint weights. `ffn_fp8` and
+    /// `ffn_bf16` name the native overlay the loader is about to install.
+    /// Asked BEFORE the layer exists, like [`Self::attn_nvfp4`].
+    pub fn ffn_nvfp4(&self, ffn_fp8: bool, ffn_bf16: bool) -> bool {
+        DenseFp8Plan::resolve(DenseFp8Inputs {
+            ffn_fp8,
+            ffn_bf16,
+            attn_fp8: false,
+            keep_nvfp4: self.keep_nvfp4,
+            dispatch: self.dispatch,
+            w8a8_kernels: true,
+            attn_w4a4: self.attn_w4a4,
+            attn_prefill_q_t: self.attn_prefill_q_t,
+        })
+        .ffn_nvfp4
     }
 
     /// The NVFP4 half of the plan. Asked BEFORE the layer exists, so it may

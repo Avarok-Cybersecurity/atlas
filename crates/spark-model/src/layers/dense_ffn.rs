@@ -581,7 +581,9 @@ impl DenseFfnLayer {
         // is dead work — and since #915 the loader installs NULL NVFP4 source
         // weights on that route, over which `ensure_q4k_weight`'s dequant is a
         // CUDA-700 illegal access. Same reason as the packed-Q2 guard above.
-        if self.fp8_weights.is_some() {
+        // Native BF16 overlay: same early return in `forward_prefill_inner`
+        // (the BF16 arm), and the loader installs NULL NVFP4 sources there.
+        if self.fp8_weights.is_some() || self.bf16_weights.is_some() {
             return Ok(());
         }
         let q4k_active = self.q4k_mmq_nc_k.0 != 0
@@ -686,7 +688,8 @@ impl DenseFfnLayer {
         // one is active by DEFAULT wherever the W4A4-MMQ kernels exist — so on
         // a target that ships them it would repack NULL NVFP4 gate/up AND free
         // `_t` copies for a prefill arm the FP8 early-return never reaches.
-        if self.fp8_weights.is_some() {
+        // Native BF16 overlay: as above, the BF16 arm returns first.
+        if self.fp8_weights.is_some() || self.bf16_weights.is_some() {
             return Ok(());
         }
         let active = self.nvfp4_mmq_nc_k.0 != 0
@@ -985,6 +988,11 @@ impl DenseFfnLayer {
     /// `dense_gemv_bf16_k` / `dense_gemm_bf16_k` checks). Small-batch
     /// paths reuse `forward_prefill` so they cannot enter NVFP4 kernels
     /// with the null placeholder weights used by BF16-native layers.
+    ///
+    /// Because every entry point prefers this overlay, the Qwen3.5 dense
+    /// loader builds the layer with NULL NVFP4 weights (no allocation) and
+    /// calls this before the load-time MMQ finalizers, which return early
+    /// once it is set. See `weight_loader/qwen35_dense/fp8_residency.rs`.
     pub fn set_bf16_weights(&mut self, gate: DenseWeight, up: DenseWeight, down: DenseWeight) {
         self.bf16_weights = Some(DenseFfnWeightsBf16 {
             gate_proj: gate,
@@ -1758,7 +1766,9 @@ impl DenseFfnLayer {
                 // the answer must stay `true` or the n=4..8 verify arm in
                 // `multi_seq/ffn.rs:145` would fall through to a DIFFERENT
                 // branch and quietly change the routing this fix must not touch.
-                || self.fp8_weights.is_some())
+                // Same for a native BF16 overlay with no NVFP4 fallback.
+                || self.fp8_weights.is_some()
+                || self.bf16_weights.is_some())
     }
 
     /// K=m (m<=8) speculative verify: batched GEMV for m tokens.
@@ -3105,6 +3115,11 @@ mod fp8_residency_tests;
 #[cfg(test)]
 #[path = "dense_ffn_fp8_down_tests.rs"]
 mod fp8_down_tests;
+
+/// The native-BF16 overlay needs no NVFP4 fallback weights either.
+#[cfg(test)]
+#[path = "dense_ffn_bf16_residency_tests.rs"]
+mod bf16_residency_tests;
 
 #[cfg(test)]
 mod tests {

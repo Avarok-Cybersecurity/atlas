@@ -406,6 +406,9 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
             // grid=[div_ceil(intermediate_size,64),..] on the first prefill.
             // Snapshot fresh D2D copies BEFORE the free (the clone is an
             // independent allocation the layer owns for its lifetime).
+            // When no NVFP4 fallback is built (the default, see `ffn_nvfp4`
+            // below) nothing frees the store buffer, so the overlay aliases
+            // it instead of cloning, as the Laguna and Gemma-4 dense loaders do.
             // Native keep-packed ternary Q2_0 (AVAROK_GGUF_NATIVE_Q2=1): when the
             // GGUF loader tagged gate/up/down as `PackedQ2_0`, DON'T requant to
             // NVFP4 — install the raw 2-bit blocks and dispatch `q2_0_gemv` at
@@ -418,7 +421,17 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
             // Keep-packed projections are 2-bit blocks, not BF16 — there is
             // nothing to snapshot (dense_auto has no PackedQ2_0 arm and would
             // abort the load), and the ffn_q2 arm below owns their compute.
-            let ffn_bf16_snapshot = if !ffn_q2 && matches!(variant, Nvfp4Variant::Bf16Raw) {
+            let ffn_bf16 = !ffn_q2 && matches!(variant, Nvfp4Variant::Bf16Raw);
+            // #915 for the BF16 overlay: every `DenseFfnLayer` entry point
+            // returns from inside its `bf16_weights` arm (`forward_k2`/`k3`/`km`
+            // go through `native_small_batch_uses_prefill`, which is true for a
+            // BF16 overlay), so the runtime-quantized NVFP4 gate/up/down and
+            // their transposed twins (about 2.4 GiB on a 4B model by
+            // `dense_ffn_nvfp4_bytes`, before the MMQ repacks) are unreachable at
+            // any batch size and with or without speculation. The decision
+            // table lives in `fp8_residency.rs`; the hatch keeps the copies.
+            let ffn_nvfp4 = !ffn_q2 && route_env.ffn_nvfp4(ffn_fp8, ffn_bf16);
+            let ffn_bf16_snapshot = if ffn_bf16 {
                 let inter = if config.intermediate_size > 0 {
                     config.intermediate_size
                 } else {
@@ -426,6 +439,11 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                 };
                 let clone_bf16 = |name: &str, rows: usize, cols: usize| -> Result<DenseWeight> {
                     let src = dense_auto(store, &format!("{lp}.mlp.{name}.weight"), gpu)?;
+                    if !ffn_nvfp4 {
+                        // No `quantized_any` runs, so the store buffer stays
+                        // live for the life of the model: alias it.
+                        return Ok(src);
+                    }
                     let bytes = rows * cols * 2; // BF16 = 2 bytes/elem
                     let dst = gpu.alloc(bytes)?;
                     // The whole point of this snapshot is an allocation
@@ -458,8 +476,6 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
             // have redirected to `forward_prefill` since
             // `native_small_batch_uses_prefill` landed. Decision table and the
             // loader-runs-before-dispatch contract: `fp8_residency.rs`.
-            let plan = route_env.plan(ffn_fp8, false, false);
-            let ffn_nvfp4 = !ffn_q2 && plan.ffn_nvfp4;
             let ffn_weights = if ffn_nvfp4 {
                 load_dense_ffn(
                     store, &lp, gpu, variant, absmax_k, quantize_k, stream, config,
@@ -469,7 +485,8 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                 // packed weights; prefill / batched paths bail (Tier-2).
                 // Native FP8: every arm reads the E4M3 bytes installed by
                 // `set_fp8_weights` below. No NVFP4 allocation → memory win.
-                if ffn_fp8 {
+                // Native BF16: same, through `set_bf16_weights` below.
+                if ffn_fp8 || ffn_bf16 {
                     residency.skip(fp8_residency::dense_ffn_nvfp4_bytes(h, ffn_inter(config)));
                 }
                 use crate::weight_map::QuantizedWeight;
@@ -562,6 +579,16 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                     dffn.set_fp8_gate_up_fused(fused);
                 }
             }
+            // Native-BF16 dense-FFN overlay (Bf16Raw, no-metadata Holo dense): install the
+            // live BF16 gate/up/down so forward/forward_prefill's bf16 branch (preferred
+            // over any NVFP4 weight, at every batch size) reads valid memory. Without
+            // `ffn_nvfp4` the layer holds NULL NVFP4 weights and the buffers alias the
+            // store; with it (the KEEP_NVFP4 hatch) they are the D2D snapshot taken
+            // before `load_dense_ffn` freed the store's BF16 buffer. Installed BEFORE the
+            // finalizers below, which are no-ops once a BF16 overlay is present.
+            if let Some((g, u, d)) = ffn_bf16_snapshot {
+                dffn.set_bf16_weights(g, u, d);
+            }
             // AVAROK_FFN_MMQ: eagerly materialize Q4_K + free the dead `_t` copies at load,
             // BEFORE KV cache sizing, so net FFN footprint == NVFP4 baseline (no decode OOM-throttle).
             dffn.finalize_q4k_load(gpu, h as u32, config.intermediate_size as u32, stream)?;
@@ -590,15 +617,6 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                     config.intermediate_size as u32,
                     stream,
                 )?;
-            }
-            // Native-BF16 dense-FFN overlay (Bf16Raw, no-metadata Holo dense): install the
-            // live BF16 gate/up/down snapshot so forward/forward_prefill's bf16 branch
-            // (preferred over the NVFP4 fallback) reads valid memory. The NVFP4 weights built
-            // by load_dense_ffn stay as the spec-decode/batched fallback (never null -> no
-            // CUDA-700 at concurrency). Snapshot was taken before load_dense_ffn freed the
-            // store's BF16 buffer (see ffn_bf16_snapshot above).
-            if let Some((g, u, d)) = ffn_bf16_snapshot {
-                dffn.set_bf16_weights(g, u, d);
             }
             let ffn = FfnComponent::Dense(dffn);
 

@@ -16,6 +16,7 @@ use crate::layers::ops::GemmDispatch;
 fn h100_default() -> DenseFp8Inputs {
     DenseFp8Inputs {
         ffn_fp8: true,
+        ffn_bf16: false,
         attn_fp8: true,
         keep_nvfp4: false,
         dispatch: GemmDispatch::defaults(),
@@ -88,6 +89,54 @@ fn a_non_fp8_layer_keeps_every_nvfp4_copy_and_gets_no_fp8_twins() {
         Fp8TwinSet::NONE,
         "there are no FP8 weights to transpose on a non-FP8 layer"
     );
+}
+
+#[test]
+fn a_native_bf16_ffn_builds_no_nvfp4_fallback() {
+    // `Bf16Raw` checkpoints: the BF16 overlay is installed over the layer and
+    // every entry point returns from its BF16 arm, so the runtime-quantized
+    // NVFP4 gate/up/down and their transposed twins are never read.
+    let p = DenseFp8Plan::resolve(DenseFp8Inputs {
+        ffn_fp8: false,
+        ffn_bf16: true,
+        attn_fp8: false,
+        ..h100_default()
+    });
+    assert!(!p.ffn_nvfp4);
+    assert!(p.attn_nvfp4, "the attention side is a separate decision");
+}
+
+#[test]
+fn the_escape_hatch_keeps_the_nvfp4_copies_under_a_bf16_overlay() {
+    let p = DenseFp8Plan::resolve(DenseFp8Inputs {
+        ffn_fp8: false,
+        ffn_bf16: true,
+        keep_nvfp4: true,
+        ..h100_default()
+    });
+    assert!(p.ffn_nvfp4, "AVAROK_DENSE_FP8_KEEP_NVFP4 keeps every copy");
+}
+
+#[test]
+fn route_env_asks_the_ffn_question_before_the_layer_exists() {
+    let env = RouteEnv {
+        keep_nvfp4: false,
+        dispatch: GemmDispatch::defaults(),
+        attn_w4a4: false,
+        attn_prefill_q_t: false,
+    };
+    // Neither overlay: NVFP4 is the only weight there is.
+    assert!(env.ffn_nvfp4(false, false));
+    // Either native overlay frees the layer from it.
+    assert!(!env.ffn_nvfp4(true, false));
+    assert!(!env.ffn_nvfp4(false, true));
+    // The hatch overrides both.
+    let keep = RouteEnv {
+        keep_nvfp4: true,
+        ..env
+    };
+    assert!(keep.ffn_nvfp4(true, false));
+    assert!(keep.ffn_nvfp4(false, true));
 }
 
 #[test]

@@ -235,6 +235,7 @@ pub fn predicted_derived_bytes(
     // under test; `ffn_nvfp4` is `!ffn_fp8` and is false by construction here.
     let plan = fp8_residency::DenseFp8Plan::resolve(fp8_residency::DenseFp8Inputs {
         ffn_fp8: true,
+        ffn_bf16: false,
         attn_fp8: true,
         keep_nvfp4: false,
         dispatch: route.route.dispatch,
