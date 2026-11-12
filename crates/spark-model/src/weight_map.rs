@@ -11,6 +11,10 @@
 mod expert;
 #[path = "weight_map/fp8_dequant.rs"]
 mod fp8_dequant;
+// The host mirror of the block-scaled FP8 kernels; `pub` so the GPU oracle in
+// `examples/fp8_ada_microtest.rs` can compare device output against it.
+#[path = "weight_map/fp8_blockscale_ref.rs"]
+pub mod fp8_blockscale_ref;
 #[path = "weight_map/fp8_lut.rs"]
 mod fp8_lut;
 pub(crate) use fp8_lut::dequant_nvfp4_to_bf16;
