@@ -406,6 +406,9 @@ impl DenseFfnLayer {
         let dense_gemv_bf16_k = super::try_kernel(gpu, "gemv", "dense_gemv_bf16");
         let dense_gemm_bf16_k = super::try_kernel(gpu, "gemm", "dense_gemm_bf16");
         let dense_gemm_tc_k = super::try_kernel(gpu, "gemm_tc", "dense_gemm_tc");
+        // FP8 GEMV/GEMM handles: the bit-identical sm_89 drop-ins where the
+        // target compiles them (`dense_ffn_ada_kernels.rs`), else gb10's.
+        let fp8k = ada_kernels::Fp8FfnKernels::resolve(gpu);
 
         let layer = Self {
             weights,
@@ -483,7 +486,7 @@ impl DenseFfnLayer {
             dense_gemm_bf16_k,
             dense_gemm_tc_k,
             fp8_weights: None,
-            w8a16_gemv_k: super::try_kernel(gpu, "w8a16_gemv", "w8a16_gemv"),
+            w8a16_gemv_k: fp8k.gemv,
             w8a16_gemm_k: super::try_kernel(gpu, "w8a16_gemm", "w8a16_gemm"),
             w8a16_gemv_batch4_k: super::try_kernel(gpu, "w8a16_gemv_batch4", "w8a16_gemv_batch4"),
             w8a16_gemv_batch16_k: super::try_kernel(gpu, "w8a16_gemv_batch4", "w8a16_gemv_batch16"),
@@ -501,19 +504,11 @@ impl DenseFfnLayer {
                 "w8a16_gemm_pipelined",
                 "w8a16_gemm_pipelined",
             ),
-            w8a16_gemv_dual_k: super::try_kernel(gpu, "w8a16_gemv_fused", "w8a16_gemv_dual"),
-            w8a16_gemv_silu_input_k: super::try_kernel(
-                gpu,
-                "w8a16_gemv_fused",
-                "w8a16_gemv_silu_input",
-            ),
+            w8a16_gemv_dual_k: fp8k.gemv_dual,
+            w8a16_gemv_silu_input_k: fp8k.gemv_silu_input,
             w8a16_gemm_t_m128_k: super::try_kernel(gpu, "w8a16_gemm_t_m128", "w8a16_gemm_t_m128"),
             per_token_group_quant_fp8_k: ops::Fp8ActQuant::resolve(gpu),
-            fp8_gemm_t_blockscaled_k: super::try_kernel(
-                gpu,
-                "fp8_gemm_t_blockscaled",
-                "fp8_gemm_t_blockscaled",
-            ),
+            fp8_gemm_t_blockscaled_k: fp8k.gemm_w8a8,
             fp8_act_scale_kmajor_k: super::try_kernel(
                 gpu,
                 "fp8_scale_transpose",
@@ -3087,6 +3082,11 @@ pub mod m16_tc;
 /// room this file does not have.
 #[path = "dense_ffn_gateup_fused.rs"]
 pub mod gateup_fused;
+
+/// Which FP8 GEMV/GEMM handles the layer takes: the bit-identical sm_89
+/// drop-ins where the target compiles them. A child module for the size cap.
+#[path = "dense_ffn_ada_kernels.rs"]
+pub mod ada_kernels;
 
 /// Native BF16/FP8 overlays take precedence over any NVFP4 fallback weights.
 /// Small batches must use the same format-aware dispatcher as prefill.
