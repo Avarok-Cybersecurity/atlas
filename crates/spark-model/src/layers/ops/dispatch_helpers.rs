@@ -139,8 +139,17 @@ pub fn log_cutlass_nvfp4_route(gpu: &dyn GpuBackend, name: &str, m: u32, n: u32,
 /// Roofline instrumentation: log each unique (kernel, M, N, K) GEMM shape once,
 /// gated by `AVAROK_GEMM_SHAPE_LOG=1`. Used to cross-reference nsys per-call
 /// durations → achieved TFLOPS/bandwidth vs GB10 peak.
+///
+/// The variable is read ONCE per process (`OnceLock`): this runs on every
+/// W8A8 GEMM launch (three per dense-FFN layer per prefill chunk, plus the
+/// attention and GDN projections), and `std::env::var` walks the environment
+/// block and allocates a `String` on each call. A serve never rewrites its own
+/// environment, so the cached answer is the one every call would have read.
 pub fn log_gemm_shape(gpu: &dyn GpuBackend, name: &str, m: u32, n: u32, k: u32) {
-    if std::env::var("AVAROK_GEMM_SHAPE_LOG").ok().as_deref() != Some("1") {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let on =
+        *ON.get_or_init(|| std::env::var("AVAROK_GEMM_SHAPE_LOG").ok().as_deref() == Some("1"));
+    if !on {
         return;
     }
     if gpu.op_cache().first_shape(name, m, n, k) {
