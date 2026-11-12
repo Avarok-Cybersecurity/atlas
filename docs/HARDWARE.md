@@ -472,6 +472,11 @@ Nothing here has run on Ada silicon. `spark serve --check-kernels` on an Ada
 card is what would re-harvest `[expected_absent]`, and the serving defaults are
 the conservative baseline until an Ada A/B moves a row.
 
+The whole consumer-card port (this target, the 16 GB memory fit, the FP8 path
+and the llama.cpp API), with diagrams, the card-run commands and a results
+table to fill, is written up in
+[`docs/porting/consumer-nvidia-ada.md`](porting/consumer-nvidia-ada.md).
+
 ## Adding a new quantization scheme
 
 Atlas supports NVFP4 (E2M1 + FP8 scales), FP8 block-scaled, BF16 raw.
