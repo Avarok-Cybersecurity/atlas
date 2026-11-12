@@ -354,6 +354,9 @@ ffn_bf16_cublas_prefill = false
 # BF16 GDN verify projections on one cuBLASLt GEMM. OFF for want of an H100
 # receipt; a numerics row. `AVAROK_GDN_BATCHED_GEMM=1` is the A/B.
 gdn_batched_gemm = false
+# Gated dense-BF16 Q/K/V on the batched GEMV in multi-seq decode. OFF for
+# want of an H100 receipt; ON on ada. `AVAROK_ATTN_GATED_BF16_BATCHM=1` arms it.
+attn_gated_bf16_batchm = false
 
 # Upper M for the W8A8 block-scaled dense-FFN prefill (#917). NO CAP here:
 # 4294967295 is u32::MAX, which is `build_defaults::baseline`'s value and the

@@ -84,11 +84,14 @@ impl Qwen3AttentionLayer {
             // graph-capture note on branching with the padded ctx `n`.
             self.ms_qkv_batchm_fp8(c)?;
         } else if (2..=8).contains(&n)
-            && !self.gated
+            && self.gated_tier_admits()
             && self.dense_gemv_batchm_k.0 != 0
             && self.qkv_is_dense_bf16()
             && bf16_batchm_enabled()
         {
+            // Gated layers (q_proj emits interleaved [Q|gate]) are admitted by
+            // the `attn_gated_bf16_batchm` row; `ms_qkv_batchm_bf16` then runs
+            // the per-row deinterleave the per-sequence loop runs.
             // BATCHED DENSE-BF16 QKV. Models whose attention weights are plain
             // BF16 (Laguna, native-BF16 Qwen3/Gemma-4/Mistral/...) had NO
             // batched tier here and fell into the per-sequence loop below, so
@@ -144,6 +147,18 @@ impl Qwen3AttentionLayer {
         dense(&self.q_weight) && dense(&self.k_weight) && dense(&self.v_weight)
     }
 
+    /// Whether the batched dense-BF16 tier may take this layer. Ungated layers
+    /// always could. A gated layer needs the `attn_gated_bf16_batchm` row and
+    /// NO quantized sidecar of any kind (the per-sequence gated arm also
+    /// serves packed Q2_0, which `qkv_is_dense_bf16` does not exclude), so
+    /// the tier reads exactly the `attn.{q,k,v}_proj` the loop's dense arm
+    /// reads.
+    pub(super) fn gated_tier_admits(&self) -> bool {
+        crate::layers::ops::attn_gated_bf16_batchm::admits(self.gated, self.gated_bf16_batchm)
+            && (!self.gated
+                || (self.q_weight.is_none() && self.k_weight.is_none() && self.v_weight.is_none()))
+    }
+
     /// Batched dense-BF16 q/k/v for multi-seq decode: ONE pass over each weight
     /// matrix produces all `n` rows, writing straight into the interleaved
     /// `qkv_buf` via the kernel's `out_stride` (so no scratch + scatter, and
@@ -159,6 +174,7 @@ impl Qwen3AttentionLayer {
             n,
             stream,
             h,
+            nq,
             nkv,
             hd,
             bf16,
@@ -199,6 +215,24 @@ impl Qwen3AttentionLayer {
             qkv_buf.offset(q_proj_bytes + kv_bytes),
             kv_dim,
         )?;
+        // Gated: the q rows are RAW interleaved [Q|gate], as the per-sequence
+        // loop's `dense_gemv` leaves them. Split each in place with the same
+        // kernel and arguments that loop uses; with a q adapter resident the
+        // split is deferred past the LoRA fold (`ms_qkv_deinterleave_q`).
+        if self.gated && !self.q_lora_active() {
+            for i in 0..n {
+                ops::deinterleave_qg(
+                    fwd.gpu,
+                    self.deinterleave_qg_k,
+                    qkv_buf.offset(i * per_seq_qkv),
+                    1,
+                    nq,
+                    hd,
+                    q_proj_dim,
+                    stream,
+                )?;
+            }
+        }
         Ok(())
     }
 
@@ -1119,3 +1153,7 @@ impl Qwen3AttentionLayer {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "qkv_bf16_gated_tests.rs"]
+mod bf16_gated_tests;

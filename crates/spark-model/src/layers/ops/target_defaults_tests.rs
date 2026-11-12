@@ -47,6 +47,7 @@ const GB10: TargetDefaults = TargetDefaults {
     dense_fp8_from_bf16: false,
     ffn_bf16_cublas_prefill: false,
     gdn_batched_gemm: false,
+    attn_gated_bf16_batchm: false,
     w8a8_prefill_max_m_widening: 64,
     w8a8_prefill_max_m_narrowing: 384,
 };
@@ -76,6 +77,7 @@ const HOPPER: TargetDefaults = TargetDefaults {
     dense_fp8_from_bf16: false,
     ffn_bf16_cublas_prefill: false,
     gdn_batched_gemm: false,
+    attn_gated_bf16_batchm: false,
     // No cap: W8A8 is 2.0-3.1x over W8A16 at every M measured on H100.
     w8a8_prefill_max_m_widening: u32::MAX,
     w8a8_prefill_max_m_narrowing: u32::MAX,

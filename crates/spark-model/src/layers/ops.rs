@@ -48,6 +48,10 @@ pub mod ffn_bf16_cublas;
 mod fp8_act_quant;
 #[path = "ops/gdn_batched_gemm.rs"]
 pub mod gdn_batched_gemm;
+// The `attn_gated_bf16_batchm` target row: gated dense-BF16 Q/K/V on the
+// batched GEMV in multi-seq decode (ada: on, bit-identical).
+#[path = "ops/attn_gated_bf16_batchm.rs"]
+pub mod attn_gated_bf16_batchm;
 // WHEN the Hopper FP8 act-quant twin runs: the CTA floor, its lever and the
 // route line (#928, round-16 receipt § 2.1). A sibling so neither file crosses
 // the cap.

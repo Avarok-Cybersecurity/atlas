@@ -226,6 +226,15 @@ pub struct TargetDefaults {
     /// logits move. A NUMERICS row with no receipt; `AVAROK_GDN_BATCHED_GEMM=1`
     /// is the A/B.
     pub gdn_batched_gemm: bool,
+    /// Output-gated dense-BF16 attention Q/K/V take the batched
+    /// `dense_gemv_batchm` tier in multi-sequence decode
+    /// (`layers/ops/attn_gated_bf16_batchm.rs`) instead of one GEMV per
+    /// stream. TRUE on ada only: bit-identical there (same kernel source as
+    /// the per-row `dense_gemv_bf16`, built with `--fmad=false`), so it is a
+    /// weight-pass change, not a numerics change. Other targets keep the
+    /// per-sequence loop until measured. `AVAROK_ATTN_GATED_BF16_BATCHM` is
+    /// the A/B.
+    pub attn_gated_bf16_batchm: bool,
     /// Upper `M` for the W8A8 block-scaled dense-FFN prefill on a WIDENING
     /// projection (`n > k`: gate/up). `u32::MAX` = no cap, the baseline.
     ///

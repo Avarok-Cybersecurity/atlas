@@ -277,6 +277,7 @@ impl Qwen3AttentionLayer {
                 "w8a16_gemm_m16_strided",
             ),
             m16_tc: crate::layers::dense_ffn::m16_tc::m16_tc_levers().attn,
+            gated_bf16_batchm: crate::layers::ops::attn_gated_bf16_batchm::row(),
             w8a16_gemv_ncol2_k: super::super::try_target_kernel(
                 gpu,
                 "w8a16_gemv_ncol",

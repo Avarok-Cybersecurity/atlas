@@ -268,6 +268,9 @@ fn every_declaring_target_states_every_lever() {
             // The BF16 GDN verify projections on one cuBLASLt GEMM. FALSE on
             // every target (a numerics row with no receipt), stated everywhere.
             "gdn_batched_gemm",
+            // Gated dense-BF16 Q/K/V on the batched GEMV. TRUE on ada
+            // (bit-identical there), FALSE elsewhere, stated everywhere.
+            "attn_gated_bf16_batchm",
         ] {
             assert!(
                 raw.contains(&format!("\n{lever} = ")),
@@ -405,6 +408,7 @@ fn the_generated_constant_names_every_field() {
         "dense_fp8_from_bf16: false",
         "ffn_bf16_cublas_prefill: false",
         "gdn_batched_gemm: false",
+        "attn_gated_bf16_batchm: false",
         "w8a8_prefill_max_m_widening: 4294967295",
         "w8a8_prefill_max_m_narrowing: 4294967295",
     ] {
@@ -440,6 +444,10 @@ fn the_baked_constant_matches_its_own_hardware_tree() {
     );
     assert_eq!(baked.gdn_batched_gemm, declared.gdn_batched_gemm);
     assert_eq!(
+        baked.attn_gated_bf16_batchm,
+        declared.attn_gated_bf16_batchm
+    );
+    assert_eq!(
         baked.w8a8_prefill_max_m_widening,
         declared.w8a8_prefill_max_m_widening
     );
@@ -469,14 +477,20 @@ fn b300_declares_conservative_defaults_until_measured_on_b300() {
 fn ada_declares_conservative_defaults_apart_from_its_measured_rows() {
     let d = declared("ada");
     assert!(d.ffn_bf16_cublas_prefill, "the measured ada prefill win");
+    assert!(
+        d.attn_gated_bf16_batchm,
+        "bit-identical on ada: same kernel source, --fmad=false"
+    );
     let normalised = Defaults {
         ffn_bf16_cublas_prefill: false,
+        attn_gated_bf16_batchm: false,
         ..d
     };
     assert_eq!(normalised, baseline("ada"));
     assert_eq!(read_sm_count(&kernels_root(), "ada"), 34);
     for hw in ["gb10", "hopper", "b200", "b300"] {
         assert!(!declared(hw).ffn_bf16_cublas_prefill, "{hw}");
+        assert!(!declared(hw).attn_gated_bf16_batchm, "{hw}");
     }
     // The GDN verify GEMM row has no receipt on any target, ada included.
     for hw in ["ada", "gb10", "hopper", "b200", "b300"] {

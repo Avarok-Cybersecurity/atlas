@@ -220,6 +220,11 @@ pub struct Qwen3AttentionLayer {
     /// single lever could ship only both or neither. A field, not a per-call env
     /// read, so the route cannot vary across CUDA-graph replays.
     pub(super) m16_tc: bool,
+    /// The `attn_gated_bf16_batchm` target row (`layers/ops/attn_gated_bf16_
+    /// batchm.rs`), cached at construction: gated dense-BF16 Q/K/V take the
+    /// batched `dense_gemv_batchm` tier in multi-seq decode. A field, so the
+    /// route cannot vary across CUDA-graph replays and tests can drive it.
+    pub(super) gated_bf16_batchm: bool,
     /// N-column-blocked W8A16 GEMVs (#927) — the BIT-EXACT sibling of
     /// `w8a16_gemv_batch16`, contiguous (o_proj) and strided (multi-seq Q/K/V)
     /// at 5..=16 rows. Zero on a shadow without the entry points, which keeps
