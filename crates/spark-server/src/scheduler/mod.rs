@@ -47,6 +47,7 @@ mod mtp_accept_debug;
 mod mtp_bootstrap_step;
 mod mtp_dcut;
 mod mtp_gate;
+mod mtp_stats;
 mod mtp_step;
 pub(crate) mod mtp_timing;
 mod phase_continue_prefills;
@@ -851,20 +852,16 @@ pub fn run(
                     if (dflash_pin || mtp_gate::entry_pin_forces_verify(min_post_think_emitted))
                         && gate.next_step() == mtp_gate::GateStep::MeasureDecode
                     {
-                        let lens_before: Vec<usize> =
-                            active.iter().map(|a| a.seq.seq_len).collect();
-                        step_mtp(
-                            &*model,
-                            &mut active,
-                            &sched,
-                            num_drafts,
-                            &verify_ctx,
-                            dflash_verify_raw_argmax,
-                        );
-                        for (a, &b) in active.iter_mut().zip(lens_before.iter()) {
-                            a.mtp_acct
-                                .record_verify_emitted(a.seq.seq_len.saturating_sub(b));
-                        }
+                        mtp_stats::account_step(&mut active, &sched.timing, |act| {
+                            step_mtp(
+                                &*model,
+                                act,
+                                &sched,
+                                num_drafts,
+                                &verify_ctx,
+                                dflash_verify_raw_argmax,
+                            )
+                        });
                     } else {
                         match gate.next_step() {
                             mtp_gate::GateStep::MeasureDecode => {
@@ -944,27 +941,18 @@ pub fn run(
                                 // on tokens-per-second, so counting only active[0]
                                 // under-reports MTP's throughput by a factor of n and
                                 // biases the gate toward serial decode.
-                                let lens_before: Vec<usize> =
-                                    active.iter().map(|a| a.seq.seq_len).collect();
-                                let t0 = std::time::Instant::now();
-                                step_mtp(
-                                    &*model,
-                                    &mut active,
-                                    &sched,
-                                    num_drafts,
-                                    &verify_ctx,
-                                    dflash_verify_raw_argmax,
-                                );
-                                let emitted: usize = active
-                                    .iter()
-                                    .zip(lens_before.iter())
-                                    .map(|(a, &b)| a.seq.seq_len.saturating_sub(b))
-                                    .sum();
-                                gate.record_verify_step(t0.elapsed(), emitted, active.len());
-                                for (a, &b) in active.iter_mut().zip(lens_before.iter()) {
-                                    a.mtp_acct
-                                        .record_verify_emitted(a.seq.seq_len.saturating_sub(b));
-                                }
+                                let (wall, emitted) =
+                                    mtp_stats::account_step(&mut active, &sched.timing, |act| {
+                                        step_mtp(
+                                            &*model,
+                                            act,
+                                            &sched,
+                                            num_drafts,
+                                            &verify_ctx,
+                                            dflash_verify_raw_argmax,
+                                        )
+                                    });
+                                gate.record_verify_step(wall, emitted, active.len());
                             }
                         }
                     }
@@ -973,7 +961,19 @@ pub fn run(
                     // state resync before the next plain decode reads it.
                     // Serial->Mtp needs nothing (the next MTP step
                     // bootstraps from empty pending_drafts).
-                    if gate.take_fresh_decision() == Some(mtp_gate::GateDecision::DisableMtp) {
+                    let decision = gate.take_fresh_decision();
+                    if let Some(d) = decision {
+                        mtp_stats::note_gate_decision(
+                            &mut active,
+                            d == mtp_gate::GateDecision::DisableMtp,
+                        );
+                    }
+                    mtp_stats::note_gate_estimates(
+                        &mut active,
+                        gate.mtp_tps_debug(),
+                        gate.serial_tps_debug(),
+                    );
+                    if decision == Some(mtp_gate::GateDecision::DisableMtp) {
                         for a in active.iter_mut() {
                             a.pending_drafts.clear();
                             a.pending_draft_conf.clear();
@@ -984,19 +984,16 @@ pub fn run(
                     }
                 } else {
                     // Gate bypassed (AVAROK_MTP_GATE_FORCE=1): plain MTP.
-                    let lens_before: Vec<usize> = active.iter().map(|a| a.seq.seq_len).collect();
-                    step_mtp(
-                        &*model,
-                        &mut active,
-                        &sched,
-                        num_drafts,
-                        &verify_ctx,
-                        dflash_verify_raw_argmax,
-                    );
-                    for (a, &b) in active.iter_mut().zip(lens_before.iter()) {
-                        a.mtp_acct
-                            .record_verify_emitted(a.seq.seq_len.saturating_sub(b));
-                    }
+                    mtp_stats::account_step(&mut active, &sched.timing, |act| {
+                        step_mtp(
+                            &*model,
+                            act,
+                            &sched,
+                            num_drafts,
+                            &verify_ctx,
+                            dflash_verify_raw_argmax,
+                        )
+                    });
                 }
             } else {
                 // Batch decode (no MTP). Clear stale drafts when transitioning out of MTP mode.

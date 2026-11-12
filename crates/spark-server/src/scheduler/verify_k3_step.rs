@@ -191,6 +191,9 @@ pub fn step_verify_k3(
             }
         }
     };
+    sched
+        .timing
+        .record(crate::scheduler::mtp_timing::Phase::VerifyForward, t_verify);
     let verify_us = t_verify.elapsed().as_micros();
     a.last_token_time = Instant::now();
     let (v0_argmax, v1_argmax, v2_argmax) = (result_vec[0], result_vec[1], result_vec[2]);
@@ -364,6 +367,9 @@ pub fn step_verify_k3(
                 tracing::error!("run_mtp_propose_multi: {e:#}");
             }
         }
+        sched
+            .timing
+            .record(crate::scheduler::mtp_timing::Phase::Propose, t_propose);
         let propose_us = t_propose.elapsed().as_micros();
         tracing::debug!(
             "K3 ACCEPT-2: verify={verify_us}μs propose={propose_us}μs seq_len={}",
@@ -414,6 +420,9 @@ pub fn step_verify_k3(
                 tracing::error!("run_mtp_propose_multi: {e:#}");
             }
         }
+        sched
+            .timing
+            .record(crate::scheduler::mtp_timing::Phase::Propose, t_propose);
         let propose_us = t_propose.elapsed().as_micros();
         tracing::debug!(
             "K3 ACCEPT-1: verify={verify_us}μs propose={propose_us}μs seq_len={}",
@@ -462,6 +471,9 @@ pub fn step_verify_k3(
                 tracing::error!("run_mtp_propose_multi: {e:#}");
             }
         }
+        sched
+            .timing
+            .record(crate::scheduler::mtp_timing::Phase::Propose, t_propose);
         let propose_us = t_propose.elapsed().as_micros();
         tracing::debug!(
             "K3 REJECT: verify={verify_us}μs propose={propose_us}μs seq_len={}",

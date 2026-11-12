@@ -186,6 +186,9 @@ pub(super) fn k4_apply_verdict(
                 tracing::error!("run_mtp_propose_multi: {e:#}");
             }
         }
+        sched
+            .timing
+            .record(crate::scheduler::mtp_timing::Phase::Propose, t_propose);
         let propose_us = t_propose.elapsed().as_micros();
         tracing::debug!(
             "K{k_rows} ACCEPT-{na}: verify={verify_us}μs propose={propose_us}μs seq_len={}",

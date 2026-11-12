@@ -88,6 +88,9 @@ pub fn step_verify_k4(
             }
         }
     };
+    sched
+        .timing
+        .record(crate::scheduler::mtp_timing::Phase::VerifyForward, t_verify);
     let verify_us = t_verify.elapsed().as_micros();
     a.last_token_time = Instant::now();
     let (v0_argmax, v1_argmax, v2_argmax, v3_argmax) =

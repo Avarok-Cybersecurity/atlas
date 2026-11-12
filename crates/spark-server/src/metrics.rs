@@ -4,8 +4,8 @@
 
 use lazy_static::lazy_static;
 use prometheus::{
-    HistogramVec, IntCounter, IntCounterVec, IntGauge, register_histogram_vec,
-    register_int_counter, register_int_counter_vec, register_int_gauge,
+    GaugeVec, HistogramVec, IntCounter, IntCounterVec, IntGauge, register_gauge_vec,
+    register_histogram_vec, register_int_counter, register_int_counter_vec, register_int_gauge,
 };
 
 lazy_static! {
@@ -94,6 +94,51 @@ lazy_static! {
             "atlas_spec_decode_verify_total",
             "MTP draft verify outcomes by K and result",
             &["k", "outcome"]
+        ).unwrap();
+
+    // ── MTP speculation accounting (scheduler::mtp_stats) ──
+    //
+    // Process totals across every K and batch width, advanced once per MTP
+    // step. accept rate = accepted / proposed; tokens per verify pass =
+    // committed / verify_passes. Stage time is the step's wall per stage,
+    // charged once per step (not once per sequence in the batch).
+    pub static ref MTP_VERIFY_PASSES: IntCounter =
+        register_int_counter!(
+            "atlas_mtp_verify_passes_total",
+            "Per-sequence MTP verify passes (steps that verified at least one draft)"
+        ).unwrap();
+    pub static ref MTP_DRAFTS_PROPOSED: IntCounter =
+        register_int_counter!(
+            "atlas_mtp_drafts_proposed_total",
+            "MTP draft tokens checked by a verify pass"
+        ).unwrap();
+    pub static ref MTP_DRAFTS_ACCEPTED: IntCounter =
+        register_int_counter!(
+            "atlas_mtp_drafts_accepted_total",
+            "MTP draft tokens the verify pass accepted"
+        ).unwrap();
+    pub static ref MTP_TOKENS_COMMITTED: IntCounter =
+        register_int_counter!(
+            "atlas_mtp_tokens_committed_total",
+            "Tokens committed by MTP verify passes (accepted drafts plus one per pass)"
+        ).unwrap();
+    pub static ref MTP_STAGE_MICROS: IntCounterVec =
+        register_int_counter_vec!(
+            "atlas_mtp_stage_microseconds_total",
+            "Wall time of MTP steps by stage (draft, verify, commit)",
+            &["stage"]
+        ).unwrap();
+    pub static ref MTP_GATE_DECISIONS: IntCounterVec =
+        register_int_counter_vec!(
+            "atlas_mtp_gate_decisions_total",
+            "MTP throughput-gate mode switches (disable = to serial, enable = to MTP)",
+            &["decision"]
+        ).unwrap();
+    pub static ref MTP_GATE_TPS: GaugeVec =
+        register_gauge_vec!(
+            "atlas_mtp_gate_tokens_per_second",
+            "The MTP gate's delivered-throughput estimate per mode",
+            &["mode"]
         ).unwrap();
 
     // ── Tool-call telemetry ──
