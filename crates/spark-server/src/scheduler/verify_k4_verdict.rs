@@ -121,7 +121,12 @@ pub(super) fn k4_apply_verdict(
         // Item #2 (STree-style in-place verify commit). Full accept
         // (num_accepted == k): the verify kernel already wrote the canonical
         // h_state, so the commit is a no-op.
-        if let Err(e) = model.commit_accepted_prefix(&mut a.seq, k_rows, k_rows) {
+        let t_commit = Instant::now();
+        let committed = model.commit_accepted_prefix(&mut a.seq, k_rows, k_rows);
+        sched
+            .timing
+            .record(crate::scheduler::mtp_timing::Phase::Commit, t_commit);
+        if let Err(e) = committed {
             // SSM state is no longer trustworthy — terminate, do not continue.
             tracing::error!("commit_accepted_prefix (K={k_rows} accept-{k_rows}): {e:#}");
             a.finished = true;
@@ -138,7 +143,12 @@ pub(super) fn k4_apply_verdict(
         }
         // Item #2: rewind live h_state to intermediate[na] (state after the
         // last accepted row — the correction token v[na] is row na).
-        if let Err(e) = model.commit_accepted_prefix(&mut a.seq, na + 1, k_rows) {
+        let t_commit = Instant::now();
+        let committed = model.commit_accepted_prefix(&mut a.seq, na + 1, k_rows);
+        sched
+            .timing
+            .record(crate::scheduler::mtp_timing::Phase::Commit, t_commit);
+        if let Err(e) = committed {
             tracing::error!(
                 "commit_accepted_prefix (K={k_rows} accept-{}): {e:#}",
                 na + 1
