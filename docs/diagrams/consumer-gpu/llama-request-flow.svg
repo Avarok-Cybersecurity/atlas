@@ -1,0 +1,180 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 900" width="1200" height="900" font-family="Inter, ui-sans-serif, system-ui, Segoe UI, Helvetica, Arial, sans-serif" role="img" aria-labelledby="t d">
+  <title id="t">A llama.cpp /completion request through Atlas</title>
+  <desc id="d">A POST /completion passes three path-based guards: the bearer-token check, which now covers the llama.cpp routes when --require-auth is on; the rate limiter, which counts /completion as inference; and the GPU fault latch, which answers 503 once the GPU has faulted. The handler reads the raw body, parses it field by field, and refuses with HTTP 400 in llama.cpp's error envelope any field that would change the output and has no Atlas equivalent. json_schema and grammar are parsed by XGrammar before queueing. The prompt is tokenized and the request is built by the same builder the OpenAI completions route uses and sent to the same scheduler. Token events come back through a stop matcher that cancels generation when a stop string completes, and the answer is either one JSON body or bare server-sent events.</desc>
+
+  <defs>
+    <marker id="tipInk" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#C9CCD4"/>
+    </marker>
+    <marker id="tipRed" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#F28B82"/>
+    </marker>
+    <marker id="tipGold" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#EFB338"/>
+    </marker>
+  </defs>
+
+  <rect width="1200" height="900" fill="#0F1216"/>
+
+  <text x="40" y="44" font-size="23" font-weight="650" fill="#C9CCD4">A llama.cpp request through Atlas</text>
+  <text x="40" y="66" font-size="13.5" fill="#82868F">POST /completion, from the socket to the scheduler and back. Gold is new code; the scheduler is shared and unchanged.</text>
+
+  <!-- ===== row 1: the guards ===== -->
+  <text x="40" y="104" font-size="12" font-weight="650" fill="#82868F">MIDDLEWARE, BY PATH</text>
+
+  <rect x="40" y="116" width="150" height="64" rx="4" fill="#1E242B" stroke="#2E353F"/>
+  <text x="56" y="140" font-size="12.5" font-weight="650" fill="#C9CCD4">Client</text>
+  <text x="56" y="158" font-size="11" fill="#82868F">any llama-server</text>
+  <text x="56" y="172" font-size="11" fill="#82868F">client, unchanged</text>
+
+  <rect x="226" y="116" width="290" height="64" rx="4" fill="#1E242B" stroke="#EFB338"/>
+  <text x="242" y="140" font-size="12.5" font-weight="650" fill="#C9CCD4">Bearer token (--require-auth)</text>
+  <text x="242" y="158" font-size="11" fill="#82868F">/completion(s), /apply-template, /props,</text>
+  <text x="242" y="172" font-size="11" fill="#82868F">/embedding(s); /health stays public</text>
+
+  <rect x="552" y="116" width="250" height="64" rx="4" fill="#1E242B" stroke="#EFB338"/>
+  <text x="568" y="140" font-size="12.5" font-weight="650" fill="#C9CCD4">Rate limiter</text>
+  <text x="568" y="158" font-size="11" fill="#82868F">/completion(s) count as inference</text>
+  <text x="568" y="172" font-size="11" fill="#82868F">and take a slot, like /v1/*</text>
+
+  <rect x="838" y="116" width="322" height="64" rx="4" fill="#1E242B" stroke="#EFB338"/>
+  <text x="854" y="140" font-size="12.5" font-weight="650" fill="#C9CCD4">GPU fault latch</text>
+  <text x="854" y="158" font-size="11" fill="#82868F">after a GPU fault, inference routes get 503;</text>
+  <text x="854" y="172" font-size="11" fill="#82868F">/health keeps answering so it can say why</text>
+
+  <g stroke="#C9CCD4" stroke-width="1.5" fill="none">
+    <path d="M 190 148 L 222 148" marker-end="url(#tipInk)"/>
+    <path d="M 516 148 L 548 148" marker-end="url(#tipInk)"/>
+    <path d="M 802 148 L 834 148" marker-end="url(#tipInk)"/>
+  </g>
+  <!-- refusals of row 1 -->
+  <g font-size="11.5" font-weight="650">
+    <path d="M 371 180 L 371 206" stroke="#F28B82" stroke-width="1.5" marker-end="url(#tipRed)"/>
+    <text x="380" y="204" fill="#F28B82">401</text>
+    <path d="M 677 180 L 677 206" stroke="#F28B82" stroke-width="1.5" marker-end="url(#tipRed)"/>
+    <text x="686" y="204" fill="#F28B82">429</text>
+    <path d="M 999 180 L 999 206" stroke="#F28B82" stroke-width="1.5" marker-end="url(#tipRed)"/>
+    <text x="1008" y="204" fill="#F28B82">503</text>
+  </g>
+
+  <rect x="40" y="218" width="1080" height="64" rx="4" fill="#3A2C14" stroke="#EFB338"/>
+  <text x="56" y="238" font-size="12.5" font-weight="650" fill="#EFB338">The security fix</text>
+  <text x="56" y="256" font-size="11.5" fill="#C9CCD4">These guards matched "/v1/*" plus /tokenize and /detokenize. A root-level route would have been open: --require-auth would have left /completion,</text>
+  <text x="56" y="272" font-size="11.5" fill="#C9CCD4">a text-generation endpoint, with no token check. One list, llama_compat::paths, now feeds all three guards, and middleware tests pin it.</text>
+
+  <!-- connector down to handler -->
+  <path d="M 1120 180 C 1190 196, 1190 300, 1120 314" fill="none" stroke="#C9CCD4" stroke-width="1.5" marker-end="url(#tipInk)"/>
+
+  <!-- ===== row 2: the handler ===== -->
+  <text x="40" y="304" font-size="12" font-weight="650" fill="#82868F">HANDLER: api/llama_compat/completion.rs</text>
+
+  <rect x="860" y="316" width="300" height="82" rx="4" fill="#1E242B" stroke="#EFB338"/>
+  <text x="876" y="340" font-size="12.5" font-weight="650" fill="#C9CCD4">Read the body</text>
+  <text x="876" y="358" font-size="11" fill="#82868F">raw bytes, so a request with no JSON</text>
+  <text x="876" y="372" font-size="11" fill="#82868F">content type still works, as in</text>
+  <text x="876" y="386" font-size="11" fill="#82868F">llama-server</text>
+
+  <rect x="450" y="316" width="374" height="82" rx="4" fill="#1E242B" stroke="#EFB338"/>
+  <text x="466" y="340" font-size="12.5" font-weight="650" fill="#C9CCD4">Parse every field: honored, no-op or refused</text>
+  <text x="466" y="358" font-size="11" fill="#82868F">honored: sampling, stop, logit_bias, n_probs (max 20), seed</text>
+  <text x="466" y="372" font-size="11" fill="#82868F">no-op accepted: cache_prompt, n_keep, id_slot, ...</text>
+  <text x="466" y="386" font-size="11" fill="#82868F">refused unless off: mirostat, xtc, typical_p, ignore_eos, ...</text>
+
+  <rect x="40" y="316" width="374" height="82" rx="4" fill="#1E242B" stroke="#EFB338"/>
+  <text x="56" y="340" font-size="12.5" font-weight="650" fill="#C9CCD4">Constrained output, checked first</text>
+  <text x="56" y="358" font-size="11" fill="#82868F">json_schema and grammar go through XGrammar's own</text>
+  <text x="56" y="372" font-size="11" fill="#82868F">parsers before queueing. Both at once, unparseable, or</text>
+  <text x="56" y="386" font-size="11" fill="#82868F">no grammar engine at startup: 400, never free text.</text>
+
+  <g stroke="#C9CCD4" stroke-width="1.5" fill="none">
+    <path d="M 860 357 L 828 357" marker-end="url(#tipInk)"/>
+    <path d="M 450 357 L 418 357" marker-end="url(#tipInk)"/>
+  </g>
+
+  <!-- the 400 envelope -->
+  <path d="M 637 398 L 637 424" stroke="#F28B82" stroke-width="1.5" marker-end="url(#tipRed)"/>
+  <path d="M 227 398 L 227 424" stroke="#F28B82" stroke-width="1.5" marker-end="url(#tipRed)"/>
+  <rect x="160" y="428" width="664" height="68" rx="4" fill="#3A2224" stroke="#F28B82"/>
+  <text x="176" y="450" font-size="12.5" font-weight="650" fill="#F28B82">HTTP 400 in llama.cpp's envelope, naming the field</text>
+  <text x="176" y="472" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#C9CCD4">{"error": {"code": 400, "type": "invalid_request_error",</text>
+  <text x="176" y="488" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#C9CCD4"> "message": "'mirostat' is not supported by Atlas: ..."}}</text>
+
+  <rect x="860" y="428" width="300" height="68" rx="4" fill="#171B21" stroke="#2E353F"/>
+  <text x="876" y="450" font-size="12" font-weight="650" fill="#C9CCD4">Why refuse instead of ignore</text>
+  <text x="876" y="468" font-size="11" fill="#82868F">a client that asked for mirostat and got</text>
+  <text x="876" y="482" font-size="11" fill="#82868F">plain sampling would never find out</text>
+
+  <!-- ===== row 3: build and queue ===== -->
+  <path d="M 100 398 L 100 528" fill="none" stroke="#C9CCD4" stroke-width="1.5" marker-end="url(#tipInk)"/>
+  <text x="108" y="466" font-size="10.5" fill="#82868F">valid</text>
+
+  <rect x="40" y="532" width="250" height="96" rx="4" fill="#1E242B" stroke="#EFB338"/>
+  <text x="56" y="556" font-size="12.5" font-weight="650" fill="#C9CCD4">Tokenize the prompt</text>
+  <text x="56" y="574" font-size="11" fill="#82868F">a string gets add_special (BOS</text>
+  <text x="56" y="588" font-size="11" fill="#82868F">where the tokenizer adds one);</text>
+  <text x="56" y="602" font-size="11" fill="#82868F">token ids pass through; several</text>
+  <text x="56" y="616" font-size="11" fill="#82868F">prompts in one request: 400</text>
+
+  <rect x="326" y="532" width="300" height="96" rx="4" fill="#1E242B" stroke="#EFB338"/>
+  <text x="342" y="556" font-size="12.5" font-weight="650" fill="#C9CCD4">Build the scheduler request</text>
+  <text x="342" y="574" font-size="11" fill="#82868F">build_streaming_request, the builder</text>
+  <text x="342" y="588" font-size="11" fill="#82868F">/v1/completions uses; the DRY fields</text>
+  <text x="342" y="602" font-size="11" fill="#82868F">are set after it. Stop strings are not</text>
+  <text x="342" y="616" font-size="11" fill="#82868F">passed as scheduler stop tokens.</text>
+
+  <rect x="662" y="532" width="498" height="96" rx="4" fill="#171B21" stroke="#82868F" stroke-dasharray="5 4"/>
+  <text x="678" y="556" font-size="12.5" font-weight="650" fill="#C9CCD4">Shared scheduler (unchanged)</text>
+  <text x="678" y="574" font-size="11" fill="#82868F">InferenceRequest::Streaming on request_tx: the same queue, batching,</text>
+  <text x="678" y="588" font-size="11" fill="#82868F">sampling, grammar engine and logprobs as every OpenAI route. A full</text>
+  <text x="678" y="602" font-size="11" fill="#82868F">queue is a 503 unavailable_error. Token events come back on a</text>
+  <text x="678" y="616" font-size="11" fill="#82868F">channel, with a cancel_flag the handler may set.</text>
+
+  <g stroke="#C9CCD4" stroke-width="1.5" fill="none">
+    <path d="M 290 580 L 322 580" marker-end="url(#tipInk)"/>
+    <path d="M 626 580 L 658 580" marker-end="url(#tipInk)"/>
+  </g>
+
+  <!-- ===== row 4: back out ===== -->
+  <path d="M 911 628 L 911 660" stroke="#C9CCD4" stroke-width="1.5" marker-end="url(#tipInk)"/>
+  <text x="922" y="650" font-size="10.5" fill="#82868F">StreamEvent per token</text>
+
+  <rect x="662" y="664" width="498" height="96" rx="4" fill="#1E242B" stroke="#EFB338"/>
+  <text x="678" y="688" font-size="12.5" font-weight="650" fill="#C9CCD4">Stop matcher on the decoded text</text>
+  <text x="678" y="706" font-size="11" fill="#82868F">holds back only text that could still become a stop string. On a</text>
+  <text x="678" y="720" font-size="11" fill="#82868F">match it sets cancel_flag, drops the stop from content, and reports</text>
+  <text x="678" y="734" font-size="11" fill="#82868F">stop_type "word" and stopping_word, as llama.cpp does. Probabilities</text>
+  <text x="678" y="748" font-size="11" fill="#82868F">become completion_probabilities, one entry per token.</text>
+
+  <path d="M 662 712 L 630 712" stroke="#C9CCD4" stroke-width="1.5" marker-end="url(#tipInk)"/>
+  <path d="M 680 628 C 640 640, 640 660, 662 676" fill="none" stroke="#EFB338" stroke-width="1.5" stroke-dasharray="4 3" marker-start="url(#tipGold)"/>
+  <text x="560" y="652" font-size="10.5" fill="#EFB338">cancel on a stop</text>
+
+  <rect x="326" y="664" width="300" height="96" rx="4" fill="#1E242B" stroke="#EFB338"/>
+  <text x="342" y="688" font-size="12.5" font-weight="650" fill="#C9CCD4">"stream": true</text>
+  <text x="342" y="706" font-size="11" fill="#82868F">bare SSE frames, data: {json}, one</text>
+  <text x="342" y="720" font-size="11" fill="#82868F">per token, a closing frame with</text>
+  <text x="342" y="734" font-size="11" fill="#82868F">stop: true, and no [DONE], as</text>
+  <text x="342" y="748" font-size="11" fill="#82868F">llama-server sends them</text>
+
+  <rect x="40" y="664" width="250" height="96" rx="4" fill="#1E242B" stroke="#EFB338"/>
+  <text x="56" y="688" font-size="12.5" font-weight="650" fill="#C9CCD4">"stream": false</text>
+  <text x="56" y="706" font-size="11" fill="#82868F">the same events, collected into</text>
+  <text x="56" y="720" font-size="11" fill="#82868F">one body: content, stop_type,</text>
+  <text x="56" y="734" font-size="11" fill="#82868F">tokens_evaluated, timings and</text>
+  <text x="56" y="748" font-size="11" fill="#82868F">generation_settings</text>
+  <path d="M 326 712 L 294 712" stroke="#C9CCD4" stroke-width="1.5" marker-end="url(#tipInk)"/>
+
+  <!-- ===== footer: the other routes ===== -->
+  <text x="40" y="796" font-size="13.5" font-weight="650" fill="#C9CCD4">The other routes</text>
+  <g font-size="11.5">
+    <text x="40" y="818" fill="#C9CCD4">/tokenize, /detokenize</text>
+    <text x="230" y="818" fill="#82868F">both dialects on one path: a body with "content" is llama.cpp's; /detokenize answers "content" and Atlas's "text"</text>
+    <text x="40" y="838" fill="#C9CCD4">/apply-template, /props</text>
+    <text x="230" y="838" fill="#82868F">the chat renderer's prompt; the server's real defaults, n_ctx (--max-seq-len) and total_slots (--max-num-seqs)</text>
+    <text x="40" y="858" fill="#C9CCD4">/embedding(s)</text>
+    <text x="230" y="858" fill="#82868F">501 not_supported_error: Atlas serves generative models only, and llama-server says the same when embeddings are off</text>
+    <text x="40" y="878" fill="#C9CCD4">/health</text>
+    <text x="230" y="878" fill="#82868F">200 {"status": "ok"} when ready (was "ready"); 503 while loading or after a fault, with llama.cpp's error object</text>
+  </g>
+</svg>

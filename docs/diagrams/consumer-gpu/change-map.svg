@@ -1,0 +1,179 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 800" width="1200" height="800" font-family="Inter, ui-sans-serif, system-ui, Segoe UI, Helvetica, Arial, sans-serif" role="img" aria-labelledby="t d">
+  <title id="t">Atlas on consumer NVIDIA cards: the change map</title>
+  <desc id="d">Six layers of Atlas, from the HTTP server down to the build tooling, with every change of the consumer-GPU work placed in its layer and colored by its group: the Ada target, the 16 GB memory fit, the portability probe, llama.cpp server compatibility and the FP8 path. The scheduler and kernels/gb10/common are unchanged.</desc>
+
+  <rect width="1200" height="800" fill="#0F1216"/>
+
+  <text x="40" y="44" font-size="23" font-weight="650" fill="#C9CCD4">What changed, layer by layer</text>
+  <text x="40" y="66" font-size="13.5" fill="#82868F">Every change of the consumer-GPU work, placed in the layer it touches. Color is the change group.</text>
+
+  <!-- layer labels -->
+  <g font-size="13" font-weight="650" fill="#C9CCD4">
+    <text x="40" y="128">HTTP server</text>
+    <text x="40" y="244">Scheduler</text>
+    <text x="40" y="314">Model loader</text>
+    <text x="40" y="474">Kernel runtime</text>
+    <text x="40" y="556">Kernel trees</text>
+    <text x="40" y="656">Tooling and docs</text>
+  </g>
+  <g font-size="11" fill="#82868F">
+    <text x="40" y="146">spark-server</text>
+    <text x="40" y="262">spark-server</text>
+    <text x="40" y="332">spark-model</text>
+    <text x="40" y="492">avarok-core, avarok-plugin</text>
+    <text x="40" y="574">kernels/</text>
+    <text x="40" y="674">scripts/, docs/</text>
+  </g>
+
+  <!-- layer separators -->
+  <g stroke="#2E353F" stroke-width="1">
+    <line x1="40" y1="216" x2="1160" y2="216"/>
+    <line x1="40" y1="286" x2="1160" y2="286"/>
+    <line x1="40" y1="446" x2="1160" y2="446"/>
+    <line x1="40" y1="528" x2="1160" y2="528"/>
+    <line x1="40" y1="628" x2="1160" y2="628"/>
+  </g>
+
+  <!-- ===== HTTP server ===== -->
+  <g>
+    <rect x="240" y="104" width="298" height="100" rx="4" fill="#1E242B" stroke="#2E353F"/>
+    <rect x="240" y="104" width="4" height="100" fill="#EFB338"/>
+    <text x="256" y="126" font-size="12.5" font-weight="650" fill="#C9CCD4">llama.cpp routes</text>
+    <text x="256" y="146" font-size="11" fill="#82868F">/completion, /tokenize, /detokenize,</text>
+    <text x="256" y="162" font-size="11" fill="#82868F">/apply-template, /props, /embedding,</text>
+    <text x="256" y="178" font-size="11" fill="#82868F">/health and llama.cpp's error</text>
+    <text x="256" y="194" font-size="11" fill="#82868F">envelope</text>
+
+    <rect x="551" y="104" width="298" height="100" rx="4" fill="#1E242B" stroke="#2E353F"/>
+    <rect x="551" y="104" width="4" height="100" fill="#EFB338"/>
+    <text x="567" y="126" font-size="12.5" font-weight="650" fill="#C9CCD4">Guards for the root routes</text>
+    <text x="567" y="146" font-size="11" fill="#82868F">auth, rate limit and the GPU fault</text>
+    <text x="567" y="162" font-size="11" fill="#82868F">latch read llama_compat::paths, so</text>
+    <text x="567" y="178" font-size="11" fill="#82868F">--require-auth covers /completion</text>
+
+    <rect x="862" y="104" width="298" height="100" rx="4" fill="#1E242B" stroke="#2E353F"/>
+    <rect x="862" y="104" width="4" height="100" fill="#49C3DB"/>
+    <text x="878" y="126" font-size="12.5" font-weight="650" fill="#C9CCD4">Preflight memory budget</text>
+    <text x="878" y="146" font-size="11" fill="#82868F">decode ring capped at 1/3 and Marconi</text>
+    <text x="878" y="162" font-size="11" fill="#82868F">at 1/8 of the memory beside the</text>
+    <text x="878" y="178" font-size="11" fill="#82868F">weights; a pinned depth is never cut</text>
+  </g>
+
+  <!-- ===== Scheduler ===== -->
+  <rect x="240" y="226" width="920" height="48" rx="4" fill="#171B21" stroke="#2E353F" stroke-dasharray="5 4"/>
+  <text x="256" y="246" font-size="12.5" font-weight="650" fill="#C9CCD4">Unchanged</text>
+  <text x="256" y="264" font-size="11" fill="#82868F">/completion builds the same InferenceRequest::Streaming that /v1/completions builds and queues it on the same scheduler. There is no second inference path.</text>
+
+  <!-- ===== Model loader ===== -->
+  <g>
+    <rect x="240" y="296" width="298" height="68" rx="4" fill="#1E242B" stroke="#2E353F"/>
+    <rect x="240" y="296" width="4" height="68" fill="#49C3DB"/>
+    <text x="256" y="317" font-size="12.5" font-weight="650" fill="#C9CCD4">No NVFP4 fallback under BF16</text>
+    <text x="256" y="336" font-size="11" fill="#82868F">a BF16 dense FFN keeps one copy;</text>
+    <text x="256" y="352" font-size="11" fill="#82868F">2,430 MiB not built on the 4B</text>
+
+    <rect x="551" y="296" width="298" height="68" rx="4" fill="#1E242B" stroke="#2E353F"/>
+    <rect x="551" y="296" width="4" height="68" fill="#49C3DB"/>
+    <text x="567" y="317" font-size="12.5" font-weight="650" fill="#C9CCD4">ssm_reserve::budget</text>
+    <text x="567" y="336" font-size="11" fill="#82868F">pure sizing of the two snapshot</text>
+    <text x="567" y="352" font-size="11" fill="#82868F">regions, unit-tested for GB10 and Ada</text>
+
+    <rect x="862" y="296" width="298" height="68" rx="4" fill="#1E242B" stroke="#2E353F"/>
+    <rect x="862" y="296" width="4" height="68" fill="#12B981"/>
+    <text x="878" y="317" font-size="12.5" font-weight="650" fill="#C9CCD4">BF16 to FP8 at load</text>
+    <text x="878" y="336" font-size="11" fill="#82868F">128x128 block-scaled E4M3 dense FFN,</text>
+    <text x="878" y="352" font-size="11" fill="#82868F">behind dense_fp8_from_bf16 (off)</text>
+
+    <rect x="240" y="372" width="453" height="64" rx="4" fill="#1E242B" stroke="#2E353F"/>
+    <rect x="240" y="372" width="4" height="64" fill="#12B981"/>
+    <text x="256" y="393" font-size="12.5" font-weight="650" fill="#C9CCD4">sm_89 FP8 kernel handles</text>
+    <text x="256" y="412" font-size="11" fill="#82868F">fp8_gemv_ada and fp8_gemm_ada where the tree carries them,</text>
+    <text x="256" y="428" font-size="11" fill="#82868F">else the gb10 kernels; same arguments, same output bits</text>
+
+    <rect x="707" y="372" width="453" height="64" rx="4" fill="#1E242B" stroke="#2E353F"/>
+    <rect x="707" y="372" width="4" height="64" fill="#12B981"/>
+    <text x="723" y="393" font-size="12.5" font-weight="650" fill="#C9CCD4">CPU reference and GPU oracle</text>
+    <text x="723" y="412" font-size="11" fill="#82868F">weight_map/fp8_blockscale_ref.rs on the host, and</text>
+    <text x="723" y="428" font-size="11" fill="#82868F">examples/fp8_ada_microtest.rs for the card</text>
+  </g>
+
+  <!-- ===== Kernel runtime ===== -->
+  <g>
+    <rect x="240" y="456" width="453" height="62" rx="4" fill="#1E242B" stroke="#2E353F"/>
+    <rect x="240" y="456" width="4" height="62" fill="#BE9DF8"/>
+    <text x="256" y="477" font-size="12.5" font-weight="650" fill="#C9CCD4">Dynamic shared-memory launch floor</text>
+    <text x="256" y="496" font-size="11" fill="#82868F">registry_dyn_smem reads &lt;entry&gt;_dyn_smem_bytes at resolve time</text>
+    <text x="256" y="512" font-size="11" fill="#82868F">and raises every launch of that function to it</text>
+
+    <rect x="707" y="456" width="453" height="62" rx="4" fill="#1E242B" stroke="#2E353F"/>
+    <rect x="707" y="456" width="4" height="62" fill="#BE9DF8"/>
+    <text x="723" y="477" font-size="12.5" font-weight="650" fill="#C9CCD4">ada is a known architecture class</text>
+    <text x="723" y="496" font-size="11" fill="#82868F">target_hint((8, 9)) returns "ada"; KNOWN_HARDWARE_IDS lists it;</text>
+    <text x="723" y="512" font-size="11" fill="#82868F">no SKU is mapped (Ada parts span 288 GB/s to 1 TB/s)</text>
+  </g>
+
+  <!-- ===== Kernel trees ===== -->
+  <g>
+    <rect x="240" y="538" width="298" height="80" rx="4" fill="#1E242B" stroke="#2E353F"/>
+    <rect x="240" y="538" width="4" height="80" fill="#BE9DF8"/>
+    <text x="256" y="559" font-size="12.5" font-weight="650" fill="#C9CCD4">kernels/ada (new)</text>
+    <text x="256" y="578" font-size="11" fill="#82868F">200 relative symlinks into gb10,</text>
+    <text x="256" y="594" font-size="11" fill="#82868F">8 real sources in common/, real</text>
+    <text x="256" y="610" font-size="11" fill="#82868F">HARDWARE.toml and MODEL.tomls</text>
+
+    <rect x="551" y="538" width="298" height="80" rx="4" fill="#1E242B" stroke="#2E353F"/>
+    <rect x="551" y="538" width="4" height="80" fill="#12B981"/>
+    <text x="567" y="559" font-size="12.5" font-weight="650" fill="#C9CCD4">Every other NVIDIA target</text>
+    <text x="567" y="578" font-size="11" fill="#82868F">gb10, hopper, b200 and b300 state</text>
+    <text x="567" y="594" font-size="11" fill="#82868F">dense_fp8_from_bf16 = false, so each</text>
+    <text x="567" y="610" font-size="11" fill="#82868F">target declares every lever</text>
+
+    <rect x="862" y="538" width="298" height="80" rx="4" fill="#171B21" stroke="#2E353F" stroke-dasharray="5 4"/>
+    <text x="878" y="559" font-size="12.5" font-weight="650" fill="#C9CCD4">kernels/gb10/common: unchanged</text>
+    <text x="878" y="578" font-size="11" fill="#82868F">no PTX and no closure hash moves on</text>
+    <text x="878" y="594" font-size="11" fill="#82868F">gb10, hopper, b200 or strix, which</text>
+    <text x="878" y="610" font-size="11" fill="#82868F">all compile those sources</text>
+  </g>
+
+  <!-- ===== Tooling and docs ===== -->
+  <g>
+    <rect x="240" y="638" width="221" height="80" rx="4" fill="#1E242B" stroke="#2E353F"/>
+    <rect x="240" y="638" width="4" height="80" fill="#F28B82"/>
+    <text x="256" y="659" font-size="12.5" font-weight="650" fill="#C9CCD4">check_arch_portability.py</text>
+    <text x="256" y="678" font-size="11" fill="#82868F">nvcc --ptx, then ptxas for</text>
+    <text x="256" y="694" font-size="11" fill="#82868F">any arch, with the build's</text>
+    <text x="256" y="710" font-size="11" fill="#82868F">own flags; no GPU</text>
+
+    <rect x="473" y="638" width="221" height="80" rx="4" fill="#1E242B" stroke="#2E353F"/>
+    <rect x="473" y="638" width="4" height="80" fill="#BE9DF8"/>
+    <text x="489" y="659" font-size="12.5" font-weight="650" fill="#C9CCD4">PTX gate and shadows</text>
+    <text x="489" y="678" font-size="11" fill="#82868F">hopper_ptx_gate.sh learns</text>
+    <text x="489" y="694" font-size="11" fill="#82868F">sm_89; check_kernel_shadows</text>
+    <text x="489" y="710" font-size="11" fill="#82868F">knows ada mirrors gb10</text>
+
+    <rect x="706" y="638" width="221" height="80" rx="4" fill="#1E242B" stroke="#2E353F"/>
+    <rect x="706" y="638" width="4" height="80" fill="#BE9DF8"/>
+    <text x="722" y="659" font-size="12.5" font-weight="650" fill="#C9CCD4">docs/HARDWARE.md</text>
+    <text x="722" y="678" font-size="11" fill="#82868F">the Ada section, and the</text>
+    <text x="722" y="694" font-size="11" fill="#82868F">static shared-memory rule</text>
+    <text x="722" y="710" font-size="11" fill="#82868F">re-measured on CUDA 13.3</text>
+
+    <rect x="939" y="638" width="221" height="80" rx="4" fill="#1E242B" stroke="#2E353F"/>
+    <rect x="939" y="638" width="4" height="80" fill="#EFB338"/>
+    <text x="955" y="659" font-size="12.5" font-weight="650" fill="#C9CCD4">docs/llama-cpp-compat.md</text>
+    <text x="955" y="678" font-size="11" fill="#82868F">every route and field, and</text>
+    <text x="955" y="694" font-size="11" fill="#82868F">whether it is honored,</text>
+    <text x="955" y="710" font-size="11" fill="#82868F">accepted or refused</text>
+  </g>
+
+  <!-- legend -->
+  <g font-size="11.5" fill="#C9CCD4">
+    <rect x="240" y="748" width="12" height="12" fill="#BE9DF8"/><text x="260" y="758">Ada target</text>
+    <rect x="370" y="748" width="12" height="12" fill="#49C3DB"/><text x="390" y="758">16 GB memory fit</text>
+    <rect x="540" y="748" width="12" height="12" fill="#F28B82"/><text x="560" y="758">portability probe</text>
+    <rect x="710" y="748" width="12" height="12" fill="#EFB338"/><text x="730" y="758">llama.cpp API</text>
+    <rect x="860" y="748" width="12" height="12" fill="#12B981"/><text x="880" y="758">FP8 path</text>
+    <rect x="980" y="748" width="12" height="12" fill="none" stroke="#82868F" stroke-dasharray="3 2"/><text x="1000" y="758">unchanged</text>
+  </g>
+</svg>

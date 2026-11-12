@@ -1,0 +1,154 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 820" width="1200" height="820" font-family="Inter, ui-sans-serif, system-ui, Segoe UI, Helvetica, Arial, sans-serif" role="img" aria-labelledby="t d">
+  <title id="t">Which instructions each NVIDIA arch accepts, and how kernels/ada answers</title>
+  <desc id="d">A matrix of seven instruction features against four arch strings: sm_89 (Ada), sm_90a (Hopper), sm_100a (B200) and sm_121f (the GB10 build). sm_89 refuses static shared memory above 48 KiB, TMA, the FP4 convert and the warp-level block-scaled MMA, and accepts FP8 mma.sync and the paired E4M3 convert. Each refusal maps to one Ada fix. Below the matrix, the portability probe's counts: the gb10 tree compiled for sm_89 gives 534 unique compiles with 60 ptxas failures (49 shared memory, 6 FP4 convert, 3 block-scaled MMA, 2 TMA); the ada tree gives 192 compiles and 192 passes.</desc>
+
+  <rect width="1200" height="820" fill="#0F1216"/>
+
+  <text x="40" y="44" font-size="23" font-weight="650" fill="#C9CCD4">What sm_89 accepts, and what kernels/ada does about it</text>
+  <text x="40" y="66" font-size="13.5" fill="#82868F">ptxas verdicts with CUDA 13.3.73. Every refusal on sm_89 has exactly one answer in the Ada tree.</text>
+
+  <!-- header row -->
+  <rect x="40" y="88" width="1120" height="52" fill="#1E242B"/>
+  <g font-size="12" font-weight="650" fill="#C9CCD4">
+    <text x="56" y="119">Instruction or resource</text>
+    <text x="410" y="110" text-anchor="middle">sm_89</text>
+    <text x="510" y="110" text-anchor="middle">sm_90a</text>
+    <text x="610" y="110" text-anchor="middle">sm_100a</text>
+    <text x="710" y="110" text-anchor="middle">sm_121f</text>
+    <text x="776" y="119">How kernels/ada answers on sm_89</text>
+  </g>
+  <g font-size="10.5" fill="#82868F">
+    <text x="410" y="128" text-anchor="middle">Ada</text>
+    <text x="510" y="128" text-anchor="middle">Hopper</text>
+    <text x="610" y="128" text-anchor="middle">B200</text>
+    <text x="710" y="128" text-anchor="middle">GB10 build</text>
+  </g>
+
+  <!-- row backgrounds -->
+  <g fill="#171B21">
+    <rect x="40" y="140" width="1120" height="60"/>
+    <rect x="40" y="260" width="1120" height="60"/>
+    <rect x="40" y="380" width="1120" height="60"/>
+    <rect x="40" y="500" width="1120" height="52"/>
+  </g>
+  <g stroke="#2E353F"><line x1="40" y1="552" x2="1160" y2="552"/></g>
+
+  <!-- row text: feature -->
+  <g font-size="12" fill="#C9CCD4">
+    <text x="56" y="166" font-weight="600">Static __shared__ above 48 KiB</text>
+    <text x="56" y="226" font-weight="600">TMA and transaction barriers</text>
+    <text x="56" y="286" font-weight="600">FP4 convert</text>
+    <text x="56" y="346" font-weight="600">Warp-level block-scaled MMA</text>
+    <text x="56" y="406" font-weight="600">FP8 mma.sync, FP32 accumulate</text>
+    <text x="56" y="466" font-weight="600">Paired E4M3 to FP16 convert</text>
+    <text x="56" y="522" font-weight="600">The SM80 floor</text>
+  </g>
+  <g font-size="10.5" fill="#82868F" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">
+    <text x="56" y="184">ptxas cap 0xc000 without an a suffix</text>
+    <text x="56" y="244">cp.async.bulk.tensor, expect_tx</text>
+    <text x="56" y="304">cvt.e2m1x2.f32</text>
+    <text x="56" y="364">mma ... .kind::mxf4nvf4.block_scale</text>
+    <text x="56" y="424">mma.sync.m16n8k32...e4m3.e4m3.f32</text>
+    <text x="56" y="484">cvt.rn.f16x2.e4m3x2</text>
+    <text x="56" y="540">mma.sync.m16n8k16 bf16, cp.async.cg</text>
+  </g>
+
+  <!-- verdict chips: helper colors: yes = green outline, no = red fill -->
+  <!-- row 1: static smem -->
+  <g font-size="11.5" font-weight="650" text-anchor="middle">
+    <rect x="376" y="155" width="68" height="24" rx="12" fill="#3A2224" stroke="#F28B82"/><text x="410" y="171" fill="#F28B82">no</text>
+    <rect x="476" y="155" width="68" height="24" rx="12" fill="#0F2A22" stroke="#12B981"/><text x="510" y="171" fill="#12B981">yes</text>
+    <rect x="576" y="155" width="68" height="24" rx="12" fill="#0F2A22" stroke="#12B981"/><text x="610" y="171" fill="#12B981">yes</text>
+    <rect x="676" y="155" width="68" height="24" rx="12" fill="#3A2224" stroke="#F28B82"/><text x="710" y="171" fill="#F28B82">no *</text>
+  </g>
+  <!-- row 2: TMA -->
+  <g font-size="11.5" font-weight="650" text-anchor="middle">
+    <rect x="376" y="215" width="68" height="24" rx="12" fill="#3A2224" stroke="#F28B82"/><text x="410" y="231" fill="#F28B82">no</text>
+    <rect x="476" y="215" width="68" height="24" rx="12" fill="#0F2A22" stroke="#12B981"/><text x="510" y="231" fill="#12B981">yes</text>
+    <rect x="576" y="215" width="68" height="24" rx="12" fill="#0F2A22" stroke="#12B981"/><text x="610" y="231" fill="#12B981">yes</text>
+    <rect x="676" y="215" width="68" height="24" rx="12" fill="#0F2A22" stroke="#12B981"/><text x="710" y="231" fill="#12B981">yes</text>
+  </g>
+  <!-- row 3: FP4 cvt -->
+  <g font-size="11.5" font-weight="650" text-anchor="middle">
+    <rect x="376" y="275" width="68" height="24" rx="12" fill="#3A2224" stroke="#F28B82"/><text x="410" y="291" fill="#F28B82">no</text>
+    <rect x="476" y="275" width="68" height="24" rx="12" fill="#3A2224" stroke="#F28B82"/><text x="510" y="291" fill="#F28B82">no</text>
+    <rect x="576" y="275" width="68" height="24" rx="12" fill="#0F2A22" stroke="#12B981"/><text x="610" y="291" fill="#12B981">yes</text>
+    <rect x="676" y="275" width="68" height="24" rx="12" fill="#0F2A22" stroke="#12B981"/><text x="710" y="291" fill="#12B981">yes</text>
+  </g>
+  <!-- row 4: warp block-scale mma -->
+  <g font-size="11.5" font-weight="650" text-anchor="middle">
+    <rect x="376" y="335" width="68" height="24" rx="12" fill="#3A2224" stroke="#F28B82"/><text x="410" y="351" fill="#F28B82">no</text>
+    <rect x="476" y="335" width="68" height="24" rx="12" fill="#3A2224" stroke="#F28B82"/><text x="510" y="351" fill="#F28B82">no</text>
+    <rect x="576" y="335" width="68" height="24" rx="12" fill="#3A2224" stroke="#F28B82"/><text x="610" y="351" fill="#F28B82">no</text>
+    <rect x="676" y="335" width="68" height="24" rx="12" fill="#0F2A22" stroke="#12B981"/><text x="710" y="351" fill="#12B981">yes</text>
+  </g>
+  <!-- rows 5-7: yes everywhere -->
+  <g font-size="11.5" font-weight="650" text-anchor="middle">
+    <rect x="376" y="395" width="68" height="24" rx="12" fill="#0F2A22" stroke="#12B981"/><text x="410" y="411" fill="#12B981">yes</text>
+    <rect x="476" y="395" width="68" height="24" rx="12" fill="#0F2A22" stroke="#12B981"/><text x="510" y="411" fill="#12B981">yes</text>
+    <rect x="576" y="395" width="68" height="24" rx="12" fill="#0F2A22" stroke="#12B981"/><text x="610" y="411" fill="#12B981">yes</text>
+    <rect x="676" y="395" width="68" height="24" rx="12" fill="#0F2A22" stroke="#12B981"/><text x="710" y="411" fill="#12B981">yes</text>
+
+    <rect x="376" y="455" width="68" height="24" rx="12" fill="#0F2A22" stroke="#12B981"/><text x="410" y="471" fill="#12B981">yes</text>
+    <rect x="476" y="455" width="68" height="24" rx="12" fill="#0F2A22" stroke="#12B981"/><text x="510" y="471" fill="#12B981">yes</text>
+    <rect x="576" y="455" width="68" height="24" rx="12" fill="#0F2A22" stroke="#12B981"/><text x="610" y="471" fill="#12B981">yes</text>
+    <rect x="676" y="455" width="68" height="24" rx="12" fill="#0F2A22" stroke="#12B981"/><text x="710" y="471" fill="#12B981">yes</text>
+
+    <rect x="376" y="514" width="68" height="24" rx="12" fill="#0F2A22" stroke="#12B981"/><text x="410" y="530" fill="#12B981">yes</text>
+    <rect x="476" y="514" width="68" height="24" rx="12" fill="#0F2A22" stroke="#12B981"/><text x="510" y="530" fill="#12B981">yes</text>
+    <rect x="576" y="514" width="68" height="24" rx="12" fill="#0F2A22" stroke="#12B981"/><text x="610" y="530" fill="#12B981">yes</text>
+    <rect x="676" y="514" width="68" height="24" rx="12" fill="#0F2A22" stroke="#12B981"/><text x="710" y="530" fill="#12B981">yes</text>
+  </g>
+
+  <!-- answers -->
+  <g font-size="11.5">
+    <text x="776" y="166" fill="#BE9DF8" font-weight="600">Tiles move to dynamic shared memory</text>
+    <text x="776" y="184" fill="#82868F">22 prefill modules, 42 entry points; host raises launch</text>
+    <text x="776" y="226" fill="#BE9DF8" font-weight="600">Spine compiled only for __CUDA_ARCH__ &gt;= 900</text>
+    <text x="776" y="244" fill="#82868F">gated_delta_rule_fla.cu; the scalar spine serves</text>
+    <text x="776" y="286" fill="#BE9DF8" font-weight="600">-DAVAROK_NO_WARP_BLOCKSCALE_MMA, as Hopper</text>
+    <text x="776" y="304" fill="#82868F">compiles out the W4A4 tail of moe_w4a16_grouped_gemm</text>
+    <text x="776" y="346" fill="#BE9DF8" font-weight="600">Same define; the entries are never looked up</text>
+    <text x="776" y="364" fill="#82868F">the dense Holo models build no MoE layer</text>
+    <text x="776" y="406" fill="#12B981" font-weight="600">Used: fp8_gemm_ada (W8A8 prefill)</text>
+    <text x="776" y="424" fill="#82868F">sm_89 is the first arch with FP8 mma.sync</text>
+    <text x="776" y="466" fill="#12B981" font-weight="600">Used: fp8_gemv_ada (decode dequant)</text>
+    <text x="776" y="484" fill="#82868F">two bytes per instruction, no shared-memory table</text>
+    <text x="776" y="522" fill="#C9CCD4" font-weight="600">186 common sources compile unchanged</text>
+    <text x="776" y="540" fill="#82868F">gb10's kernels are written to this floor</text>
+  </g>
+
+  <text x="40" y="576" font-size="11" fill="#82868F">* sm_121f refuses the static tiles offline, sm_121a accepts them (docs/HARDWARE.md, "PTX arch suffix and the static shared-memory ceiling").</text>
+
+  <!-- ===== probe counts ===== -->
+  <text x="40" y="616" font-size="15" font-weight="650" fill="#C9CCD4">How scripts/check_arch_portability.py finds them</text>
+  <text x="40" y="636" font-size="11.5" fill="#82868F">nvcc --ptx with the build's own flags, then ptxas -arch=sm_89. Unique compiles, de-duplicated by (source, flags) as the build does.</text>
+
+  <text x="40" y="672" font-size="12" font-weight="600" fill="#C9CCD4">--hw gb10</text>
+  <text x="40" y="688" font-size="10.5" fill="#82868F">every gb10 model</text>
+  <!-- 534 compiles scaled to 900px: 474 pass = 798.9, fails: 49 = 82.6, 6 = 10.1, 3 = 5.1, 2 = 3.4 -->
+  <rect x="160" y="660" width="799" height="28" fill="#0F2A22" stroke="#12B981"/>
+  <rect x="959" y="660" width="82.6" height="28" fill="#F28B82"/>
+  <rect x="1041.6" y="660" width="10.1" height="28" fill="#EFB338"/>
+  <rect x="1051.7" y="660" width="5.1" height="28" fill="#BE9DF8"/>
+  <rect x="1056.8" y="660" width="3.4" height="28" fill="#49C3DB"/>
+  <text x="176" y="679" font-size="12" fill="#12B981" font-weight="650">474 of 534 pass</text>
+  <text x="1068" y="679" font-size="12" fill="#F28B82" font-weight="650">60 fail</text>
+
+  <text x="40" y="732" font-size="12" font-weight="600" fill="#C9CCD4">--hw ada</text>
+  <text x="40" y="748" font-size="10.5" fill="#82868F">both holo targets</text>
+  <!-- 192 compiles at the same scale: 323.6 px -->
+  <rect x="160" y="720" width="323.6" height="28" fill="#0F2A22" stroke="#12B981"/>
+  <text x="176" y="739" font-size="12" fill="#12B981" font-weight="650">192 of 192 pass</text>
+  <text x="500" y="739" font-size="11.5" fill="#82868F">exit 0 on the branch</text>
+
+  <g font-size="11" fill="#C9CCD4">
+    <rect x="160" y="776" width="12" height="12" fill="#F28B82"/><text x="180" y="786">49 static shared memory</text>
+    <rect x="350" y="776" width="12" height="12" fill="#EFB338"/><text x="370" y="786">6 FP4 convert</text>
+    <rect x="490" y="776" width="12" height="12" fill="#BE9DF8"/><text x="510" y="786">3 block-scaled MMA</text>
+    <rect x="660" y="776" width="12" height="12" fill="#49C3DB"/><text x="680" y="786">2 TMA barrier</text>
+    <text x="800" y="786" fill="#82868F">Of the 60: 39 in gb10/common, 2 in the holo targets,</text>
+    <text x="800" y="802" fill="#82868F">19 in models kernels/ada does not carry.</text>
+  </g>
+</svg>

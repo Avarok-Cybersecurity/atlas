@@ -1,0 +1,124 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760" width="1200" height="760" font-family="Inter, ui-sans-serif, system-ui, Segoe UI, Helvetica, Arial, sans-serif" role="img" aria-labelledby="t d">
+  <title id="t">The kernels/ada tree: symlinks and real files</title>
+  <desc id="d">kernels/ada holds 200 relative symlinks into kernels/gb10 and 11 real files. common/ has 186 symlinks into gb10/common, five real overrides (the four prefill sources and gated_delta_rule_fla.cu) and three real additions (prefill_dyn_smem.cuh, fp8_gemv_ada.cu, fp8_gemm_ada.cu). Each holo model directory has a real MODEL.toml and seven nvfp4 symlinks. The 20 paged prefill wrappers stay symlinks but include the Ada headers, because a quoted include resolves against the directory the file was opened from.</desc>
+
+  <defs>
+    <marker id="tipInk" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#C9CCD4"/>
+    </marker>
+    <marker id="tipViolet" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#BE9DF8"/>
+    </marker>
+    <marker id="tipMuted" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#82868F"/>
+    </marker>
+  </defs>
+
+  <rect width="1200" height="760" fill="#0F1216"/>
+
+  <text x="40" y="44" font-size="23" font-weight="650" fill="#C9CCD4">kernels/ada: a gb10 mirror with real files only where Ada differs</text>
+  <text x="40" y="66" font-size="13.5" fill="#82868F">200 relative symlinks and 11 real files. The same pattern kernels/hopper and kernels/b200 use.</text>
+
+  <!-- ===== left: the ada tree ===== -->
+  <rect x="40" y="92" width="610" height="506" rx="4" fill="#171B21" stroke="#2E353F"/>
+  <rect x="40" y="92" width="4" height="506" fill="#BE9DF8"/>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5">
+    <text x="60" y="122" fill="#C9CCD4" font-weight="650">kernels/ada/</text>
+    <text x="78" y="148" fill="#C9CCD4">HARDWARE.toml</text>
+    <text x="78" y="174" fill="#C9CCD4">common/</text>
+
+    <text x="98" y="200" fill="#82868F">186 symlinks</text>
+    <text x="98" y="218" fill="#82868F" font-size="11">../../gb10/common/&lt;same name&gt;</text>
+
+    <text x="98" y="248" fill="#BE9DF8">inferspark_prefill.cu</text>
+    <text x="98" y="268" fill="#BE9DF8">inferspark_prefill_fp8kv.cu</text>
+    <text x="98" y="288" fill="#BE9DF8">prefill_paged_compute.cuh</text>
+    <text x="98" y="308" fill="#BE9DF8">prefill_paged_compute_asym.cuh</text>
+    <text x="98" y="328" fill="#BE9DF8">gated_delta_rule_fla.cu</text>
+
+    <text x="98" y="358" fill="#12B981">prefill_dyn_smem.cuh</text>
+    <text x="98" y="378" fill="#12B981">fp8_gemv_ada.cu</text>
+    <text x="98" y="398" fill="#12B981">fp8_gemm_ada.cu</text>
+
+    <text x="78" y="432" fill="#C9CCD4">holo-3.1-0.8b/</text>
+    <text x="98" y="452" fill="#C9CCD4">MODEL.toml</text>
+    <text x="98" y="472" fill="#82868F">nvfp4/  7 symlinks</text>
+
+    <text x="78" y="504" fill="#C9CCD4">holo-3.1-4b/</text>
+    <text x="98" y="524" fill="#C9CCD4">MODEL.toml</text>
+    <text x="98" y="544" fill="#82868F">nvfp4/  7 symlinks</text>
+  </g>
+  <!-- annotations (sans) -->
+  <g font-size="11" fill="#82868F">
+    <text x="300" y="148">real: arch sm_89, 34 SMs, 288 GB/s, [build], [defaults], overrides</text>
+    <text x="400" y="222">mirror of gb10/common (191 entries)</text>
+    <text x="400" y="278" fill="#BE9DF8">5 real overrides</text>
+    <text x="400" y="294">same name as a gb10 file; the</text>
+    <text x="400" y="308">header says what differs</text>
+    <text x="400" y="372" fill="#12B981">3 real additions</text>
+    <text x="400" y="388">names gb10 does not have</text>
+    <text x="300" y="452">real copy; adds the TMA expected_absent entry</text>
+    <text x="300" y="472">-&gt; ../../../gb10/holo-3.1-0.8b/nvfp4/*</text>
+    <text x="300" y="524">real copy; adds the TMA expected_absent entry</text>
+    <text x="300" y="544">-&gt; ../../../gb10/holo-3.1-4b/nvfp4/*</text>
+  </g>
+  <text x="60" y="582" font-size="11.5" fill="#C9CCD4">Totals: 200 symlinks (186 in common/, 14 in the two nvfp4/ dirs); 11 real files.</text>
+
+  <!-- ===== right: gb10 ===== -->
+  <rect x="760" y="92" width="400" height="150" rx="4" fill="#171B21" stroke="#2E353F"/>
+  <rect x="760" y="92" width="4" height="150" fill="#82868F"/>
+  <text x="780" y="120" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5" font-weight="650" fill="#C9CCD4">kernels/gb10/common/</text>
+  <text x="780" y="144" font-size="11.5" fill="#82868F">191 entries, written to an SM80-class floor</text>
+  <text x="780" y="162" font-size="11.5" fill="#82868F">(mma.sync m16n8k16, cp.async.cg).</text>
+  <text x="780" y="188" font-size="11.5" fill="#C9CCD4">Unchanged by this work. Editing it would</text>
+  <text x="780" y="206" font-size="11.5" fill="#C9CCD4">move the PTX and closure hash of every</text>
+  <text x="780" y="224" font-size="11.5" fill="#C9CCD4">target that compiles it.</text>
+
+  <path d="M 210 196 C 560 196, 620 160, 756 160" fill="none" stroke="#82868F" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#tipMuted)"/>
+
+  <!-- ===== right: why the wrappers pick up the Ada headers ===== -->
+  <rect x="700" y="270" width="460" height="328" rx="4" fill="#171B21" stroke="#2E353F"/>
+  <text x="720" y="296" font-size="13.5" font-weight="650" fill="#C9CCD4">Why 20 wrappers can stay symlinks</text>
+
+  <rect x="720" y="312" width="420" height="52" rx="3" fill="#1E242B" stroke="#2E353F"/>
+  <text x="732" y="333" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5" fill="#C9CCD4">ada/common/inferspark_prefill_paged_turbo4.cu</text>
+  <text x="732" y="352" font-size="11" fill="#82868F">a symlink to the gb10 file of the same name</text>
+
+  <path d="M 930 364 L 930 392" stroke="#C9CCD4" stroke-width="1.5" marker-end="url(#tipInk)"/>
+
+  <rect x="720" y="396" width="420" height="52" rx="3" fill="#1E242B" stroke="#2E353F"/>
+  <text x="732" y="417" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5" fill="#C9CCD4">#include "prefill_paged_compute.cuh"</text>
+  <text x="732" y="436" font-size="11" fill="#82868F">nvcc resolves a quoted include next to the path it opened</text>
+
+  <path d="M 930 448 L 930 476" stroke="#BE9DF8" stroke-width="1.5" marker-end="url(#tipViolet)"/>
+
+  <rect x="720" y="480" width="420" height="52" rx="3" fill="#1E242B" stroke="#BE9DF8"/>
+  <text x="732" y="501" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5" fill="#BE9DF8">ada/common/prefill_paged_compute.cuh</text>
+  <text x="732" y="520" font-size="11" fill="#82868F">the real Ada header: tiles in dynamic shared memory</text>
+
+  <text x="720" y="560" font-size="11.5" fill="#C9CCD4">11 wrappers include prefill_paged_compute.cuh and</text>
+  <text x="720" y="578" font-size="11.5" fill="#C9CCD4">9 include prefill_paged_compute_asym.cuh.</text>
+
+  <!-- ===== bottom: rules that hold it together ===== -->
+  <text x="40" y="636" font-size="15" font-weight="650" fill="#C9CCD4">What keeps the mirror honest</text>
+  <g font-size="11.5">
+    <rect x="40" y="652" width="360" height="90" rx="4" fill="#1E242B" stroke="#2E353F"/>
+    <text x="56" y="674" font-weight="650" fill="#C9CCD4">[kernels] overrides</text>
+    <text x="56" y="694" fill="#82868F">HARDWARE.toml lists all 8 real sources.</text>
+    <text x="56" y="711" fill="#82868F">check_kernel_shadows.py refuses a real file</text>
+    <text x="56" y="728" fill="#82868F">that is not declared (its RULE 3).</text>
+
+    <rect x="420" y="652" width="360" height="90" rx="4" fill="#1E242B" stroke="#2E353F"/>
+    <text x="436" y="674" font-weight="650" fill="#C9CCD4">Inherited-target tests</text>
+    <text x="436" y="694" fill="#82868F">tests/inherited_targets.rs holds ada to the</text>
+    <text x="436" y="711" fill="#82868F">same per-file mirror assertions as hopper</text>
+    <text x="436" y="728" fill="#82868F">and b200.</text>
+
+    <rect x="800" y="652" width="360" height="90" rx="4" fill="#1E242B" stroke="#2E353F"/>
+    <text x="816" y="674" font-weight="650" fill="#C9CCD4">The cost</text>
+    <text x="816" y="694" fill="#82868F">A later gb10 edit to an overridden file does</text>
+    <text x="816" y="711" fill="#82868F">not reach Ada until someone copies it over.</text>
+    <text x="816" y="728" fill="#82868F">Each real file's header says so.</text>
+  </g>
+</svg>
