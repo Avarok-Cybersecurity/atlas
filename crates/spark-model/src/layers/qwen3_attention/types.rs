@@ -155,6 +155,10 @@ pub struct Qwen3AttentionLayer {
     /// arm on this layer decline (#927); the in-tree kernel reads the
     /// quantizer's own order and needs no adapter.
     pub(super) fp8_act_scale_kmajor_k: KernelHandle,
+    /// The chunk-0 Q/K/V prefill takes the in-tree W8A8 arm without
+    /// `AVAROK_CUBLAS_GEMM=attn` (`prefill_qkv_w8a8.rs`). Set only by the
+    /// load-time BF16 -> FP8 attention route; false on every other build.
+    pub(super) qkv_w8a8_prefill: bool,
     // Kernels — decode (GEMV M=1)
     /// Offset-from-1 `rms_norm` (`out = x * (1 + w) / rms`). Used ONLY for the
     /// unweighted normalize (`norm_unit_w()` is zero-filled, so `1 + 0 = 1`).

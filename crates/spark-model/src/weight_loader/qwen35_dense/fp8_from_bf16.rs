@@ -117,7 +117,8 @@ pub fn layer_freed_bytes(hidden: usize, inter: usize) -> usize {
 /// What the route will free while the model is built, or 0 when it will not
 /// run on this load: the same clauses as [`Fp8FromBf16::resolve`], without
 /// its log line, over the layers [`layer_shapes_ok`] admits, plus what the
-/// GDN projections' route frees (`gdn_fp8_from_bf16::deferred_free_bytes`).
+/// GDN and attention routes free (`gdn_fp8_from_bf16::deferred_free_bytes`,
+/// `attn_fp8_from_bf16::deferred_free_bytes`).
 ///
 /// WHY. The server's post-load memory audit measures free memory between the
 /// checkpoint upload and `load_layers`, while the BF16 FFN this route replaces
@@ -140,16 +141,24 @@ pub fn deferred_free_bytes(
     ) && config.is_qwen35_dense();
     let levers = ops::target_defaults::resolved();
     let lever = levers.dense_fp8_from_bf16.value;
-    if !(dense_loader && (lever || levers.gdn_fp8_from_bf16.value)) {
+    let any = lever || levers.gdn_fp8_from_bf16.value || levers.attn_fp8_from_bf16.value;
+    if !(dense_loader && any) {
         return 0;
     }
     let bf16_checkpoint = matches!(
         crate::weight_map::detect_nvfp4_variant(store, config),
         Nvfp4Variant::Bf16Raw
     );
-    // The GDN projections' route (`gdn_fp8_from_bf16.rs`) frees its BF16
-    // sources in the same build, so it is credited here too.
+    // The GDN and attention routes (`gdn_fp8_from_bf16.rs`,
+    // `attn_fp8_from_bf16.rs`) free their BF16 sources in the same build, so
+    // they are credited here too.
     let gdn = super::gdn_fp8_from_bf16::deferred_free_bytes(
+        gpu,
+        config,
+        bf16_checkpoint,
+        tp_world_size,
+        lora,
+    ) + super::attn_fp8_from_bf16::deferred_free_bytes(
         gpu,
         config,
         bf16_checkpoint,

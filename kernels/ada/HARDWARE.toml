@@ -105,6 +105,14 @@ dense_fp8_from_bf16 = false
 # flips it: logit agreement of `AVAROK_GDN_FP8_FROM_BF16=1` against BF16 on
 # both holo targets plus a long-context degeneration check, then tok/s.
 gdn_fp8_from_bf16 = false
+# The same quantization for the full-attention q/k/v/o
+# (`weight_loader/qwen35_dense/attn_fp8_from_bf16.rs`): `fp8_gemv_ada` at M=1
+# decode, `fp8_gemm_ada_w8a8` at prefill, including the chunk-0 Q/K/V chain
+# without `AVAROK_CUBLAS_GEMM=attn` (with FP8 weights and only the W8A16 tile
+# GEMMs, prefill on this part would be slower than today's BF16). OFF until
+# Ada has a receipt: logit agreement of `AVAROK_ATTN_FP8_FROM_BF16=1` against
+# BF16 on both holo targets, then tok/s. 0.59 GB of BF16 per 4B decode token.
+attn_fp8_from_bf16 = false
 # The BF16 dense-FFN PREFILL on the cuBLASLt BF16 GEMM instead of the
 # hand-written `dense_gemm_tc`, which is very slow on sm_89. ON, on an
 # end-to-end A/B on the RTX 4060 Ti 16 GB (same binary and flags, one env

@@ -214,6 +214,14 @@ pub struct TargetDefaults {
     /// FALSE on every target in this tree for want of an accuracy receipt;
     /// `AVAROK_GDN_FP8_FROM_BF16=0|1` is the A/B against BF16.
     pub gdn_fp8_from_bf16: bool,
+    /// The same load-time quantization for a plain-BF16 dense checkpoint's
+    /// full-attention q/k/v/o (`weight_loader/qwen35_dense/attn_fp8_from_bf16.rs`),
+    /// served on the native-FP8 attention overlay: W8A16 GEMVs at decode, W8A8
+    /// at prefill (the chunk-0 Q/K/V chain on the in-tree kernel, no
+    /// `AVAROK_CUBLAS_GEMM=attn` needed). A NUMERICS lever, independent of the
+    /// two rows above. FALSE on every target; `AVAROK_ATTN_FP8_FROM_BF16=0|1`
+    /// is the A/B against BF16.
+    pub attn_fp8_from_bf16: bool,
     /// The cuBLASLt BF16 GEMM serves the BF16 dense-FFN PREFILL
     /// (`layers/ops/ffn_bf16_cublas.rs`) in place of the hand-written
     /// `dense_gemm_tc`, with no `AVAROK_CUBLAS_GEMM` in the environment.

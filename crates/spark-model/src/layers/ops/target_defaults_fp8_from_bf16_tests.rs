@@ -50,6 +50,29 @@ fn the_serve_line_names_the_row_and_marks_an_override() {
     assert!(line.contains("dense_fp8_from_bf16=on (env)"), "{line}");
 }
 
+/// The `attn_fp8_from_bf16` row: off, its own A/B, independent of the others.
+#[test]
+fn the_attn_row_is_off_by_default_and_its_own_ab() {
+    for t in [&GB10, &HOPPER] {
+        assert_eq!(empty(t).attn_fp8_from_bf16, Resolved::target(false));
+    }
+    let on = with(&GB10, &[("AVAROK_ATTN_FP8_FROM_BF16", "1")]);
+    assert_eq!(on.attn_fp8_from_bf16, Resolved::env(true));
+    assert!(!on.gdn_fp8_from_bf16.value && !on.dense_fp8_from_bf16.value);
+    let gdn = with(&GB10, &[("AVAROK_GDN_FP8_FROM_BF16", "1")]);
+    assert!(!gdn.attn_fp8_from_bf16.value);
+    let declaring = TargetDefaults {
+        attn_fp8_from_bf16: true,
+        ..GB10
+    };
+    assert_eq!(
+        with(&declaring, &[("AVAROK_ATTN_FP8_FROM_BF16", "0")]).attn_fp8_from_bf16,
+        Resolved::env(false),
+    );
+    assert!(format_levers(&empty(&GB10)).contains("attn_fp8_from_bf16=off"));
+    assert!(format_levers(&on).contains("attn_fp8_from_bf16=on (env)"));
+}
+
 /// The `gdn_fp8_from_bf16` row: off on both fixtures, its own variable in both
 /// directions, independent of the FFN row, and named on the serve line.
 #[test]

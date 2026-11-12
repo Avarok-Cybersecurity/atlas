@@ -43,6 +43,7 @@ pub(crate) struct Defaults {
     pub ffn_gateup_fused: bool,
     pub dense_fp8_from_bf16: bool,
     pub gdn_fp8_from_bf16: bool,
+    pub attn_fp8_from_bf16: bool,
     pub ffn_bf16_cublas_prefill: bool,
     pub gdn_batched_gemm: bool,
     pub attn_gated_bf16_batchm: bool,
@@ -89,6 +90,8 @@ pub(crate) fn baseline(hw: &str) -> Defaults {
         dense_fp8_from_bf16: false,
         // Same for the GDN projections (`in_proj_qkvz`, `out_proj`).
         gdn_fp8_from_bf16: false,
+        // And for the full-attention q/k/v/o.
+        attn_fp8_from_bf16: false,
         // The BF16 dense-FFN prefill stays on `dense_gemm_tc` unless
         // `AVAROK_CUBLAS_GEMM` says otherwise: what every target served before
         // the row existed.
@@ -219,6 +222,7 @@ pub(crate) fn parse_defaults(hw: &str, hw_toml: &toml::Value) -> Defaults {
             "ffn_gateup_fused" => out.ffn_gateup_fused = boolean(key, value),
             "dense_fp8_from_bf16" => out.dense_fp8_from_bf16 = boolean(key, value),
             "gdn_fp8_from_bf16" => out.gdn_fp8_from_bf16 = boolean(key, value),
+            "attn_fp8_from_bf16" => out.attn_fp8_from_bf16 = boolean(key, value),
             "ffn_bf16_cublas_prefill" => out.ffn_bf16_cublas_prefill = boolean(key, value),
             "gdn_batched_gemm" => out.gdn_batched_gemm = boolean(key, value),
             "attn_gated_bf16_batchm" => out.attn_gated_bf16_batchm = boolean(key, value),
@@ -261,6 +265,7 @@ pub(crate) fn literal(d: &Defaults) -> String {
          \x20   ffn_gateup_fused: {gateup_fused},\n\
          \x20   dense_fp8_from_bf16: {fp8_from_bf16},\n\
          \x20   gdn_fp8_from_bf16: {gdn_fp8_from_bf16},\n\
+         \x20   attn_fp8_from_bf16: {attn_fp8_from_bf16},\n\
          \x20   ffn_bf16_cublas_prefill: {bf16_cublas},\n\
          \x20   gdn_batched_gemm: {gdn_gemm},\n\
          \x20   attn_gated_bf16_batchm: {gated_batchm},\n\
@@ -282,6 +287,7 @@ pub(crate) fn literal(d: &Defaults) -> String {
         gateup_fused = d.ffn_gateup_fused,
         fp8_from_bf16 = d.dense_fp8_from_bf16,
         gdn_fp8_from_bf16 = d.gdn_fp8_from_bf16,
+        attn_fp8_from_bf16 = d.attn_fp8_from_bf16,
         bf16_cublas = d.ffn_bf16_cublas_prefill,
         gdn_gemm = d.gdn_batched_gemm,
         gated_batchm = d.attn_gated_bf16_batchm,

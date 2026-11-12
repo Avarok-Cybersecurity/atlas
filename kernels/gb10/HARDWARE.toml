@@ -198,6 +198,8 @@ dense_fp8_from_bf16 = false
 # The same route for the GDN projections (`in_proj_qkvz`, `out_proj`). OFF for
 # the same reasons; a NUMERICS row that exists for the 16 GB Ada target.
 gdn_fp8_from_bf16 = false
+# And for the full-attention q/k/v/o. OFF for the same reasons.
+attn_fp8_from_bf16 = false
 # BF16 dense-FFN prefill on cuBLASLt by default. OFF: the baseline, restated.
 # The win is an Ada measurement; GB10 keeps `AVAROK_CUBLAS_GEMM=ffn` as the
 # opt-in it always was.

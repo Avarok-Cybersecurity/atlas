@@ -10,6 +10,7 @@ use anyhow::Result;
 use spark_runtime::gpu::DevicePtr;
 
 use super::super::Qwen3AttentionLayer;
+use super::super::prefill_qkv_w8a8::QkvW8a8;
 use crate::layer::ForwardContext;
 use crate::layers::ops;
 
@@ -59,9 +60,11 @@ impl Qwen3AttentionLayer {
         // order) and for the nsys receipt that made it worth doing (#917/#928:
         // q_proj 16 x 2029.2 µs + k/v 32 x 375.4 µs = 44.5 ms of a 368.3 ms
         // 1193-token prefill, all of it W8A16).
-        let w8a8 = self.cache_skip_qkv_w8a8_selected(ctx, n, q_proj_dim as u32, nkv * hd, h);
+        // cuBLASLt when selected, else the in-tree kernel on a layer the
+        // load-time BF16 -> FP8 attention route armed, else W8A16.
+        let w8a8 = self.cache_skip_qkv_w8a8_arm(ctx, n, q_proj_dim as u32, nkv * hd, h);
         self.log_cache_skip_qkv_route(ctx, w8a8);
-        if w8a8 {
+        if w8a8 != QkvW8a8::Off {
             self.cache_skip_qkv_w8a8_quant(ctx, normed, n, h, stream)?;
         }
         let qg_out = ctx.buffers.qkv_output();
@@ -149,7 +152,7 @@ impl Qwen3AttentionLayer {
         n: u32,
         out_dim: u32,
         h: u32,
-        w8a8: bool,
+        w8a8: QkvW8a8,
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
@@ -221,8 +224,10 @@ impl Qwen3AttentionLayer {
         // cover k's pad whenever `m >= 16`, which the selector requires). The
         // decision and the single shared activation quantization are made once
         // per chain by the caller; `w8a8` is that decision.
-        } else if w8a8 && let Some(fp8w) = weight_opt.and_then(|w| w.as_fp8()) {
-            self.cache_skip_qkv_w8a8_gemm(ctx, fp8w, out, n, out_dim, h, stream)?;
+        } else if w8a8 != QkvW8a8::Off
+            && let Some(fp8w) = weight_opt.and_then(|w| w.as_fp8())
+        {
+            self.cache_skip_qkv_w8a8_gemm(ctx, w8a8, fp8w, out, n, out_dim, h, stream)?;
         } else if let Some(fp8t) = fp8w_t
             && use_t_pipelined
             && self.w8a16_gemm_t_pipelined_k.0 != 0

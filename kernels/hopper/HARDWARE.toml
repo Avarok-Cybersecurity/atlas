@@ -350,6 +350,8 @@ dense_fp8_from_bf16 = false
 # The same route for the GDN projections. OFF for the same reason;
 # `AVAROK_GDN_FP8_FROM_BF16=1` is how that receipt would be taken.
 gdn_fp8_from_bf16 = false
+# And for the full-attention q/k/v/o; `AVAROK_ATTN_FP8_FROM_BF16=1` takes it.
+attn_fp8_from_bf16 = false
 # BF16 dense-FFN prefill on cuBLASLt by default. OFF for want of an H100
 # receipt: the win is an Ada measurement. `AVAROK_CUBLAS_GEMM=ffn` still arms
 # it.

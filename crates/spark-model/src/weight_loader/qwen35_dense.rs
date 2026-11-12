@@ -268,6 +268,8 @@ pub mod fp8_from_bf16;
 pub mod fp8_residency;
 // The same route for the GDN projections (`[defaults] gdn_fp8_from_bf16`).
 pub mod gdn_fp8_from_bf16;
+// And for attention q/k/v/o (`[defaults] attn_fp8_from_bf16`).
+pub mod attn_fp8_from_bf16;
 mod loaders_b;
 pub mod predicted_residency;
 mod rowwise_fp8;
@@ -388,6 +390,14 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
         let gdn_from_bf16_route = gdn_fp8_from_bf16::GdnFp8FromBf16::resolve(
             gpu,
             crate::layers::ops::target_defaults::resolved().gdn_fp8_from_bf16,
+            variant,
+            config.tp_world_size,
+            config.adapter_max_rank,
+        );
+        // And for attention q/k/v/o (`[defaults] attn_fp8_from_bf16`).
+        let attn_from_bf16_route = attn_fp8_from_bf16::AttnFp8FromBf16::resolve(
+            gpu,
+            crate::layers::ops::target_defaults::resolved().attn_fp8_from_bf16,
             variant,
             config.tp_world_size,
             config.adapter_max_rank,
@@ -675,6 +685,10 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                     // Bf16Raw installs a BF16 dense O-proj after the layer is
                     // built; other variants leave this None (NVFP4/FP8 dispatch).
                     let mut o_dense_bf16: Option<DenseWeight> = None;
+                    // Bf16Raw under the load-time BF16 -> FP8 attention route
+                    // (`attn_fp8_from_bf16.rs`): the quantized q/k/v/o, installed
+                    // with `set_fp8_weights` after the layer is built.
+                    let mut attn_fp8_from_bf16: Option<[Fp8Weight; 4]> = None;
 
                     // Native keep-packed ternary Q2_0 (Tier-1c): when the GGUF
                     // loader tagged q/k/v/o as `PackedQ2_0` (transform-free
@@ -991,6 +1005,33 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
 
                             let (k_scale, v_scale) = load_kv_scales(store, &p, gpu);
 
+                            // Load-time BF16 -> FP8: the four BF16 sources are
+                            // quantized and FREED here, so every BF16 slot below is
+                            // NULL and no BF16 O-proj is installed. The layer is
+                            // then the native-FP8 overlay's shape.
+                            let attn_shapes = attn_fp8_from_bf16::AttnShapes::of(config);
+                            if let Some(route) = attn_from_bf16_route
+                                .filter(|_| tp_size == 1 && attn_shapes.qualify())
+                            {
+                                attn_fp8_from_bf16 = Some(route.quantize_attn(
+                                    store,
+                                    [q_dense, k_dense, v_dense, o_dense],
+                                    attn_shapes,
+                                    gpu,
+                                    stream,
+                                    &mut residency,
+                                )?);
+                                residency.twins.attn_fp8_from_bf16 = true;
+                            }
+                            let (q_dense, k_dense, v_dense) = if attn_fp8_from_bf16.is_some() {
+                                let null = DenseWeight {
+                                    weight: spark_runtime::gpu::DevicePtr::NULL,
+                                };
+                                (null, null, null)
+                            } else {
+                                (q_dense, k_dense, v_dense)
+                            };
+
                             // Keep q/k/v BF16 dense ALIVE (do NOT free): the dense
                             // forward reads them directly. o_proj stays NULL — the
                             // set_o_dense_bf16(o_dense) call after layer build
@@ -1007,13 +1048,15 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                                 k_scale,
                                 v_scale,
                             };
-                            o_dense_bf16 = Some(o_dense);
+                            if attn_fp8_from_bf16.is_none() {
+                                o_dense_bf16 = Some(o_dense);
+                            }
                             // The NULL o_proj above is only sound while the BF16
-                            // dense O-proj is installed after layer build — a null
-                            // NVFP4 weight reached by a w4a16 dispatch is the
-                            // CUDA-700-at-concurrency failure mode.
+                            // dense O-proj (or the FP8 overlay) is installed after
+                            // layer build — a null NVFP4 weight reached by a w4a16
+                            // dispatch is the CUDA-700-at-concurrency failure mode.
                             debug_assert!(
-                                o_dense_bf16.is_some(),
+                                o_dense_bf16.is_some() || attn_fp8_from_bf16.is_some(),
                                 "Bf16Raw attention must install a dense O-proj to cover the null o_proj"
                             );
                             // BF16 native: no NVFP4 q/k/v weights → dense fallback.
@@ -1082,6 +1125,14 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                     // None on the Bf16Raw path).
                     if let Some(o_dense) = o_dense_bf16 {
                         attn_layer.set_o_dense_bf16(o_dense);
+                    }
+                    // Bf16Raw under the BF16 -> FP8 attention route: install the
+                    // FP8 overlay (decode W8A16 GEMVs, prefill W8A8) and arm the
+                    // in-tree W8A8 chunk-0 Q/K/V arm. No transposed twins: every
+                    // prefill arm that reads one has a non-transposed fallback.
+                    if let Some([q, k, v, o]) = attn_fp8_from_bf16 {
+                        attn_layer.set_fp8_weights(Some(q), Some(k), Some(v), Some(o));
+                        attn_layer.set_w8a8_qkv_prefill(true);
                     }
                     // Install native FP8 q/k/v/o (single-GPU FP8 checkpoint).
                     // `set_fp8_weights` REPLACES `q/k/v/o_weight`, so on this
