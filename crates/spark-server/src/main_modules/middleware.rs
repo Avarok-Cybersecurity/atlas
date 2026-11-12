@@ -47,8 +47,9 @@ pub(crate) async fn openai_observability_middleware(
 
 /// Bearer-token gate. Active when the operator passed `--require-auth`
 /// (which installs the policy on the HOST, not on any model); otherwise this
-/// is a pass-through. When active, requests to `/v1/*`, `/tokenize`, and
-/// `/detokenize` must carry `Authorization: Bearer <token>` matching one
+/// is a pass-through. When active, requests to `/v1/*`, `/tokenize`,
+/// `/detokenize`, and the llama.cpp routes (`api::llama_compat::paths`)
+/// must carry `Authorization: Bearer <token>` matching one
 /// of the loaded tokens. Health / metrics / liveness paths stay open
 /// (they're scrape targets / discovery endpoints, expected to be
 /// firewall-protected at the network layer).
@@ -83,7 +84,10 @@ pub(crate) async fn require_auth_middleware(
     // /metrics are never gated, and they are the most frequently polled routes
     // on the server.
     let path = req.uri().path();
-    let needs_auth = path.starts_with("/v1/") || path == "/tokenize" || path == "/detokenize";
+    let needs_auth = path.starts_with("/v1/")
+        || path == "/tokenize"
+        || path == "/detokenize"
+        || crate::api::llama_compat::paths::needs_auth(path);
     if !needs_auth {
         return next.run(req).await;
     }
@@ -155,7 +159,8 @@ pub(crate) async fn rate_limit_middleware(
     // The cheap gate first. Only /v1/* is limited, and /health is polled by
     // supervisors far more often than the API is called — taking two locks and
     // cloning an `Arc` before deciding that is work done for nothing.
-    if !req.uri().path().starts_with("/v1/") {
+    let path = req.uri().path();
+    if !(path.starts_with("/v1/") || crate::api::llama_compat::paths::is_inference_path(path)) {
         return next.run(req).await;
     }
     let Some(rate_limiter) = host.rate_limiter() else {
@@ -313,7 +318,7 @@ pub(crate) fn fault_rejection(
     // Only the inference surface is refused. `/health*` MUST still answer —
     // it is how an operator and an orchestrator learn what happened, and
     // rejecting it would turn a diagnosable fault into a silent one.
-    if !path.starts_with("/v1/") {
+    if !(path.starts_with("/v1/") || crate::api::llama_compat::paths::is_inference_path(path)) {
         return None;
     }
     let reason = fault?;

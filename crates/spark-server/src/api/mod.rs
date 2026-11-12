@@ -26,6 +26,8 @@
 //!                          `TokenLogprobs`
 //! - `inference_impl`     — `impl InferenceRequest`
 //! - `strip`              — legacy `strip_thinking_tags` for completions
+//! - `llama_compat`       — llama.cpp `llama-server` routes (`/completion`,
+//!                          `/apply-template`, `/props`, ...)
 //! - `tests/`             — extracted `sanitizer_tests` module split four ways
 
 pub mod chat;
@@ -41,6 +43,7 @@ pub mod completions_logprobs;
 pub mod conversations;
 pub mod inference_impl;
 pub mod inference_types;
+pub mod llama_compat;
 pub mod lora_control;
 pub mod misc_handlers;
 pub mod models;
