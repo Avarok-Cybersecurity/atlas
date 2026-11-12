@@ -139,6 +139,16 @@ gdn_batched_gemm = false
 # `--fmad=false`; the deinterleave is a permutation. It removes n-1 of the n
 # Q/K/V weight passes per step. `AVAROK_ATTN_GATED_BF16_BATCHM=0` is the A/B.
 attn_gated_bf16_batchm = true
+# Memory sizing for a 16 GB card with a desktop beside the serve. ON, from the
+# RTX 4060 Ti 16 GB boot logs (Qwen3.5-4B): the BF16 load peaks at 1.014x its
+# on-disk size against a generic 1.3x budget (the serve needed
+# `--oom-guard-mb 1024`); a Qwen MTP head allocates about 64 MB outside the
+# other reserve terms against a flat 4 GiB headroom (BF16 + `--speculative`
+# at 4k was refused at the KV stage); a plain serve kept the 0.225 GiB
+# `mtp.*` block resident; and the draft LM head held 148,070 rows
+# `--mtp-vocab 100000` never reads. `AVAROK_MEMORY_FIT_CONSUMER=0` is the A/B
+# against the sizing every other target keeps.
+memory_fit_consumer = true
 # Upper M for the W8A8 block-scaled dense-FFN prefill (#917). No cap
 # (u32::MAX, the baseline): Ada has no receipt either way. GB10's cap is a GB10
 # measurement and is not copied here.

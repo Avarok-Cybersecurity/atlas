@@ -253,6 +253,17 @@ pub struct TargetDefaults {
     /// per-sequence loop until measured. `AVAROK_ATTN_GATED_BF16_BATCHM` is
     /// the A/B.
     pub attn_gated_bf16_batchm: bool,
+    /// Memory sizing tuned for a consumer card with a desktop beside the
+    /// serve: the measured 1.10x load multiplier for a BF16 dense Qwen3.5
+    /// checkpoint, the Qwen MTP headroom sized from what the head allocates
+    /// instead of a flat 4 GiB, no `mtp.*` upload without speculation, and a
+    /// draft LM head of only the `--mtp-vocab` rows MTP reads.
+    ///
+    /// TRUE on ada only (RTX 4060 Ti 16 GB: the 4B BF16 serve needed
+    /// `--oom-guard-mb 1024`, and BF16 + `--speculative` at 4k was refused at
+    /// the KV stage). FALSE on every other target, which keeps its sizing and
+    /// admission exactly as before. `AVAROK_MEMORY_FIT_CONSUMER=0|1` overrides.
+    pub memory_fit_consumer: bool,
     /// Upper `M` for the W8A8 block-scaled dense-FFN prefill on a WIDENING
     /// projection (`n > k`: gate/up). `u32::MAX` = no cap, the baseline.
     ///

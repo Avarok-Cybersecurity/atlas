@@ -50,6 +50,7 @@ const GB10: TargetDefaults = TargetDefaults {
     ffn_bf16_cublas_prefill: false,
     gdn_batched_gemm: false,
     attn_gated_bf16_batchm: false,
+    memory_fit_consumer: false,
     w8a8_prefill_max_m_widening: 64,
     w8a8_prefill_max_m_narrowing: 384,
 };
@@ -82,6 +83,7 @@ const HOPPER: TargetDefaults = TargetDefaults {
     ffn_bf16_cublas_prefill: false,
     gdn_batched_gemm: false,
     attn_gated_bf16_batchm: false,
+    memory_fit_consumer: false,
     // No cap: W8A8 is 2.0-3.1x over W8A16 at every M measured on H100.
     w8a8_prefill_max_m_widening: u32::MAX,
     w8a8_prefill_max_m_narrowing: u32::MAX,
@@ -431,3 +433,7 @@ mod gateup;
 /// The `dense_fp8_from_bf16` row, in its own file for the same reason.
 #[path = "target_defaults_fp8_from_bf16_tests.rs"]
 mod fp8_from_bf16;
+
+/// The `memory_fit_consumer` row, in its own file for the same reason.
+#[path = "target_defaults_memory_fit_tests.rs"]
+mod memory_fit;

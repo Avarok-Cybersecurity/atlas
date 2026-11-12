@@ -47,6 +47,7 @@ pub(crate) struct Defaults {
     pub ffn_bf16_cublas_prefill: bool,
     pub gdn_batched_gemm: bool,
     pub attn_gated_bf16_batchm: bool,
+    pub memory_fit_consumer: bool,
     pub w8a8_prefill_max_m_widening: u32,
     pub w8a8_prefill_max_m_narrowing: u32,
 }
@@ -102,6 +103,9 @@ pub(crate) fn baseline(hw: &str) -> Defaults {
         // Gated dense-BF16 Q/K/V keep the per-sequence GEMV loop in multi-seq
         // decode: what every target served before the row existed.
         attn_gated_bf16_batchm: false,
+        // Memory sizing and admission exactly as every target had them before
+        // the consumer-card fits existed.
+        memory_fit_consumer: false,
         // No cap. Absence is the correct declaration for every arch on which
         // W8A8 does not lose to W8A16 at large M, which is every arch that has
         // not measured otherwise — H100 included (2.0-3.1x at every M).
@@ -226,6 +230,7 @@ pub(crate) fn parse_defaults(hw: &str, hw_toml: &toml::Value) -> Defaults {
             "ffn_bf16_cublas_prefill" => out.ffn_bf16_cublas_prefill = boolean(key, value),
             "gdn_batched_gemm" => out.gdn_batched_gemm = boolean(key, value),
             "attn_gated_bf16_batchm" => out.attn_gated_bf16_batchm = boolean(key, value),
+            "memory_fit_consumer" => out.memory_fit_consumer = boolean(key, value),
             other => panic!(
                 "kernels/{hw}/HARDWARE.toml: [defaults] has no key `{other}`. \
                  The lever list is the field list of `TargetDefaults` \
@@ -269,6 +274,7 @@ pub(crate) fn literal(d: &Defaults) -> String {
          \x20   ffn_bf16_cublas_prefill: {bf16_cublas},\n\
          \x20   gdn_batched_gemm: {gdn_gemm},\n\
          \x20   attn_gated_bf16_batchm: {gated_batchm},\n\
+         \x20   memory_fit_consumer: {memory_fit},\n\
          \x20   w8a8_prefill_max_m_widening: {w8a8_wide},\n\
          \x20   w8a8_prefill_max_m_narrowing: {w8a8_narrow},\n\
          }};\n",
@@ -291,6 +297,7 @@ pub(crate) fn literal(d: &Defaults) -> String {
         bf16_cublas = d.ffn_bf16_cublas_prefill,
         gdn_gemm = d.gdn_batched_gemm,
         gated_batchm = d.attn_gated_bf16_batchm,
+        memory_fit = d.memory_fit_consumer,
         w8a8_wide = d.w8a8_prefill_max_m_widening,
         w8a8_narrow = d.w8a8_prefill_max_m_narrowing,
     )

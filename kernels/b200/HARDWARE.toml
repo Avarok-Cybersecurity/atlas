@@ -143,6 +143,8 @@ gdn_batched_gemm = false
 # Gated dense-BF16 Q/K/V on the batched GEMV in multi-seq decode. OFF for
 # want of a receipt here; ON on ada. `AVAROK_ATTN_GATED_BF16_BATCHM=1` arms it.
 attn_gated_bf16_batchm = false
+# Consumer-card memory sizing. OFF: an Ada measurement, not copied here.
+memory_fit_consumer = false
 # Upper M for the W8A8 block-scaled dense-FFN prefill (#917). NO CAP here:
 # 4294967295 is u32::MAX, which is `build_defaults::baseline`'s value and the
 # way this table spells "every M takes the W8A8 arm". B200 has NO receipt

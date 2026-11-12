@@ -211,6 +211,9 @@ gdn_batched_gemm = false
 # baseline, restated (the row is an ada change). `AVAROK_ATTN_GATED_BF16_BATCHM=1`
 # arms it.
 attn_gated_bf16_batchm = false
+# Consumer-card memory sizing. OFF: the baseline, restated. GB10 keeps its
+# load multipliers, its flat speculative headroom and its full uploads.
+memory_fit_consumer = false
 # Upper M for the W8A8 block-scaled dense-FFN prefill (#917). These are the
 # only two rows in this table that GB10 declares in order to DIFFER from the
 # baseline rather than to restate it: the baseline is no cap, which is right

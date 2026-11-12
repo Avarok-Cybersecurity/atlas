@@ -213,6 +213,10 @@ pub struct TargetLevers {
     /// Gated dense-BF16 Q/K/V on the batched GEMV in multi-seq decode
     /// (`layers/ops/attn_gated_bf16_batchm.rs`). Bit-identical.
     pub attn_gated_bf16_batchm: Resolved<bool>,
+    /// Consumer-card memory sizing (the 1.10x BF16 dense load multiplier, the
+    /// sized Qwen MTP headroom, no `mtp.*` upload without speculation, the
+    /// `--mtp-vocab` draft head). A sizing row: true on ada only.
+    pub memory_fit_consumer: Resolved<bool>,
     pub w8a8_prefill_max_m_widening: Resolved<u32>,
     pub w8a8_prefill_max_m_narrowing: Resolved<u32>,
 }
@@ -393,6 +397,14 @@ pub fn resolve(
             defaults.attn_gated_bf16_batchm,
             var(super::attn_gated_bf16_batchm::ENV).as_deref(),
         ),
+        // Read once at boot by preflight, the weight loaders and the LM-head
+        // setup. `=0` returns ada to every other target's sizing; `=1` takes
+        // the consumer fits on a target that does not declare them.
+        memory_fit_consumer: resolve_toggle(
+            defaults.memory_fit_consumer,
+            var("AVAROK_MEMORY_FIT_CONSUMER").as_deref(),
+            false,
+        ),
     }
 }
 
@@ -454,7 +466,7 @@ pub fn format_levers(l: &TargetLevers) -> String {
          attn_ncol_gemv={attn_ncol_gemv} ffn_gateup_fused={gateup} \
          fp8_act_quant_hopper={act_quant} dense_fp8_from_bf16={fp8_from_bf16} \
          gdn_fp8_from_bf16={gdn_fp8} attn_fp8_from_bf16={attn_fp8} \
-         ffn_bf16_cublas_prefill={bf16_cublas} \
+         ffn_bf16_cublas_prefill={bf16_cublas} memory_fit_consumer={memory_fit} \
          gdn_batched_gemm={gdn_gemm} attn_gated_bf16_batchm={gated_batchm} \
          w8a8_prefill_max_m={w8a8_wide}/{w8a8_narrow}{w8a8_src}",
         hw = if l.hw.is_empty() { "unknown" } else { l.hw },
@@ -483,6 +495,7 @@ pub fn format_levers(l: &TargetLevers) -> String {
         bf16_cublas = onoff(l.ffn_bf16_cublas_prefill),
         gdn_gemm = onoff(l.gdn_batched_gemm),
         gated_batchm = onoff(l.attn_gated_bf16_batchm),
+        memory_fit = onoff(l.memory_fit_consumer),
         // Printed as widening/narrowing. `max` reads as "no cap" rather than
         // 4294967295, which would look like a number someone chose.
         w8a8_wide = cap(l.w8a8_prefill_max_m_widening.value),

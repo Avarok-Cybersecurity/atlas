@@ -275,6 +275,9 @@ fn every_declaring_target_states_every_lever() {
             // Gated dense-BF16 Q/K/V on the batched GEMV. TRUE on ada
             // (bit-identical there), FALSE elsewhere, stated everywhere.
             "attn_gated_bf16_batchm",
+            // Consumer-card memory sizing. TRUE on ada, FALSE everywhere else
+            // and stated, so no target inherits a sizing change silently.
+            "memory_fit_consumer",
         ] {
             assert!(
                 raw.contains(&format!("\n{lever} = ")),
@@ -415,6 +418,7 @@ fn the_generated_constant_names_every_field() {
         "ffn_bf16_cublas_prefill: false",
         "gdn_batched_gemm: false",
         "attn_gated_bf16_batchm: false",
+        "memory_fit_consumer: false",
         "w8a8_prefill_max_m_widening: 4294967295",
         "w8a8_prefill_max_m_narrowing: 4294967295",
     ] {
@@ -455,6 +459,7 @@ fn the_baked_constant_matches_its_own_hardware_tree() {
         baked.attn_gated_bf16_batchm,
         declared.attn_gated_bf16_batchm
     );
+    assert_eq!(baked.memory_fit_consumer, declared.memory_fit_consumer);
     assert_eq!(
         baked.w8a8_prefill_max_m_widening,
         declared.w8a8_prefill_max_m_widening
@@ -489,9 +494,11 @@ fn ada_declares_conservative_defaults_apart_from_its_measured_rows() {
         d.attn_gated_bf16_batchm,
         "bit-identical on ada: same kernel source, --fmad=false"
     );
+    assert!(d.memory_fit_consumer, "the 16 GB consumer-card memory fits");
     let normalised = Defaults {
         ffn_bf16_cublas_prefill: false,
         attn_gated_bf16_batchm: false,
+        memory_fit_consumer: false,
         ..d
     };
     assert_eq!(normalised, baseline("ada"));
@@ -499,6 +506,7 @@ fn ada_declares_conservative_defaults_apart_from_its_measured_rows() {
     for hw in ["gb10", "hopper", "b200", "b300"] {
         assert!(!declared(hw).ffn_bf16_cublas_prefill, "{hw}");
         assert!(!declared(hw).attn_gated_bf16_batchm, "{hw}");
+        assert!(!declared(hw).memory_fit_consumer, "{hw}");
     }
     // The GDN verify GEMM row has no receipt on any target, ada included.
     for hw in ["ada", "gb10", "hopper", "b200", "b300"] {

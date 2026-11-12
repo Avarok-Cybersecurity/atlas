@@ -38,5 +38,6 @@ attn_fp8_from_bf16 = false
 ffn_bf16_cublas_prefill = false
 gdn_batched_gemm = false
 attn_gated_bf16_batchm = false
+memory_fit_consumer = false
 w8a8_prefill_max_m_widening = 4294967295
 w8a8_prefill_max_m_narrowing = 4294967295
