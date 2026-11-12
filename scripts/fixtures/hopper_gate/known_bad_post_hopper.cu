@@ -16,6 +16,11 @@
 //   -arch=sm_100a  PASS
 //   -arch=sm_120a  FAIL  (consumer Blackwell has no redux.f32 either)
 //
+// MEASURED with CUDA 13.3.73 (nvcc/ptxas V13.3.73, x86_64), 2026-11-11, for the
+// Ada target (kernels/ada):
+//
+//   -arch=sm_89    FAIL  "Instruction 'redux.f32' not supported on .target 'sm_89'"
+//
 // So this fixture is a valid negative for every arch EXCEPT sm_100a. The gate
 // asserts the failure rather than assuming it, and if someone points the gate
 // at sm_100a the self-test reports `bad_failed: false` and the gate refuses to
