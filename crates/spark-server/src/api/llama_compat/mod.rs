@@ -21,6 +21,12 @@
 //! Sub-modules:
 //! - `error`          llama.cpp's `{"error": {code, message, type}}` envelope
 //! - `paths`          which compat routes the auth, rate-limit and fault layers guard
+//! - `codec`          the tokenizer operations the routes need, behind a trait
+//! - `tokenize`       `/tokenize` and `/detokenize` shapes
 
+pub(crate) mod codec;
 pub(crate) mod error;
 pub(crate) mod paths;
+pub(crate) mod tokenize;
+#[cfg(test)]
+mod toy_codec;

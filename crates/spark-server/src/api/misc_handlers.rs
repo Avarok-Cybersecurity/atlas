@@ -242,12 +242,36 @@ pub async fn serve_config() -> Response {
     }
 }
 
-/// POST /tokenize — tokenize text or chat messages, return token IDs and count.
-pub async fn tokenize(
-    CurrentModel(state): CurrentModel,
-    req: Result<Json<crate::openai::TokenizeRequest>, JsonRejection>,
-) -> Response {
-    let Json(req) = match req {
+/// POST /tokenize — two dialects on one route.
+///
+/// A body with `content` is llama.cpp's request (`content`, `add_special`,
+/// `with_pieces`) and gets llama.cpp's answer (`{"tokens": [...]}`). Anything
+/// else is Atlas's own (`prompt` or `messages`, answered with
+/// `{tokens, count}`). The body is read as bytes so a missing
+/// `Content-Type: application/json` is tolerated, as in llama-server.
+pub async fn tokenize(CurrentModel(state): CurrentModel, body: axum::body::Bytes) -> Response {
+    let value: serde_json::Value = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(e) => {
+            return openai_error_response(
+                StatusCode::BAD_REQUEST,
+                format!("Invalid request JSON: {e}"),
+            );
+        }
+    };
+    if let Some(map) = value.as_object()
+        && super::llama_compat::tokenize::is_llama_shape(map)
+    {
+        let run = || {
+            let req = super::llama_compat::tokenize::parse_tokenize(map)?;
+            super::llama_compat::tokenize::tokenize_response(&state.tokenizer, &req)
+        };
+        return match run() {
+            Ok(v) => Json(v).into_response(),
+            Err(e) => e.into_response(),
+        };
+    }
+    let req: crate::openai::TokenizeRequest = match serde_json::from_value(value) {
         Ok(r) => r,
         Err(e) => {
             return openai_error_response(
@@ -309,11 +333,12 @@ pub struct DetokenizeRequest {
 }
 
 /// POST /detokenize — decode token IDs back to text.
-pub async fn detokenize(
-    CurrentModel(state): CurrentModel,
-    req: Result<Json<DetokenizeRequest>, JsonRejection>,
-) -> Response {
-    let Json(req) = match req {
+///
+/// The request is the same in both dialects (`tokens`). The answer carries
+/// llama.cpp's `content` (special tokens written out) and Atlas's own `text`
+/// (special tokens dropped), so either kind of client finds its field.
+pub async fn detokenize(CurrentModel(state): CurrentModel, body: axum::body::Bytes) -> Response {
+    let req: DetokenizeRequest = match serde_json::from_slice(&body) {
         Ok(r) => r,
         Err(e) => {
             return openai_error_response(
@@ -322,11 +347,11 @@ pub async fn detokenize(
             );
         }
     };
-    match state.tokenizer.decode(&req.tokens) {
-        Ok(text) => Json(serde_json::json!({"text": text})).into_response(),
+    match super::llama_compat::tokenize::detokenize_response(&state.tokenizer, &req.tokens) {
+        Ok(v) => Json(v).into_response(),
         Err(e) => (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": e.to_string()})),
+            Json(serde_json::json!({"error": e.message})),
         )
             .into_response(),
     }
