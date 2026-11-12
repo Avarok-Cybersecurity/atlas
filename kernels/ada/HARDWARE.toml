@@ -90,3 +90,44 @@ ffn_gateup_fused = false
 # measurement and is not copied here.
 w8a8_prefill_max_m_widening = 4294967295
 w8a8_prefill_max_m_narrowing = 4294967295
+
+# ── Kernels this target owns ───────────────────────────────────────────────
+#
+# Every other entry in `common/` is a relative symlink into kernels/gb10/common
+# (the kernels are written to an SM80-class floor: mma.sync.m16n8k16,
+# cp.async.cg). These are the files Ada holds as real sources, because the gb10
+# source cannot assemble for sm_89 and editing it would move the PTX (and the
+# closure hash) of every target that inherits it. Each one's own header says
+# what differs from the gb10 file it replaces.
+#
+#   prefill_dyn_smem.cuh     ADDITION. One `extern __shared__` buffer the
+#                            prefill tiles below are laid over, and the macro
+#                            that exports each entry's launch size as
+#                            `<entry>_dyn_smem_bytes` for the registry
+#                            (`avarok_core::registry_dyn_smem`).
+#
+#   inferspark_prefill.cu,   The BR=32 and BR=64 contiguous and paged prefill
+#   inferspark_prefill_fp8kv.cu,  attention tiles: 66,560 to 90,208 bytes of
+#   prefill_paged_compute.cuh,    static `__shared__`, which ptxas refuses
+#   prefill_paged_compute_asym.cuh  above 0xc000 (48 KiB) for any arch without
+#                            an `a` suffix, and Ada has none ("Entry function
+#                            'inferspark_prefill_64' uses too much shared data
+#                            (0x16000 bytes, 0xc000 max)": 22 modules, 42
+#                            entry points, the same 22 stems gb10's sm_121f
+#                            gate run reports in docs/HARDWARE.md). The tiles
+#                            are the same bytes in the same order, moved to
+#                            dynamic shared memory (opt-in up to 99 KiB per
+#                            block on sm_89); the kernel bodies are unchanged.
+#                            The 20 paged `.cu` files stay symlinks: their
+#                            `#include "prefill_paged_compute*.cuh"` resolves
+#                            against this directory, so they pick these headers
+#                            up. See docs/HARDWARE.md, "PTX arch suffix and the
+#                            static shared-memory ceiling".
+[kernels]
+overrides = [
+  "inferspark_prefill.cu",
+  "inferspark_prefill_fp8kv.cu",
+  "prefill_dyn_smem.cuh",
+  "prefill_paged_compute.cuh",
+  "prefill_paged_compute_asym.cuh",
+]
