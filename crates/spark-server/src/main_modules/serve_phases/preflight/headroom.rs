@@ -121,6 +121,12 @@ pub(crate) struct PostLoadInputs<'a> {
     /// target. Decides whether the loader builds the Q and O FP8 prefill
     /// twins (~1.5 GB on the 27B).
     pub(crate) w8a8_prefill_kernels: bool,
+    /// Bytes the load-time BF16 -> FP8 FFN route will free while the model
+    /// is built (`fp8_from_bf16::predicted_free_bytes`), 0 when it will not
+    /// run. Subtracted from the checkpoint's on-disk size wherever preflight
+    /// prices the weights' residency, so the memory the route hands back is
+    /// not counted as weights.
+    pub(crate) fp8_ffn_freed: usize,
 }
 
 /// Every term of the fit decision, kept so the INFO line can print all of
@@ -322,6 +328,29 @@ pub(super) fn checkpoint_bytes(model_dir: &std::path::Path) -> Option<u64> {
         }
     }
     None
+}
+
+/// The checkpoint's resident bytes once the model is built: its on-disk size
+/// minus what the BF16 -> FP8 FFN route frees while the layers are built
+/// (`PostLoadInputs::fp8_ffn_freed`, 0 on every other load, which leaves the
+/// on-disk size exactly as before).
+///
+/// WHY. The ring and Marconi budgets are a share of the memory BESIDE the
+/// weights. Pricing the 4B's weights at the 8.68 GiB checkpoint when the route
+/// leaves 6.57 GiB resident under-states that memory by 2.11 GiB, and every
+/// snapshot region sized from it yields depth for bytes that are free.
+pub(super) fn resident_weight_bytes(checkpoint: usize, fp8_ffn_freed: usize) -> usize {
+    let resident = checkpoint.saturating_sub(fp8_ffn_freed);
+    if fp8_ffn_freed > 0 && checkpoint > 0 {
+        tracing::info!(
+            "Preflight weights: {:.2} GB checkpoint - {:.2} GB the BF16 -> FP8 FFN route frees \
+             = {:.2} GB resident",
+            checkpoint as f64 / GIB,
+            fp8_ffn_freed as f64 / GIB,
+            resident as f64 / GIB,
+        );
+    }
+    resident
 }
 
 /// Sum of the DISTINCT shard files a `*.safetensors.index.json` references.

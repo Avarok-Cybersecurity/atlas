@@ -183,9 +183,14 @@ pub(crate) fn preflight_reserve(
     // Memory left beside the checkpoint. Both snapshot regions yield to a share
     // of it (`ssm_reserve/budget.rs`): constants sized for a 120 GB part are
     // most of a 16 GB card.
+    // On the BF16 -> FP8 FFN route the resident weights are the checkpoint
+    // minus what the route frees (2.11 GiB of the 4B's 8.68 GiB).
     let beside_weights = spark_model::ssm_reserve::memory_beside_weights(
         free_mem,
-        headroom::checkpoint_bytes(post_load.model_dir).unwrap_or(0) as usize,
+        headroom::resident_weight_bytes(
+            headroom::checkpoint_bytes(post_load.model_dir).unwrap_or(0) as usize,
+            post_load.fp8_ffn_freed,
+        ),
     );
     // Marconi snapshot region. SSOT:
     // `spark_model::ssm_reserve::marconi_snapshot_slots` makes the SAME

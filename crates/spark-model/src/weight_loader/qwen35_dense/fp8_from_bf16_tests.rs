@@ -228,3 +228,69 @@ fn the_audit_credit_is_bf16_minus_fp8_and_scales_per_layer() {
     // Degenerate shapes free nothing rather than underflow.
     assert_eq!(layer_freed_bytes(0, 9216), 0);
 }
+
+fn qwen35_4b_bf16() -> avarok_core::config::ModelConfig {
+    let mut c = avarok_core::config::ModelConfig::qwen3_next_80b_nvfp4();
+    c.model_type = "qwen3_5".to_string();
+    c.num_experts = 0;
+    c.hidden_size = 2560;
+    c.intermediate_size = 9216;
+    c.num_hidden_layers = 32;
+    c.quantization_config = None;
+    c
+}
+
+fn on() -> RouteInputs {
+    RouteInputs {
+        lever: true,
+        bf16_checkpoint: true,
+        single_gpu: true,
+        lora: false,
+        kernels: true,
+    }
+}
+
+#[test]
+fn the_pre_load_prediction_matches_the_post_load_credit_on_the_4b() {
+    // Every one of the 4B's 32 layers qualifies post-load, so the pre-load
+    // answer (all layers, by construction) is the same 2,264,371,200 bytes.
+    let c = qwen35_4b_bf16();
+    assert_eq!(predicted_free_bytes_for(&c, on()), 2_264_371_200);
+    assert_eq!(
+        predicted_free_bytes_for(&c, on()),
+        32 * layer_freed_bytes(2560, 9216)
+    );
+}
+
+#[test]
+fn the_pre_load_prediction_is_zero_whenever_the_route_will_not_run() {
+    let c = qwen35_4b_bf16();
+    for off in [
+        RouteInputs {
+            lever: false,
+            ..on()
+        },
+        RouteInputs {
+            bf16_checkpoint: false,
+            ..on()
+        },
+        RouteInputs {
+            single_gpu: false,
+            ..on()
+        },
+        RouteInputs { lora: true, ..on() },
+        RouteInputs {
+            kernels: false,
+            ..on()
+        },
+    ] {
+        assert_eq!(predicted_free_bytes_for(&c, off), 0);
+    }
+    // Not the dense Qwen3.5 loader: a MoE checkpoint, another family.
+    let mut moe = qwen35_4b_bf16();
+    moe.num_experts = 256;
+    assert_eq!(predicted_free_bytes_for(&moe, on()), 0);
+    let mut other = qwen35_4b_bf16();
+    other.model_type = "qwen3_next".to_string();
+    assert_eq!(predicted_free_bytes_for(&other, on()), 0);
+}

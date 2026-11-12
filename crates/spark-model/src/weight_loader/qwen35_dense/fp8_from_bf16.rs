@@ -133,12 +133,7 @@ pub fn deferred_free_bytes(
     tp_world_size: usize,
     lora: bool,
 ) -> usize {
-    // The factory's loader choice for this route (`loader_for_config`).
-    let family = config.model_type.to_lowercase().replace(['-', '.'], "_");
-    let dense_loader = matches!(
-        family.as_str(),
-        "qwen3_5_moe" | "qwen3_5" | "qwen35_moe" | "qwen35"
-    ) && config.is_qwen35_dense();
+    let dense_loader = dense_loader_for(config);
     let levers = ops::target_defaults::resolved();
     let lever = levers.dense_fp8_from_bf16.value;
     let any = lever || levers.gdn_fp8_from_bf16.value || levers.attn_fp8_from_bf16.value;
@@ -185,6 +180,59 @@ pub fn deferred_free_bytes(
         .filter(|&l| layer_shapes_ok(store, &config.layer_prefix(l), h, i))
         .count();
     layers * layer_freed_bytes(h, i) + gdn
+}
+
+/// [`deferred_free_bytes`] predicted BEFORE the checkpoint is read, for the
+/// server's pre-load estimates (the SSM ring and Marconi budgets, which are a
+/// share of the memory beside the weights).
+///
+/// The two inputs the post-load answer reads off the store are replaced by
+/// their pre-load views: the BF16 checkpoint is one that declares no
+/// `quantization_config` (`Nvfp4Variant::Bf16Raw` is detected from tensor
+/// names), and every layer is counted, because a dense Qwen3.5 layer's FFN is
+/// `[inter, hidden]` / `[hidden, inter]` by construction. The kernel and lever
+/// clauses are the same calls.
+pub fn predicted_free_bytes(
+    gpu: &dyn GpuBackend,
+    config: &ModelConfig,
+    tp_world_size: usize,
+    lora: bool,
+) -> usize {
+    let lever = ops::target_defaults::resolved().dense_fp8_from_bf16.value;
+    if !(dense_loader_for(config) && lever) {
+        return 0;
+    }
+    let quant_k = crate::layers::try_target_kernel(gpu, QUANT_MODULE, QUANT_MODULE);
+    let gemv = crate::layers::dense_ffn::ada_kernels::Fp8FfnKernels::resolve(gpu).gemv;
+    predicted_free_bytes_for(
+        config,
+        RouteInputs {
+            lever,
+            bf16_checkpoint: config.quantization_config.is_none(),
+            single_gpu: tp_world_size.max(1) == 1,
+            lora,
+            kernels: quant_k.0 != 0 && gemv.0 != 0,
+        },
+    )
+}
+
+/// The pure half of [`predicted_free_bytes`]: 0 unless the dense loader takes
+/// the checkpoint and [`route_selected`] admits the inputs.
+pub fn predicted_free_bytes_for(config: &ModelConfig, inputs: RouteInputs) -> usize {
+    if !(dense_loader_for(config) && route_selected(inputs)) {
+        return 0;
+    }
+    config.num_hidden_layers * layer_freed_bytes(config.hidden_size, config.intermediate_size)
+}
+
+/// The factory's loader choice for this route (`loader_for_config`): the
+/// dense Qwen3.5 loader, under any of the family's spellings.
+fn dense_loader_for(config: &ModelConfig) -> bool {
+    let family = config.model_type.to_lowercase().replace(['-', '.'], "_");
+    matches!(
+        family.as_str(),
+        "qwen3_5_moe" | "qwen3_5" | "qwen35_moe" | "qwen35"
+    ) && config.is_qwen35_dense()
 }
 
 /// The route, resolved once per load: `Some` when it is on.

@@ -462,6 +462,14 @@ pub(crate) fn load_model(
         w8a8_prefill_kernels: spark_model::layers::qwen3_attention::w8a8_prefill_kernels_loaded(
             gpu.as_ref(),
         ),
+        // The same clauses the post-load audit's credit uses, read before the
+        // checkpoint is (`deferred_free_bytes` below needs the store).
+        fp8_ffn_freed: spark_model::weight_loader::fp8_from_bf16::predicted_free_bytes(
+            gpu.as_ref(),
+            &config,
+            world_size,
+            !args.lora_adapter.is_empty(),
+        ),
     };
     let serve_phases::ReservePreflight {
         inference_reserve,
