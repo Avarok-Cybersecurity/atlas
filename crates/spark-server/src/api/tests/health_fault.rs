@@ -24,7 +24,7 @@ const REASON: &str = "kernel launch failed (716), and a no-op synchronize also f
 fn a_loaded_model_with_no_fault_is_ready() {
     let (code, body) = readiness(Some("Qwen/Qwen3.6-27B-NVFP4"), None);
     assert_eq!(code, StatusCode::OK);
-    assert_eq!(body["status"], "ready");
+    assert_eq!(body["status"], "ok", "llama-server's healthy answer");
     assert_eq!(body["model"], "Qwen/Qwen3.6-27B-NVFP4");
 }
 
@@ -84,4 +84,26 @@ fn a_fault_before_any_model_loaded_is_not_reported_as_loading() {
         body["status"], "faulted",
         "a permanently dead server must not look like a starting one"
     );
+}
+
+/// llama.cpp clients read `error.message` and `error.type` from a 503. The
+/// loading and faulted bodies carry that object next to Atlas's `status`.
+///
+/// PROVEN BY: dropping the `with_error` wrapper in `readiness` turns this red.
+#[test]
+fn unavailable_bodies_carry_the_llama_cpp_error_object() {
+    let (_, loading) = readiness(None, None);
+    assert_eq!(loading["error"]["code"], 503);
+    assert_eq!(loading["error"]["type"], "unavailable_error");
+    assert_eq!(loading["error"]["message"], "Loading model");
+    assert_eq!(loading["status"], "loading");
+
+    let (_, faulted) = readiness(Some("m"), Some(REASON));
+    assert_eq!(faulted["error"]["code"], 503);
+    assert!(
+        faulted["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains(REASON))
+    );
+    assert_eq!(faulted["reason"], REASON);
 }

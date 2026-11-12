@@ -153,25 +153,44 @@ pub(crate) fn readiness(
     model: Option<&str>,
     fault: Option<&str>,
 ) -> (StatusCode, serde_json::Value) {
+    use super::llama_compat::error::{ErrorKind, error_object};
+    // The 503 bodies also carry llama.cpp's `error` object, so a client that
+    // reads `error.message` / `error.type` from llama-server sees the same
+    // thing here; `status` and `reason` are Atlas's own and stay.
+    let with_error = |status: &str, reason: Option<&str>, message: &str| {
+        let mut body = error_object(
+            StatusCode::SERVICE_UNAVAILABLE,
+            ErrorKind::Unavailable,
+            message,
+        );
+        body["status"] = serde_json::json!(status);
+        if let Some(r) = reason {
+            body["reason"] = serde_json::json!(r);
+        }
+        body
+    };
     if let Some(reason) = fault {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
-            serde_json::json!({"status": "faulted", "reason": reason}),
+            with_error("faulted", Some(reason), &format!("GPU fault: {reason}")),
         );
     }
     match model {
+        // llama-server answers `{"status": "ok"}`; clients compare against it.
         Some(name) => (
             StatusCode::OK,
-            serde_json::json!({"status": "ready", "model": name}),
+            serde_json::json!({"status": "ok", "model": name}),
         ),
         None => (
             StatusCode::SERVICE_UNAVAILABLE,
-            serde_json::json!({"status": "loading"}),
+            with_error("loading", None, "Loading model"),
         ),
     }
 }
 
-/// GET /health — readiness probe (503 while model is loading).
+/// GET /health — readiness probe (503 while model is loading). The healthy
+/// answer is `{"status":"ok","model":...}`: `ok` is llama-server's status,
+/// which llama.cpp clients compare against.
 pub async fn health(
     State(host): State<Arc<crate::main_modules::model_host::ModelHost>>,
 ) -> Response {

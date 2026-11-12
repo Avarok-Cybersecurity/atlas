@@ -888,6 +888,10 @@ pub(crate) fn load_model(
         supports_thinking,
         &model_dir,
     );
+    // Recorded before the engine moves into the scheduler: the HTTP layer
+    // cannot see the engine, but the llama.cpp `/completion` route must know
+    // whether `json_schema` / `grammar` can be enforced at all.
+    let grammar_available = grammar_engine.is_some();
 
     // 7. Create scheduler channel + spawn scheduler
     spark_runtime::progress::phase(9, "scheduler");
@@ -1288,6 +1292,8 @@ pub(crate) fn load_model(
             lora_states.first().map(|l| l.name.clone()),
         )),
         max_seq_len: args.max_seq_len,
+        max_num_seqs: args.max_num_seqs,
+        grammar_available,
         request_tx,
         rotation_tx: if lora_states.is_empty() {
             None

@@ -105,6 +105,22 @@ pub(crate) async fn build_and_serve(
         .route("/v1/moderations", post(api::moderations_stub))
         .route("/tokenize", post(api::tokenize))
         .route("/detokenize", post(api::detokenize))
+        // llama.cpp `llama-server` routes (see api/llama_compat). Their paths
+        // are listed in `llama_compat::paths` so auth and the fault latch
+        // guard them: add a path in both places.
+        .route("/props", get(api::llama_compat::handlers::props))
+        .route(
+            "/apply-template",
+            post(api::llama_compat::handlers::apply_template),
+        )
+        .route(
+            "/embedding",
+            post(api::llama_compat::handlers::embedding_unsupported),
+        )
+        .route(
+            "/embeddings",
+            post(api::llama_compat::handlers::embedding_unsupported),
+        )
         .route("/hardware", get(api::hardware))
         .route("/serve-config", get(api::serve_config))
         .route("/health", get(api::health))

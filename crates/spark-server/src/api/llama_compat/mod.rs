@@ -23,10 +23,16 @@
 //! - `paths`          which compat routes the auth, rate-limit and fault layers guard
 //! - `codec`          the tokenizer operations the routes need, behind a trait
 //! - `tokenize`       `/tokenize` and `/detokenize` shapes
+//! - `apply_template` `/apply-template` request and response
+//! - `props`          `/props` document and the sampling defaults
+//! - `handlers`       axum handlers for the three routes above and `/embedding`
 
+pub(crate) mod apply_template;
 pub(crate) mod codec;
 pub(crate) mod error;
+pub(crate) mod handlers;
 pub(crate) mod paths;
+pub(crate) mod props;
 pub(crate) mod tokenize;
 #[cfg(test)]
 mod toy_codec;

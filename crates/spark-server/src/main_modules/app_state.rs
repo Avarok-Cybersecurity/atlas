@@ -48,6 +48,15 @@ pub struct AppState {
     /// authoritative active slot.
     pub active_adapter: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     pub max_seq_len: usize,
+    /// `--max-num-seqs`: the configured number of concurrent sequences. The
+    /// llama.cpp `/props` route reports it as `total_slots`.
+    pub max_num_seqs: usize,
+    /// True when the XGrammar engine initialized, i.e. `json_schema` /
+    /// `response_format` / `grammar` constraints will actually be enforced.
+    /// The scheduler owns the engine and falls back to unconstrained decoding
+    /// when it is absent, so the llama.cpp `/completion` route checks this
+    /// before accepting a constraint it could not honor.
+    pub grammar_available: bool,
     pub request_tx: mpsc::Sender<InferenceRequest>,
     /// LoRA adapter-rotation control channel (`POST /v1/lora/active`). `None`
     /// when no adapter is loaded. Carries `(adapter_name, ack)` to the
