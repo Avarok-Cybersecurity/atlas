@@ -190,6 +190,11 @@ attn_ncol_gemv = false
 # receipt moves the source down and this row with it. See
 # `kernels/hopper/HARDWARE.toml` and `FFN-GATEUP-FUSION-ATTRIBUTION.md`.
 ffn_gateup_fused = false
+# Quantize a plain-BF16 dense checkpoint's FFN to block-scaled FP8 at load.
+# OFF: on this part the dense-FP8 arms lose to NVFP4 (see
+# `layers/dense_ffn_w8a8_prefill.rs`), and 120 GB needs no FP8 to fit a dense
+# model. A NUMERICS row; it exists for the 16 GB Ada target.
+dense_fp8_from_bf16 = false
 # Upper M for the W8A8 block-scaled dense-FFN prefill (#917). These are the
 # only two rows in this table that GB10 declares in order to DIFFER from the
 # baseline rather than to restate it: the baseline is no cap, which is right

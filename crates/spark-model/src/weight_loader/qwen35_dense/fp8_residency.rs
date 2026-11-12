@@ -397,6 +397,11 @@ pub struct TwinsBuilt {
     /// reader comparing two serve logs needs to know which of the two numbers
     /// moved and why.
     pub ffn_gateup_fused: bool,
+    /// The dense-FFN gate/up/down quantized from BF16 at load
+    /// (`fp8_from_bf16.rs`). Not a twin of anything: it REPLACES the BF16
+    /// weights, which are freed, so `derived` grows by about half of what the
+    /// checkpoint gives back.
+    pub ffn_fp8_from_bf16: bool,
 }
 
 impl TwinsBuilt {
@@ -417,6 +422,9 @@ impl TwinsBuilt {
         }
         if self.ffn_gateup_fused {
             parts.push("ffn-gateup-fp8");
+        }
+        if self.ffn_fp8_from_bf16 {
+            parts.push("ffn-fp8-from-bf16");
         }
         if parts.is_empty() {
             "none".to_owned()

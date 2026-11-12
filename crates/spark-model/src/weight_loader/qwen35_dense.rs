@@ -262,6 +262,9 @@ fn ffn_gateup_fused_selected(
 // PREDICTION in `predicted_residency` is read by spark-server's preflight,
 // and it prices its terms with this module's shape helpers so the prediction
 // and the loader's own tally cannot be two different arithmetics (#915).
+// The load-time BF16 -> block-scaled FP8 route for the dense FFN
+// (`[defaults] dense_fp8_from_bf16`).
+pub mod fp8_from_bf16;
 pub mod fp8_residency;
 mod loaders_b;
 pub mod predicted_residency;
@@ -369,6 +372,15 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
         // `fp8_residency.rs`.
         let route_env = RouteEnv::from_env();
         let mut residency = DerivedResidency::default();
+        // Resolved ONCE: `Some` when this target declares the BF16 -> FP8
+        // route (or `AVAROK_DENSE_FP8_FROM_BF16=1`) and its clauses hold.
+        let ffn_from_bf16_route = fp8_from_bf16::Fp8FromBf16::resolve(
+            gpu,
+            crate::layers::ops::target_defaults::resolved().dense_fp8_from_bf16,
+            variant,
+            config.tp_world_size,
+            config.adapter_max_rank,
+        );
 
         for (i, lt) in layer_types.iter().enumerate() {
             if i % 8 == 0 {
@@ -382,7 +394,13 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
             // load gate/up/down directly as block-scaled `Fp8Weight` and
             // dispatch w8a16 — no NVFP4 requant. TP>1 still uses the NVFP4
             // path (FP8 FFN sharding is a follow-up).
-            let ffn_fp8 = ffn_fp8_arm_selected(store, config, variant, &lp);
+            let ffn_fp8_native = ffn_fp8_arm_selected(store, config, variant, &lp);
+            // A BF16 layer quantized at load is a native-FP8 layer from here
+            // on: same overlay, same arms, same NULL NVFP4 fallback.
+            let ffn_from_bf16 = ffn_from_bf16_route.filter(|_| {
+                !ffn_fp8_native && fp8_from_bf16::layer_shapes_ok(store, &lp, h, ffn_inter(config))
+            });
+            let ffn_fp8 = ffn_fp8_native || ffn_from_bf16.is_some();
             // 2026-09-11 (#915), replacing "always load the NVFP4 weights so
             // every dispatch path has a valid weight to fall back to": there is
             // no such path any more. `forward_k2`/`k3`/`km` redirect to
@@ -421,7 +439,9 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
             // Keep-packed projections are 2-bit blocks, not BF16 — there is
             // nothing to snapshot (dense_auto has no PackedQ2_0 arm and would
             // abort the load), and the ffn_q2 arm below owns their compute.
-            let ffn_bf16 = !ffn_q2 && matches!(variant, Nvfp4Variant::Bf16Raw);
+            // Not under the BF16 -> FP8 route: the FP8 copies replace the BF16
+            // weights, so a BF16 snapshot would be 2 bytes/weight for nothing.
+            let ffn_bf16 = !ffn_q2 && !ffn_fp8 && matches!(variant, Nvfp4Variant::Bf16Raw);
             // #915 for the BF16 overlay: every `DenseFfnLayer` entry point
             // returns from inside its `bf16_weights` arm (`forward_k2`/`k3`/`km`
             // go through `native_small_batch_uses_prefill`, which is true for a
@@ -526,9 +546,25 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                         .adopt("ffn fp8 block scale (widened)", w.row_scale, bytes);
                     Ok(w)
                 };
-                let mut gate = load_ffn_fp8("gate_proj")?;
-                let mut up = load_ffn_fp8("up_proj")?;
-                let down = load_ffn_fp8("down_proj")?;
+                let [mut gate, mut up, down] = match ffn_from_bf16 {
+                    Some(route) => {
+                        residency.twins.ffn_fp8_from_bf16 = true;
+                        route.quantize_ffn(
+                            store,
+                            &lp,
+                            h,
+                            ffn_inter(config),
+                            gpu,
+                            stream,
+                            &mut residency,
+                        )?
+                    }
+                    None => [
+                        load_ffn_fp8("gate_proj")?,
+                        load_ffn_fp8("up_proj")?,
+                        load_ffn_fp8("down_proj")?,
+                    ],
+                };
                 // FUSED gate+up (#927). ONE `[2*inter, hidden]` E4M3 buffer
                 // and ONE `[2*inter/128, hidden/128]` FP32 scale grid, with
                 // `gate` and `up` re-pointed at VIEWS inside them — so the

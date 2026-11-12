@@ -256,6 +256,11 @@ fn every_declaring_target_states_every_lever() {
             // absent cap and a deliberate no-cap must not look identical.
             "w8a8_prefill_max_m_widening",
             "w8a8_prefill_max_m_narrowing",
+            // The load-time BF16 -> FP8 route. A NUMERICS row, false on every
+            // target here, and stated for the same reason as the hopper-only
+            // booleans: an absent row and a deliberate `false` must not look
+            // identical.
+            "dense_fp8_from_bf16",
         ] {
             assert!(
                 raw.contains(&format!("\n{lever} = ")),
@@ -390,6 +395,7 @@ fn the_generated_constant_names_every_field() {
         "decode_split_silu: true",
         "attn_decode_splitk: \"auto\"",
         "ffn_gateup_fused: true",
+        "dense_fp8_from_bf16: false",
         "w8a8_prefill_max_m_widening: 4294967295",
         "w8a8_prefill_max_m_narrowing: 4294967295",
     ] {
@@ -418,6 +424,7 @@ fn the_baked_constant_matches_its_own_hardware_tree() {
     assert_eq!(baked.decode_split_silu, declared.decode_split_silu);
     assert_eq!(baked.attn_decode_splitk, declared.attn_decode_splitk);
     assert_eq!(baked.ffn_gateup_fused, declared.ffn_gateup_fused);
+    assert_eq!(baked.dense_fp8_from_bf16, declared.dense_fp8_from_bf16);
     assert_eq!(
         baked.w8a8_prefill_max_m_widening,
         declared.w8a8_prefill_max_m_widening

@@ -41,6 +41,7 @@ pub(crate) struct Defaults {
     pub lm_head_m16_tc: bool,
     pub attn_ncol_gemv: bool,
     pub ffn_gateup_fused: bool,
+    pub dense_fp8_from_bf16: bool,
     pub w8a8_prefill_max_m_widening: u32,
     pub w8a8_prefill_max_m_narrowing: u32,
 }
@@ -79,6 +80,9 @@ pub(crate) fn baseline(hw: &str) -> Defaults {
         // INERT anywhere the file is not compiled. OFF is what every
         // target served before #927.
         ffn_gateup_fused: false,
+        // A BF16 checkpoint keeps its BF16 weights: what every target served
+        // before the load-time FP8 route existed.
+        dense_fp8_from_bf16: false,
         // No cap. Absence is the correct declaration for every arch on which
         // W8A8 does not lose to W8A16 at large M, which is every arch that has
         // not measured otherwise — H100 included (2.0-3.1x at every M).
@@ -197,6 +201,7 @@ pub(crate) fn parse_defaults(hw: &str, hw_toml: &toml::Value) -> Defaults {
             "lm_head_m16_tc" => out.lm_head_m16_tc = boolean(key, value),
             "attn_ncol_gemv" => out.attn_ncol_gemv = boolean(key, value),
             "ffn_gateup_fused" => out.ffn_gateup_fused = boolean(key, value),
+            "dense_fp8_from_bf16" => out.dense_fp8_from_bf16 = boolean(key, value),
             other => panic!(
                 "kernels/{hw}/HARDWARE.toml: [defaults] has no key `{other}`. \
                  The lever list is the field list of `TargetDefaults` \
@@ -234,6 +239,7 @@ pub(crate) fn literal(d: &Defaults) -> String {
          \x20   lm_head_m16_tc: {lm_head_m16_tc},\n\
          \x20   attn_ncol_gemv: {attn_ncol_gemv},\n\
          \x20   ffn_gateup_fused: {gateup_fused},\n\
+         \x20   dense_fp8_from_bf16: {fp8_from_bf16},\n\
          \x20   w8a8_prefill_max_m_widening: {w8a8_wide},\n\
          \x20   w8a8_prefill_max_m_narrowing: {w8a8_narrow},\n\
          }};\n",
@@ -250,6 +256,7 @@ pub(crate) fn literal(d: &Defaults) -> String {
         lm_head_m16_tc = d.lm_head_m16_tc,
         attn_ncol_gemv = d.attn_ncol_gemv,
         gateup_fused = d.ffn_gateup_fused,
+        fp8_from_bf16 = d.dense_fp8_from_bf16,
         w8a8_wide = d.w8a8_prefill_max_m_widening,
         w8a8_narrow = d.w8a8_prefill_max_m_narrowing,
     )

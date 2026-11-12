@@ -198,6 +198,9 @@ pub struct TargetLevers {
     /// (#927). No serving receipt on any target — off everywhere.
     pub attn_ncol_gemv: Resolved<bool>,
     pub ffn_gateup_fused: Resolved<bool>,
+    /// Quantize a BF16 checkpoint's dense FFN to block-scaled FP8 at load
+    /// (`weight_loader/qwen35_dense/fp8_from_bf16.rs`). A numerics row.
+    pub dense_fp8_from_bf16: Resolved<bool>,
     pub w8a8_prefill_max_m_widening: Resolved<u32>,
     pub w8a8_prefill_max_m_narrowing: Resolved<u32>,
 }
@@ -341,6 +344,16 @@ pub fn resolve(
             var("AVAROK_FFN_GATEUP_FUSED").as_deref(),
             false,
         ),
+        // The load-time BF16 -> FP8 route. Read ONCE per load by the loader,
+        // never per step. `=0` keeps a BF16 checkpoint in BF16 on a target
+        // that declares the route, which is both the accuracy A/B and the
+        // operator's way back to exact BF16 weights; `=1` takes the route on a
+        // target that does not declare it.
+        dense_fp8_from_bf16: resolve_toggle(
+            defaults.dense_fp8_from_bf16,
+            var("AVAROK_DENSE_FP8_FROM_BF16").as_deref(),
+            false,
+        ),
     }
 }
 
@@ -400,7 +413,7 @@ pub fn format_levers(l: &TargetLevers) -> String {
          attn_decode_splitk={splitk}{splitk_src} ffn_m16_tc={ffn_m16_tc} \
          attn_m16_tc={attn_m16_tc} lm_head_m16_tc={lm_head_m16_tc} \
          attn_ncol_gemv={attn_ncol_gemv} ffn_gateup_fused={gateup} \
-         fp8_act_quant_hopper={act_quant} \
+         fp8_act_quant_hopper={act_quant} dense_fp8_from_bf16={fp8_from_bf16} \
          w8a8_prefill_max_m={w8a8_wide}/{w8a8_narrow}{w8a8_src}",
         hw = if l.hw.is_empty() { "unknown" } else { l.hw },
         // Not a resolvable lever — it is a FACT about the part, cross-checked
@@ -422,6 +435,7 @@ pub fn format_levers(l: &TargetLevers) -> String {
         lm_head_m16_tc = onoff(l.lm_head_m16_tc),
         attn_ncol_gemv = onoff(l.attn_ncol_gemv),
         gateup = onoff(l.ffn_gateup_fused),
+        fp8_from_bf16 = onoff(l.dense_fp8_from_bf16),
         // Printed as widening/narrowing. `max` reads as "no cap" rather than
         // 4294967295, which would look like a number someone chose.
         w8a8_wide = cap(l.w8a8_prefill_max_m_widening.value),

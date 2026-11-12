@@ -189,6 +189,21 @@ pub struct TargetDefaults {
     /// (`silu_mul_strided.cu`) is a Hopper-owned source, so the row is inert
     /// on a target whose tree does not carry it.
     pub ffn_gateup_fused: bool,
+    /// Quantize a plain-BF16 dense checkpoint's FFN gate/up/down to 128x128
+    /// block-scaled FP8 (E4M3) AT LOAD and serve them on the native-FP8 arms
+    /// (`weight_loader/qwen35_dense/fp8_from_bf16.rs`), instead of keeping the
+    /// BF16 weights.
+    ///
+    /// A NUMERICS lever, unlike the speed-only rows above: E4M3 keeps 3
+    /// mantissa bits against BF16's 7. What it buys is bytes: half the FFN
+    /// weight memory, and half the FFN bytes a bandwidth-bound decode step
+    /// streams (a 4B Holo's FFN is 4.5 GB of its 8.7 GB in BF16).
+    ///
+    /// FALSE on every target in this tree: GB10's measured dense-FP8 kernels
+    /// lose to its NVFP4 ones, and the datacenter parts have the memory to
+    /// keep BF16. The 16 GB Ada target is the one it exists for.
+    /// `AVAROK_DENSE_FP8_FROM_BF16=0|1` is the A/B against BF16.
+    pub dense_fp8_from_bf16: bool,
     /// Upper `M` for the W8A8 block-scaled dense-FFN prefill on a WIDENING
     /// projection (`n > k`: gate/up). `u32::MAX` = no cap, the baseline.
     ///
