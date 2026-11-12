@@ -85,6 +85,16 @@ attn_ncol_gemv = false
 # The fused dense-FFN gate+up decode GEMM (#927). OFF and INERT: its
 # strided-SiLU consumer is Hopper-owned and not linked here.
 ffn_gateup_fused = false
+# Quantize a plain-BF16 dense checkpoint's FFN to 128x128 block-scaled FP8 at
+# load (`weight_loader/qwen35_dense/fp8_from_bf16.rs`). OFF, the baseline,
+# until Ada has a receipt: it changes numerics. It is the row expected to flip
+# first, because it is what lets the reference part hold the model it is for:
+# a 4B Holo's FFN is 4.53 of its 8.68 GB in BF16, and E4M3 halves it in VRAM
+# and in every bandwidth-bound decode step. The receipt that flips it to true:
+# `examples/fp8_ada_microtest.rs` all PASS, then logit agreement of
+# `AVAROK_DENSE_FP8_FROM_BF16=1` against the BF16 default on both holo
+# targets, then decode and prefill tok/s against the same switch.
+dense_fp8_from_bf16 = false
 # Upper M for the W8A8 block-scaled dense-FFN prefill (#917). No cap
 # (u32::MAX, the baseline): Ada has no receipt either way. GB10's cap is a GB10
 # measurement and is not copied here.
@@ -133,8 +143,19 @@ w8a8_prefill_max_m_narrowing = 4294967295
 #                            file changes. The lookup is a try_kernel whose
 #                            absence keeps the scalar spine, and both holo
 #                            MODEL.tomls declare it in [expected_absent].
+#
+#   fp8_gemv_ada.cu,         ADDITIONS. sm_89 drop-ins for the dense FFN's FP8
+#   fp8_gemm_ada.cu          W8A16 decode GEMVs (register `cvt.rn.f16x2.e4m3x2`
+#                            dequant, no shared-memory LUT) and its W8A8
+#                            prefill GEMM (three-stage cp.async, swizzled
+#                            ldmatrix). Same arguments, geometry and output
+#                            bits as the gb10 kernels they stand in for, which
+#                            stay symlinked here; the layer takes the handle
+#                            (`layers/dense_ffn_ada_kernels.rs`).
 [kernels]
 overrides = [
+  "fp8_gemm_ada.cu",
+  "fp8_gemv_ada.cu",
   "gated_delta_rule_fla.cu",
   "inferspark_prefill.cu",
   "inferspark_prefill_fp8kv.cu",
