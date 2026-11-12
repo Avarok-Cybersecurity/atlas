@@ -198,6 +198,26 @@ fn b300_ptx_requires_exactly_compute_capability_10_3() {
     }
 }
 
+/// An Ada device (CC 8.9) is pointed at `kernels/ada`, whose plain `sm_89`
+/// PTX runs there and forward; a GB10 or Hopper image refuses it. Ampere
+/// (8.6) is older than sm_89 PTX can run on and has no target of its own.
+/// Oracle: `kernels/ada/HARDWARE.toml` declares `arch = "sm_89"` and
+/// `compute_capability = "8.9"`.
+#[test]
+fn an_ada_device_is_pointed_at_the_ada_target() {
+    assert_eq!(target_hint((8, 9)), Some("ada"));
+    assert!(ptx_arch_runs_on_device("sm_89", (8, 9)).is_ok());
+    assert!(ptx_arch_runs_on_device("sm_89", (9, 0)).is_ok());
+    for compiled in ["sm_121f", "sm_90a"] {
+        let msg = ptx_arch_runs_on_device(compiled, (8, 9))
+            .expect_err("neither arch runs on CC 8.9")
+            .to_string();
+        assert!(msg.contains("AVAROK_TARGET_HW=ada"), "{msg}");
+    }
+    assert!(ptx_arch_runs_on_device("sm_89", (8, 6)).is_err());
+    assert_eq!(target_hint((8, 6)), None);
+}
+
 /// A CC with no shipped target says so instead of naming a target that does
 /// not exist. Oracle: `kernels/` ships gb10 (12.1), hopper (9.0) and b200
 /// (10.0) — nothing for a Turing 7.5.

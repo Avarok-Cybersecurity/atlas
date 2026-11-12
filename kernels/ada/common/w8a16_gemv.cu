@@ -1,0 +1,1 @@
+../../gb10/common/w8a16_gemv.cu

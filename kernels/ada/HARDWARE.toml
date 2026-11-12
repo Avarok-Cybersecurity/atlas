@@ -1,0 +1,92 @@
+[hardware]
+name = "ada"
+vendor = "nvidia"
+# Ada Lovelace, SM 8.9: GeForce RTX 40-series, RTX 4000/5000/6000 Ada, L4,
+# L40/L40S. Plain `sm_89`: NVIDIA defines no arch-specific `sm_89a`, so this is
+# portable PTX that the driver JIT-compiles forward onto any CC >= 8.9.
+#
+# Two things the gb10 kernels lean on are missing at this arch:
+#   * a way past ptxas's 48 KiB static `__shared__` ceiling, which only an
+#     `a`-suffixed arch lifts;
+#   * TMA and `mbarrier ... expect_tx`, which are sm_90+.
+arch = "sm_89"
+compute_capability = "8.9"
+# Streaming multiprocessors of the reference part this target was brought up
+# against: RTX 4060 Ti 16 GB (AD106, 34 SMs). Other Ada boards differ (an RTX
+# 4090 has 128); the boot cross-check (`arch_preflight::check_sm_count`) warns
+# on a mismatch, and only grid sizing that reads this value is affected.
+sm_count = 34
+# RTX 4060 Ti 16 GB: 128-bit GDDR6 at 18 Gbps = 288 GB/s. Documentation and
+# roofline input only; the runtime reads real free memory via cuMemGetInfo.
+memory_bandwidth_gbps = 288
+memory_type = "GDDR6"
+memory_gb = 16
+
+# Flags added to EVERY kernel compiled for this hardware, under
+# common/KERNEL.toml's and the model's (build_flags::merge_extra_flags).
+#
+# AVAROK_NO_WARP_BLOCKSCALE_MMA compiles out the W4A4 tail of
+# qwen3.6-35b-a3b/nvfp4/moe_w4a16_grouped_gemm.cu, which both holo targets'
+# nvfp4/ dirs link. Ada has no FP4 datapath at all, so ptxas rejects that
+# region as it does on Hopper ("Feature 'cvt.e2m1x2.f32' not supported on
+# .target 'sm_89'" and "Instruction 'mma with block scale' not supported",
+# CUDA 13.3.73; reproduce with
+# `scripts/hopper_ptx_gate.sh --hw ada --model holo-3.1-0.8b --strict` after
+# dropping this flag). The rest of the file is W4A16 at the SM80 floor and
+# compiles; the dense holo models never construct an MoE layer, so nothing on
+# this target looks up the two entry points the define removes.
+[build]
+extra_nvcc_flags = ["-DAVAROK_NO_WARP_BLOCKSCALE_MMA"]
+
+# ── Serving defaults for this target ───────────────────────────────────────
+#
+# SSOT for the per-target serving levers, baked into `avarok_kernels` by
+# build.rs (`build_defaults.rs`) as `avarok_kernels::TARGET_DEFAULTS` and read
+# by every resolver in spark-model BEFORE the environment. Every row is
+# declared, even where it agrees with the baseline, so this file answers on its
+# own what an Ada serve runs with.
+#
+# Ada has NO serving receipt yet, so it declares the conservative table, the
+# same values as `build_defaults::baseline`: nothing is inherited from Hopper or
+# GB10 by resemblance. A row moves only with an A/B measured on an Ada card.
+[defaults]
+# The BF16 decode head's batched-GEMV band: the frozen 8, for want of an Ada
+# A/B.
+lm_head_batchm_max = 8
+# One strided recurrent launch per batch on the GDN decode path. ON for Hopper
+# on a Hopper receipt; no Ada receipt, so off.
+ssm_batched_recurrent = false
+# The tensor-core GDN chunked-PREFILL spine (#928). OFF, and INERT: the kernel
+# is Hopper's (`kernels/hopper/common/gated_delta_rule_chunk_tc.cu`) and is not
+# linked into this tree.
+gdn_prefill_tc = false
+# The Hopper BA-gates twin. OFF and INERT: Hopper-owned source, not linked here.
+ssm_ba_gates_hopper = false
+# The Hopper FP8 activation-quant twin. OFF and INERT: Hopper-owned source, not
+# linked here.
+fp8_act_quant_hopper = false
+# Split SiLU+down on the decode path: shipped ON everywhere.
+decode_split_silu = true
+# Paged-decode attention split-K. `legacy`, the pre-#928 rule, for want of an
+# Ada A/B. `AVAROK_ATTN_DECODE_SPLITK=auto` is how that A/B is run.
+attn_decode_splitk = "legacy"
+# `w8a16_gemm_m16` on the dense-FFN decode arm (#927). OFF: the kernel is not in
+# this target's tree.
+ffn_m16_tc = false
+# `w8a16_gemm_m16{,_strided}` on the decode Q/K/V and o_proj (#927). OFF: no
+# Ada receipt, and the kernel is not in this target's tree.
+attn_m16_tc = false
+# `dense_gemm_m16_bf16` on the BF16 decode head (#927). OFF: no Ada receipt,
+# and the kernel is not in this target's tree.
+lm_head_m16_tc = false
+# `w8a16_gemv_batch16_ncol{2,4}` on the decode attention projections (#927).
+# OFF: no receipt, and the kernel is not in this target's tree.
+attn_ncol_gemv = false
+# The fused dense-FFN gate+up decode GEMM (#927). OFF and INERT: its
+# strided-SiLU consumer is Hopper-owned and not linked here.
+ffn_gateup_fused = false
+# Upper M for the W8A8 block-scaled dense-FFN prefill (#917). No cap
+# (u32::MAX, the baseline): Ada has no receipt either way. GB10's cap is a GB10
+# measurement and is not copied here.
+w8a8_prefill_max_m_widening = 4294967295
+w8a8_prefill_max_m_narrowing = 4294967295

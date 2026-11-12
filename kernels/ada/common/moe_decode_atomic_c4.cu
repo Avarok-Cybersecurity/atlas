@@ -1,0 +1,1 @@
+../../gb10/common/moe_decode_atomic_c4.cu
