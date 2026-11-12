@@ -37,7 +37,7 @@
 /// TWO KINDS OF ID LIVE HERE, and the difference is worth stating because it
 /// is not visible from the strings:
 ///
-/// * **architecture classes** — `gb10`, `hopper`, `b200`, `b300`, `metal`, `strix`.
+/// * **architecture classes** — `gb10`, `hopper`, `b200`, `b300`, `ada`, `metal`, `strix`.
 ///   These are `kernels/<hw>/` directory names. One kernel set is compiled per
 ///   architecture, so this is the unit a `-arch=` and a PTX artefact exist for.
 /// * **bench SKUs** — `h100`, `h200`, `gh200`, `b200`, `gb200`, `b300`, `mi300x`.
@@ -50,7 +50,7 @@
 /// 43%. Both kinds must be registered: the arch classes because
 /// `every_kernel_hardware_dir_is_registered` demands it, the SKUs because
 /// `--hardware` validates against this list.
-pub const KNOWN_HARDWARE_IDS: [&str; 12] = [
+pub const KNOWN_HARDWARE_IDS: [&str; 13] = [
     // NVIDIA GB10 / DGX Spark — the box every committed record was measured on.
     // Architecture class and SKU at once.
     "gb10",
@@ -77,6 +77,12 @@ pub const KNOWN_HARDWARE_IDS: [&str; 12] = [
     // Recognition is not a certification or measured baseline. GB300 remains
     // distinct and unregistered; never score it against B300/B200 thresholds.
     "b300",
+    // NVIDIA Ada Lovelace, the architecture class: `kernels/ada/` (sm_89).
+    // Registered as a class only. No Ada SKU (RTX 4060 Ti, RTX 4090, L4, ...)
+    // is mapped by `hardware_id_from_gpu_name`: their memory bandwidths span
+    // 288 GB/s to 1 TB/s, so a shared threshold would merge parts whose
+    // numbers are not comparable, and none has a measured baseline yet.
+    "ada",
     // Apple Silicon, via the Metal backend.
     "metal",
     // AMD Strix Halo — Vulkan and HIP are separate targets and separate
@@ -189,7 +195,7 @@ mod tests {
     /// this list holds all of them rather than one set.
     #[test]
     fn the_kernel_arch_classes_and_the_bench_skus_are_both_registered() {
-        for arch_class in ["gb10", "hopper", "b200", "b300"] {
+        for arch_class in ["gb10", "hopper", "b200", "b300", "ada"] {
             assert!(is_known_hardware_id(arch_class), "{arch_class}");
         }
         for sku in ["h100", "h200", "b200", "gb200", "b300"] {
