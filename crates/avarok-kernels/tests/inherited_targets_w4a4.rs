@@ -112,9 +112,17 @@ fn the_declared_absences_are_the_entry_points_the_define_removes() {
 /// all, datacentre Blackwell has one and reaches it through tcgen05. A reader
 /// who cannot tell those apart cannot tell which target a tcgen05 port would
 /// fix.
+///
+/// Only targets that CARRY the MoE model are asked. `kernels/ada` serves the
+/// dense Holo models alone: they link the same source through their `nvfp4/`
+/// mirror but build no MoE layer, so nothing there looks the pair up and an
+/// absence declaration would describe a lookup that never happens.
 #[test]
 fn both_inherited_targets_declare_the_w4a4_kernels_expected_absent() {
-    for t in INHERITED {
+    for t in INHERITED
+        .iter()
+        .filter(|t| t.models.contains(&GUARDED_MODEL))
+    {
         let path = hw_dir(t.hw).join(GUARDED_MODEL).join("MODEL.toml");
         let toml: toml::Value = toml::from_str(&std::fs::read_to_string(&path).unwrap())
             .unwrap_or_else(|e| panic!("bad TOML in {}: {e}", path.display()));

@@ -45,6 +45,15 @@ const BLOCKSCALE_TOKENS: &[&str] = &["e2m1x2", "mxf4nvf4"];
 
 /// The hardware sets that declare `-D<GUARD>` and therefore must have every
 /// such site behind it.
+///
+/// `ada` declares the define too and is NOT listed, deliberately. Its two
+/// targets are the dense Holo models, whose `nvfp4/` mirror links gb10's
+/// `fp4_mma_microtest.cu`: that file keeps its block-scaled MMA behind
+/// `#if (__CUDA_ARCH__ >= 1200)` rather than behind this define, and names the
+/// instruction in its header comment, so this text scan would report it while
+/// ptxas accepts the file for sm_89. For ada the real check is the one this
+/// scan stands in for: `scripts/hopper_ptx_gate.sh --hw ada --model all
+/// --strict`, which assembles every source the target compiles.
 const GUARDED_HW: &[&str] = &["hopper", "b200", "b300"];
 
 fn kernels_root() -> PathBuf {

@@ -100,6 +100,10 @@ pub const HOPPER_MODELS: &[&str] = &[
     "qwen3.8-27b",
 ];
 
+/// Ada (sm_89) carries the two dense Holo targets a 16 GB consumer card
+/// serves single-stream.
+pub const ADA_MODELS: &[&str] = &["holo-3.1-0.8b", "holo-3.1-4b"];
+
 /// Every hardware set whose kernels are gb10's, reached by symlink.
 ///
 /// ORACLE for the arch strings: NVIDIA's own SM numbering. H100 and H200 are
@@ -123,6 +127,18 @@ pub const INHERITED: &[Inherited] = &[
         provenance: "B200 target: kernel set inherited from gb10 via symlink",
         models: P0_MODELS,
         blockscale_rejection: "mma with block scale",
+    },
+    // Ada Lovelace (RTX 40-series, L4, L40) is SM 8.9. NVIDIA defines no
+    // arch-specific `sm_89a`, so the arch is plain and the PTX portable. Like
+    // Hopper, it has no FP4 datapath at all, so ptxas rejects the W4A4 region
+    // at the packed FP4 convert (CUDA 13.3.73 spells it as below).
+    Inherited {
+        hw: "ada",
+        arch: "sm_89",
+        cc: "8.9",
+        provenance: "Ada target: kernel set inherited from gb10 via symlink",
+        models: ADA_MODELS,
+        blockscale_rejection: "cvt.e2m1x2.f32",
     },
 ];
 

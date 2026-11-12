@@ -28,7 +28,7 @@ use std::path::PathBuf;
 
 /// Every NVIDIA target that carries a `[defaults]` table. Named once so a new
 /// hardware tree makes someone decide rather than inherit silently.
-const DECLARING: &[&str] = &["gb10", "hopper", "b200", "b300"];
+const DECLARING: &[&str] = &["gb10", "hopper", "b200", "b300", "ada"];
 
 fn kernels_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -437,4 +437,13 @@ fn the_baked_constant_matches_its_own_hardware_tree() {
 fn b300_declares_conservative_defaults_until_measured_on_b300() {
     assert_eq!(declared("b300"), baseline("b300"));
     assert_eq!(read_sm_count(&kernels_root(), "b300"), 148);
+}
+
+/// Ada has no serving receipt, so it declares the conservative table: no
+/// Hopper or GB10 row arrives by resemblance. Its SM count is the reference
+/// part's, the RTX 4060 Ti 16 GB (AD106, 34 SMs).
+#[test]
+fn ada_declares_conservative_defaults_until_measured_on_ada() {
+    assert_eq!(declared("ada"), baseline("ada"));
+    assert_eq!(read_sm_count(&kernels_root(), "ada"), 34);
 }
