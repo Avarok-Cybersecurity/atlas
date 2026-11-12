@@ -24,6 +24,8 @@ fn a_target_that_compiles_the_sm89_modules_takes_the_drop_ins_and_nothing_else()
             "{base:?} looked up although its drop-in resolved"
         );
     }
+    assert!(k.swiglu_quant.0 != 0);
+    assert!(seen.contains(&pair(SWIGLU_QUANT_KERNEL)));
 }
 
 #[test]
@@ -33,9 +35,12 @@ fn a_target_without_the_sm89_modules_issues_no_lookup_for_them() {
     let gpu = MockGpuBackend::new();
     gpu.mark_module_absent("fp8_gemv_ada");
     gpu.mark_module_absent("fp8_gemm_ada");
+    gpu.mark_module_absent(SWIGLU_QUANT_KERNEL.0);
     let k = Fp8FfnKernels::resolve(&gpu);
     assert!(k.gemv.0 != 0 && k.gemm_w8a8.0 != 0);
+    assert_eq!(k.swiglu_quant.0, 0, "no fused SwiGLU quant off sm_89");
     let seen = lookups(&gpu);
+    assert!(!seen.contains(&pair(SWIGLU_QUANT_KERNEL)));
     for (drop_in, base) in FP8_FFN_KERNELS {
         assert!(
             !seen.contains(&pair(drop_in)),
@@ -59,7 +64,8 @@ fn the_drop_ins_are_the_entry_points_the_ada_sources_declare() {
     // The module name is the .cu stem and the entry is an `extern "C"` name in
     // it. This catches a rename on either side without needing nvcc.
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../kernels/ada/common");
-    for (drop_in, _) in FP8_FFN_KERNELS {
+    let drop_ins = FP8_FFN_KERNELS.map(|(d, _)| d);
+    for drop_in in drop_ins.into_iter().chain([SWIGLU_QUANT_KERNEL]) {
         let src = std::fs::read_to_string(root.join(format!("{}.cu", drop_in.0)))
             .unwrap_or_else(|e| panic!("kernels/ada/common/{}.cu: {e}", drop_in.0));
         assert!(

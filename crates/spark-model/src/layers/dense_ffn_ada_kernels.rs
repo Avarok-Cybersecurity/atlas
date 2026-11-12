@@ -22,11 +22,21 @@
 //! [`crate::layers::try_target_kernel`] issues no lookup where a module was
 //! never built, so a gb10, Hopper or Blackwell boot audit sees exactly the
 //! lookups it saw before.
+//!
+//! One more sm_89 kernel is resolved here without a counterpart in the table:
+//! `swiglu_quant_fp8_ada::swiglu_quant_fp8_ada`
+//! (`kernels/ada/common/swiglu_quant_fp8_ada.cu`) replaces a PAIR of launches,
+//! `moe_silu_mul` then `per_token_group_quant_fp8`, so there is no single
+//! entry to fall back to. Its handle is `0` on every other target and the
+//! layer runs the pair; the rule is `dense_ffn_swiglu_quant.rs`.
 
 use spark_runtime::gpu::{GpuBackend, KernelHandle};
 
+/// The fused SwiGLU + FP8 activation quantizer's `(module, entry)`.
+pub const SWIGLU_QUANT_KERNEL: Entry = ("swiglu_quant_fp8_ada", "swiglu_quant_fp8_ada");
+
 /// One `(module, entry)` pair.
-type Entry = (&'static str, &'static str);
+pub type Entry = (&'static str, &'static str);
 
 /// `(sm_89 drop-in, the kernel it replaces)` for each role, in table order.
 pub const FP8_FFN_KERNELS: [(Entry, Entry); 4] = [
@@ -56,6 +66,9 @@ pub struct Fp8FfnKernels {
     pub gemv_dual: KernelHandle,
     pub gemv_silu_input: KernelHandle,
     pub gemm_w8a8: KernelHandle,
+    /// `swiglu_quant_fp8_ada` where the target compiled it, else `0` (the
+    /// unfused pair runs).
+    pub swiglu_quant: KernelHandle,
 }
 
 /// The drop-in where the target compiled it, else the kernel it replaces.
@@ -76,6 +89,11 @@ impl Fp8FfnKernels {
             gemv_dual: prefer(gpu, dual),
             gemv_silu_input: prefer(gpu, silu),
             gemm_w8a8: prefer(gpu, gemm),
+            swiglu_quant: crate::layers::try_target_kernel(
+                gpu,
+                SWIGLU_QUANT_KERNEL.0,
+                SWIGLU_QUANT_KERNEL.1,
+            ),
         }
     }
 

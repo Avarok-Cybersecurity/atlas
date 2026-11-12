@@ -77,8 +77,15 @@ pub fn group_scale(values: impl Iterator<Item = f32>) -> f32 {
 }
 
 /// One element under a group scale: `round_e4m3(clamp(x / scale, +-448))`.
+///
+/// The clamp is spelled as the kernels spell it, `fmaxf(fminf(v, 448), -448)`:
+/// Rust's `min`/`max` return the non-NaN operand as `fminf`/`fmaxf` do, so a
+/// NaN quotient (a NaN or infinite element) saturates to +448 (`0x7E`) as on
+/// the device, where `clamp` would pass the NaN through to `0x7F`. That NaN
+/// behavior is why `clippy::manual_clamp` is allowed here.
+#[allow(clippy::manual_clamp)]
 pub fn quantize_with_scale(x: f32, scale: f32) -> u8 {
-    let v = (x / scale).clamp(-E4M3_MAX, E4M3_MAX);
+    let v = (x / scale).min(E4M3_MAX).max(-E4M3_MAX);
     e4m3_encode_satfinite(v)
 }
 
