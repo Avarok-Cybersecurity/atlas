@@ -38,6 +38,10 @@ pub mod target_defaults;
 mod dispatch_proj_rowwise;
 #[path = "ops/embeddings.rs"]
 mod embeddings;
+// The `ffn_bf16_cublas_prefill` target row: the BF16 dense-FFN prefill on
+// cuBLASLt by default where the target declares it (ada).
+#[path = "ops/ffn_bf16_cublas.rs"]
+pub mod ffn_bf16_cublas;
 #[path = "ops/fp8_act_quant.rs"]
 mod fp8_act_quant;
 // WHEN the Hopper FP8 act-quant twin runs: the CTA floor, its lever and the

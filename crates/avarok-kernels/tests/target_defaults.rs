@@ -261,6 +261,10 @@ fn every_declaring_target_states_every_lever() {
             // booleans: an absent row and a deliberate `false` must not look
             // identical.
             "dense_fp8_from_bf16",
+            // The BF16 dense-FFN prefill on cuBLASLt. TRUE on ada on an
+            // end-to-end receipt, FALSE elsewhere, and stated everywhere so a
+            // deliberate `false` never looks like an inherited one.
+            "ffn_bf16_cublas_prefill",
         ] {
             assert!(
                 raw.contains(&format!("\n{lever} = ")),
@@ -396,6 +400,7 @@ fn the_generated_constant_names_every_field() {
         "attn_decode_splitk: \"auto\"",
         "ffn_gateup_fused: true",
         "dense_fp8_from_bf16: false",
+        "ffn_bf16_cublas_prefill: false",
         "w8a8_prefill_max_m_widening: 4294967295",
         "w8a8_prefill_max_m_narrowing: 4294967295",
     ] {
@@ -426,6 +431,10 @@ fn the_baked_constant_matches_its_own_hardware_tree() {
     assert_eq!(baked.ffn_gateup_fused, declared.ffn_gateup_fused);
     assert_eq!(baked.dense_fp8_from_bf16, declared.dense_fp8_from_bf16);
     assert_eq!(
+        baked.ffn_bf16_cublas_prefill,
+        declared.ffn_bf16_cublas_prefill
+    );
+    assert_eq!(
         baked.w8a8_prefill_max_m_widening,
         declared.w8a8_prefill_max_m_widening
     );
@@ -446,11 +455,22 @@ fn b300_declares_conservative_defaults_until_measured_on_b300() {
     assert_eq!(read_sm_count(&kernels_root(), "b300"), 148);
 }
 
-/// Ada has no serving receipt, so it declares the conservative table: no
+/// Ada declares the conservative table apart from the one row it has an
+/// end-to-end receipt for: the BF16 dense-FFN prefill on cuBLASLt (RTX 4060 Ti,
+/// 3,921-token prompt: 0.8B 8,199 -> 13,113 tok/s, 4B 795 -> 3,677 tok/s). No
 /// Hopper or GB10 row arrives by resemblance. Its SM count is the reference
 /// part's, the RTX 4060 Ti 16 GB (AD106, 34 SMs).
 #[test]
-fn ada_declares_conservative_defaults_until_measured_on_ada() {
-    assert_eq!(declared("ada"), baseline("ada"));
+fn ada_declares_conservative_defaults_apart_from_its_measured_rows() {
+    let d = declared("ada");
+    assert!(d.ffn_bf16_cublas_prefill, "the measured ada prefill win");
+    let normalised = Defaults {
+        ffn_bf16_cublas_prefill: false,
+        ..d
+    };
+    assert_eq!(normalised, baseline("ada"));
     assert_eq!(read_sm_count(&kernels_root(), "ada"), 34);
+    for hw in ["gb10", "hopper", "b200", "b300"] {
+        assert!(!declared(hw).ffn_bf16_cublas_prefill, "{hw}");
+    }
 }

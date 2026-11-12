@@ -33,5 +33,6 @@ lm_head_m16_tc = false
 attn_ncol_gemv = false
 ffn_gateup_fused = false
 dense_fp8_from_bf16 = false
+ffn_bf16_cublas_prefill = false
 w8a8_prefill_max_m_widening = 4294967295
 w8a8_prefill_max_m_narrowing = 4294967295

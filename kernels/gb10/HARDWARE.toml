@@ -195,6 +195,10 @@ ffn_gateup_fused = false
 # `layers/dense_ffn_w8a8_prefill.rs`), and 120 GB needs no FP8 to fit a dense
 # model. A NUMERICS row; it exists for the 16 GB Ada target.
 dense_fp8_from_bf16 = false
+# BF16 dense-FFN prefill on cuBLASLt by default. OFF: the baseline, restated.
+# The win is an Ada measurement; GB10 keeps `AVAROK_CUBLAS_GEMM=ffn` as the
+# opt-in it always was.
+ffn_bf16_cublas_prefill = false
 # Upper M for the W8A8 block-scaled dense-FFN prefill (#917). These are the
 # only two rows in this table that GB10 declares in order to DIFFER from the
 # baseline rather than to restate it: the baseline is no cap, which is right

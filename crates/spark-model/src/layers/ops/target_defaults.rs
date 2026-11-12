@@ -201,6 +201,8 @@ pub struct TargetLevers {
     /// Quantize a BF16 checkpoint's dense FFN to block-scaled FP8 at load
     /// (`weight_loader/qwen35_dense/fp8_from_bf16.rs`). A numerics row.
     pub dense_fp8_from_bf16: Resolved<bool>,
+    /// The BF16 dense-FFN prefill on cuBLASLt (`layers/ops/ffn_bf16_cublas.rs`).
+    pub ffn_bf16_cublas_prefill: Resolved<bool>,
     pub w8a8_prefill_max_m_widening: Resolved<u32>,
     pub w8a8_prefill_max_m_narrowing: Resolved<u32>,
 }
@@ -354,6 +356,14 @@ pub fn resolve(
             var("AVAROK_DENSE_FP8_FROM_BF16").as_deref(),
             false,
         ),
+        // A set `AVAROK_CUBLAS_GEMM` (any value) decides, exactly as before the
+        // row; then the row's own variable; then the declaration. The order is
+        // `ffn_bf16_cublas::resolve`, which owns it.
+        ffn_bf16_cublas_prefill: super::ffn_bf16_cublas::resolve(
+            defaults.ffn_bf16_cublas_prefill,
+            var("AVAROK_CUBLAS_GEMM").as_deref(),
+            var(super::ffn_bf16_cublas::ENV).as_deref(),
+        ),
     }
 }
 
@@ -414,6 +424,7 @@ pub fn format_levers(l: &TargetLevers) -> String {
          attn_m16_tc={attn_m16_tc} lm_head_m16_tc={lm_head_m16_tc} \
          attn_ncol_gemv={attn_ncol_gemv} ffn_gateup_fused={gateup} \
          fp8_act_quant_hopper={act_quant} dense_fp8_from_bf16={fp8_from_bf16} \
+         ffn_bf16_cublas_prefill={bf16_cublas} \
          w8a8_prefill_max_m={w8a8_wide}/{w8a8_narrow}{w8a8_src}",
         hw = if l.hw.is_empty() { "unknown" } else { l.hw },
         // Not a resolvable lever — it is a FACT about the part, cross-checked
@@ -436,6 +447,7 @@ pub fn format_levers(l: &TargetLevers) -> String {
         attn_ncol_gemv = onoff(l.attn_ncol_gemv),
         gateup = onoff(l.ffn_gateup_fused),
         fp8_from_bf16 = onoff(l.dense_fp8_from_bf16),
+        bf16_cublas = onoff(l.ffn_bf16_cublas_prefill),
         // Printed as widening/narrowing. `max` reads as "no cap" rather than
         // 4294967295, which would look like a number someone chose.
         w8a8_wide = cap(l.w8a8_prefill_max_m_widening.value),

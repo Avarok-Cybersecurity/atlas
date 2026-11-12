@@ -2391,10 +2391,15 @@ impl DenseFfnLayer {
             // N=12288/3072, K=3072) — nsys measured its 3 launches at ~100 ms
             // EACH = 33% of the whole C=1 prefill. cuBLASLt runs the identical
             // BF16×BF16→FP32 GEMM at 90+ TFLOP/s (~65× faster), the same path
-            // q/k/v/o and the head-gate already use. Gated on AVAROK_CUBLAS_GEMM.
+            // q/k/v/o and the head-gate already use. Gated on AVAROK_CUBLAS_GEMM,
+            // else the `ffn_bf16_cublas_prefill` target row (ada: on).
+            let cublas = ops::ffn_bf16_cublas::takes_cublas(
+                ctx.dispatch.cublas.ffn,
+                ops::ffn_bf16_cublas::row(),
+            );
             macro_rules! ffn_gemm {
                 ($a:expr, $b:expr, $c:expr, $n:expr, $k:expr) => {
-                    if ctx.dispatch.cublas.ffn {
+                    if cublas {
                         ops::cublas_bf16_proj_dense($a, $b.weight, $c, m, $n, $k, stream)?;
                     } else if tc {
                         ops::dense_gemm_tc(

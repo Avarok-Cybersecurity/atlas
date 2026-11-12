@@ -204,6 +204,17 @@ pub struct TargetDefaults {
     /// keep BF16. The 16 GB Ada target is the one it exists for.
     /// `AVAROK_DENSE_FP8_FROM_BF16=0|1` is the A/B against BF16.
     pub dense_fp8_from_bf16: bool,
+    /// The cuBLASLt BF16 GEMM serves the BF16 dense-FFN PREFILL
+    /// (`layers/ops/ffn_bf16_cublas.rs`) in place of the hand-written
+    /// `dense_gemm_tc`, with no `AVAROK_CUBLAS_GEMM` in the environment.
+    ///
+    /// TRUE on ada only: RTX 4060 Ti 16 GB, 3,921-token prompt, one env change
+    /// on the same binary, Qwen3.5-0.8B 8,199 -> 13,113 tok/s and Qwen3.5-4B
+    /// 795 -> 3,677 tok/s, decode unchanged. Same numerics class (BF16 in,
+    /// FP32 accumulate). Narrower than `AVAROK_CUBLAS_GEMM=ffn`: it does NOT
+    /// arm the W8A8 FFN prefill or the MoE shared expert. A set
+    /// `AVAROK_CUBLAS_GEMM` (any value, `off` included) decides instead.
+    pub ffn_bf16_cublas_prefill: bool,
     /// Upper `M` for the W8A8 block-scaled dense-FFN prefill on a WIDENING
     /// projection (`n > k`: gate/up). `u32::MAX` = no cap, the baseline.
     ///

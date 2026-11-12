@@ -95,6 +95,17 @@ ffn_gateup_fused = false
 # `AVAROK_DENSE_FP8_FROM_BF16=1` against the BF16 default on both holo
 # targets, then decode and prefill tok/s against the same switch.
 dense_fp8_from_bf16 = false
+# The BF16 dense-FFN PREFILL on the cuBLASLt BF16 GEMM instead of the
+# hand-written `dense_gemm_tc`, which is very slow on sm_89. ON, on an
+# end-to-end A/B on the RTX 4060 Ti 16 GB (same binary and flags, one env
+# change, `AVAROK_CUBLAS_GEMM=ffn` against unset), 3,921-token prompt:
+# Qwen3.5-0.8B prefill 8,199 -> 13,113 tok/s, Qwen3.5-4B 795 -> 3,677 tok/s,
+# decode unchanged. Same numerics class: BF16 in, FP32 accumulate. Narrower
+# than `AVAROK_CUBLAS_GEMM=ffn`: the W8A8 FFN prefill and the MoE shared
+# expert keep their own kernels. A set `AVAROK_CUBLAS_GEMM` (any value, `off`
+# included) decides instead of this row; `AVAROK_FFN_BF16_CUBLAS_PREFILL=0`
+# is the A/B against `dense_gemm_tc`.
+ffn_bf16_cublas_prefill = true
 # Upper M for the W8A8 block-scaled dense-FFN prefill (#917). No cap
 # (u32::MAX, the baseline): Ada has no receipt either way. GB10's cap is a GB10
 # measurement and is not copied here.

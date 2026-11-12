@@ -347,6 +347,10 @@ ffn_gateup_fused = true
 # OFF: a NUMERICS change with no H100 receipt, on a part with the memory to
 # keep BF16. `AVAROK_DENSE_FP8_FROM_BF16=1` is how that receipt would be taken.
 dense_fp8_from_bf16 = false
+# BF16 dense-FFN prefill on cuBLASLt by default. OFF for want of an H100
+# receipt: the win is an Ada measurement. `AVAROK_CUBLAS_GEMM=ffn` still arms
+# it.
+ffn_bf16_cublas_prefill = false
 
 # Upper M for the W8A8 block-scaled dense-FFN prefill (#917). NO CAP here:
 # 4294967295 is u32::MAX, which is `build_defaults::baseline`'s value and the
