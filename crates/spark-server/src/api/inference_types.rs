@@ -68,6 +68,9 @@ pub enum GrammarSpec {
     JsonObject,
     /// Response format: JSON matching a specific schema.
     JsonSchema { schema: String },
+    /// A client-supplied grammar (llama.cpp `grammar`, GBNF/EBNF) whose start
+    /// rule is `root`.
+    Ebnf { grammar: String },
 }
 
 /// Request submitted to the scheduler.

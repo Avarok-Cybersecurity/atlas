@@ -19,6 +19,7 @@ pub(crate) enum ErrorKind {
     NotSupported,
     Unavailable,
     Server,
+    ExceedContext,
 }
 
 impl ErrorKind {
@@ -29,6 +30,7 @@ impl ErrorKind {
             ErrorKind::NotSupported => "not_supported_error",
             ErrorKind::Unavailable => "unavailable_error",
             ErrorKind::Server => "server_error",
+            ErrorKind::ExceedContext => "exceed_context_size_error",
         }
     }
 }
@@ -59,6 +61,20 @@ impl CompatError {
             "'{field}' is not supported by Atlas: {why}. \
              The request was rejected rather than run without it."
         ))
+    }
+
+    /// HTTP 400 `exceed_context_size_error`: the prompt does not leave room to
+    /// generate. (llama.cpp also puts the two counts in the error object;
+    /// here they are in the message.)
+    pub(crate) fn exceed_context(n_prompt_tokens: usize, n_ctx: usize) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            kind: ErrorKind::ExceedContext,
+            message: format!(
+                "the request exceeds the available context size: {n_prompt_tokens} prompt \
+                 tokens, n_ctx {n_ctx}"
+            ),
+        }
     }
 
     /// HTTP 501 for a whole endpoint that Atlas does not serve.

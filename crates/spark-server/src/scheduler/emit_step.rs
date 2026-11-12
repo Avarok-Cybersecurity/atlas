@@ -598,6 +598,7 @@ pub fn compile_grammar_state(
         },
         GrammarSpec::JsonObject => engine.compile_json_grammar(),
         GrammarSpec::JsonSchema { schema } => engine.compile_json_schema(schema),
+        GrammarSpec::Ebnf { grammar } => engine.compile_ebnf(grammar, "root"),
     };
 
     let label = match spec {
@@ -606,6 +607,7 @@ pub fn compile_grammar_state(
         }
         GrammarSpec::JsonObject => "response_format=json_object".to_string(),
         GrammarSpec::JsonSchema { .. } => "response_format=json_schema".to_string(),
+        GrammarSpec::Ebnf { .. } => "grammar=ebnf".to_string(),
     };
 
     match compiled {

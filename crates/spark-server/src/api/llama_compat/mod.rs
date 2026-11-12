@@ -26,13 +26,23 @@
 //! - `apply_template` `/apply-template` request and response
 //! - `props`          `/props` document and the sampling defaults
 //! - `handlers`       axum handlers for the three routes above and `/embedding`
+//! - `params`         `/completion` request parsing; fields honored or refused
+//! - `fields`         typed field readers and the list of refused fields
+//! - `inputs`         `prompt` and `logit_bias`, which need the tokenizer
+//! - `constraint`     `json_schema` / `grammar`, validated before queueing
+//! - `stop`           stop-string matching on the decoded text stream
 
 pub(crate) mod apply_template;
 pub(crate) mod codec;
+pub(crate) mod constraint;
 pub(crate) mod error;
+pub(crate) mod fields;
 pub(crate) mod handlers;
+pub(crate) mod inputs;
+pub(crate) mod params;
 pub(crate) mod paths;
 pub(crate) mod props;
+pub(crate) mod stop;
 pub(crate) mod tokenize;
 #[cfg(test)]
 mod toy_codec;
