@@ -16,6 +16,8 @@ mod weights_allowlist_tests;
 
 #[path = "weights_multiplier.rs"]
 mod weights_multiplier;
+#[path = "weights_optout.rs"]
+mod weights_optout;
 pub(crate) use weights_multiplier::quant_multiplier;
 
 pub(crate) fn load_weight_store(
@@ -85,7 +87,7 @@ pub(crate) fn load_weight_store(
             };
             loader.peak_memory_multiplier = mult;
             loader.skip_activation_scales = skip_activation_scales(config);
-            loader.skip_mtp = skip_mtp(config);
+            loader.skip_mtp = skip_mtp_for(args, config);
             // A text-only port never binds the vision tower, so don't read it.
             // The reclaim in `build_model` still catches every other path, but
             // it runs AFTER the inference-buffer preflight has already sized
@@ -123,7 +125,7 @@ pub(crate) fn load_weight_store(
         };
         loader.peak_memory_multiplier = mult;
         loader.skip_activation_scales = skip_activation_scales(config);
-        loader.skip_mtp = skip_mtp(config);
+        loader.skip_mtp = skip_mtp_for(args, config);
         loader.defer = defer_hook(config);
         loader
             .load(model_dir, gpu, oom_reserve_bytes)
@@ -435,6 +437,19 @@ fn skip_activation_scales(config: &ModelConfig) -> bool {
 /// that are then discarded is memory the KV cache needs.
 fn skip_mtp(config: &ModelConfig) -> bool {
     matches!(config.model_type.as_str(), "qwen4_exp")
+}
+
+/// [`skip_mtp`] (the port never builds a head) or
+/// [`weights_optout::mtp_unused`] (this serve never runs one).
+fn skip_mtp_for(args: &cli::ServeArgs, config: &ModelConfig) -> bool {
+    let unused = weights_optout::mtp_unused(args, config);
+    if unused {
+        tracing::info!(
+            "MTP block: not loaded, no speculative mode is on, so nothing reads `mtp.*` \
+             (pass --speculative to keep it)."
+        );
+    }
+    skip_mtp(config) || unused
 }
 
 /// Will the model's weight loader bind a vision encoder?
