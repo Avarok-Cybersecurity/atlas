@@ -3,8 +3,9 @@
 # Every other table below is gb10's, copied verbatim: sampling and behavior
 # are checkpoint properties, not device properties. The [expected_absent]
 # tables are NOT: they were harvested on GB10 and are carried here so the
-# target parses. Re-harvest them on an Ada card before trusting a startup
-# kernel audit on this hardware.
+# target parses, plus the one entry this hardware adds at the end of the file
+# (the sm_90-only TMA spine). Re-harvest them on an Ada card before trusting a
+# startup kernel audit on this hardware.
 [model]
 name = "holo-3.1-0.8b"
 hf_id = "Hcompany/Holo-3.1-0.8B"
@@ -180,3 +181,19 @@ gated_delta_rule_decode_f16_norm = "FP16 h-state twin; see honesty note above. F
 gated_delta_rule_decode_f16_strided_norm_half = "FP16 h-state twin; see honesty note above. F32 strided-norm arm resolves."
 gated_delta_rule_decode_f32_strided_norm_half = "Half-register twin; selected only under AVAROK_GDN_HALF_REG presence (off as shipped)."
 gated_delta_rule_decode_f32_strided_norm_smem = "SMEM-staged twin; gated behind AVAROK_GDN_SMEM_STAGE (off as shipped) AND the half-register gate."
+
+# ── Added for this hardware ──
+# Not harvested: derived from the source. The entry points the Ada build
+# drops relative to gb10's for this target are exactly this one and the two
+# W4A4 MoE kernels of moe_w4a16 (AVAROK_NO_WARP_BLOCKSCALE_MMA, see
+# kernels/ada/HARDWARE.toml); a dense model builds no MoE layer, so nothing
+# looks those two up and they are not declared.
+[expected_absent.gated_delta_rule_fla]
+gated_delta_rule_chunk_delta_h_tma = """
+TMA state spine (cp.async.bulk.tensor + mbarrier.arrive.expect_tx), which
+needs sm_90: ptxas rejects it for sm_89 ("Feature 'mbarrier.arrive.expect_tx'
+requires .target sm_90 or higher"), so kernels/ada/common/gated_delta_rule_fla.cu
+compiles it only under __CUDA_ARCH__ >= 900. Resolved with try_kernel
+(qwen3_ssm/init.rs) and launched only when AVAROK_GDN_TMA=1 AND the handle is
+non-zero (ops/ssm_gdn_a3.rs logs "kernel absent from this image"); absent,
+the scalar spine chunk_delta_h_vfused serves. UNMEASURED on Ada silicon."""

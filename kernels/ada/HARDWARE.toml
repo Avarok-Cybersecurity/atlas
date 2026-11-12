@@ -123,8 +123,19 @@ w8a8_prefill_max_m_narrowing = 4294967295
 #                            against this directory, so they pick these headers
 #                            up. See docs/HARDWARE.md, "PTX arch suffix and the
 #                            static shared-memory ceiling".
+#
+#   gated_delta_rule_fla.cu  The opt-in TMA state spine
+#                            (`gated_delta_rule_chunk_delta_h_tma`, behind
+#                            AVAROK_GDN_TMA=1) uses `cp.async.bulk.tensor` and
+#                            `mbarrier.arrive.expect_tx`, which need sm_90.
+#                            That spine and its helpers sit inside
+#                            `#if __CUDA_ARCH__ >= 900`; nothing else in the
+#                            file changes. The lookup is a try_kernel whose
+#                            absence keeps the scalar spine, and both holo
+#                            MODEL.tomls declare it in [expected_absent].
 [kernels]
 overrides = [
+  "gated_delta_rule_fla.cu",
   "inferspark_prefill.cu",
   "inferspark_prefill_fp8kv.cu",
   "prefill_dyn_smem.cuh",
