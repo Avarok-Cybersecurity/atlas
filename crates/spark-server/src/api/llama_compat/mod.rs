@@ -29,14 +29,24 @@
 //! - `params`         `/completion` request parsing; fields honored or refused
 //! - `fields`         typed field readers and the list of refused fields
 //! - `inputs`         `prompt` and `logit_bias`, which need the tokenizer
+//! - `completion`     the `/completion` handler: request mapping, blocking answer
+//! - `completion_stream` the streaming answer (bare SSE frames, no `[DONE]`)
+//! - `completion_json` response and chunk bodies
+//! - `generation`     tokens in, released text / kept tokens / probabilities out
+//! - `finish`         the closing body, from the scheduler's `Done` numbers
 //! - `constraint`     `json_schema` / `grammar`, validated before queueing
 //! - `stop`           stop-string matching on the decoded text stream
 
 pub(crate) mod apply_template;
 pub(crate) mod codec;
+pub(crate) mod completion;
+pub(crate) mod completion_json;
+pub(crate) mod completion_stream;
 pub(crate) mod constraint;
 pub(crate) mod error;
 pub(crate) mod fields;
+pub(crate) mod finish;
+pub(crate) mod generation;
 pub(crate) mod handlers;
 pub(crate) mod inputs;
 pub(crate) mod params;

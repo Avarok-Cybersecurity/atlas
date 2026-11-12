@@ -7,7 +7,7 @@ use crate::tokenizer::ChatTokenizer;
 
 /// Text <-> token operations used by `/tokenize`, `/detokenize` and
 /// `/completion`.
-pub(crate) trait TextCodec {
+pub(crate) trait TextCodec: Send + Sync {
     /// Tokenize `text`. With `add_special`, the tokenizer's post-processor adds
     /// the model's own start-of-text tokens (llama.cpp's `add_special`).
     /// Special-token text inside `text` is always parsed into its token id.

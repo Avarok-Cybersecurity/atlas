@@ -108,6 +108,14 @@ pub(crate) async fn build_and_serve(
         // llama.cpp `llama-server` routes (see api/llama_compat). Their paths
         // are listed in `llama_compat::paths` so auth and the fault latch
         // guard them: add a path in both places.
+        .route(
+            "/completion",
+            post(api::llama_compat::completion::completion),
+        )
+        .route(
+            "/completions",
+            post(api::llama_compat::completion::completion),
+        )
         .route("/props", get(api::llama_compat::handlers::props))
         .route(
             "/apply-template",
