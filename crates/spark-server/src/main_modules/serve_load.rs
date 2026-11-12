@@ -393,6 +393,17 @@ pub(crate) fn load_model(
         );
         config.vision = None;
     }
+    // `--no-vision`: the operator asked for a text-only serve. Clearing the
+    // vision config is what the API's media gate reads (an image part is a
+    // 400) and what makes the loader bind no tower; `load_weight_store` also
+    // skips uploading the tower's tensors.
+    if args.no_vision && config.vision.is_some() {
+        tracing::info!(
+            "--no-vision: serving TEXT-ONLY; the vision tower is not loaded and image or \
+             video input is refused with a 400."
+        );
+        config.vision = None;
+    }
 
     // Resolve num_drafts: explicit --num-drafts (any value) → MODEL.toml
     // [behavior].default_num_drafts → engine default. After this call

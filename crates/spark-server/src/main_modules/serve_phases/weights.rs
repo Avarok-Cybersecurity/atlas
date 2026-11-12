@@ -18,6 +18,9 @@ mod weights_allowlist_tests;
 mod weights_multiplier;
 #[path = "weights_optout.rs"]
 mod weights_optout;
+#[cfg(test)]
+#[path = "weights_vision_tests.rs"]
+mod weights_vision_tests;
 pub(crate) use weights_multiplier::quant_multiplier;
 
 pub(crate) fn load_weight_store(
@@ -93,8 +96,12 @@ pub(crate) fn load_weight_store(
             // it runs AFTER the inference-buffer preflight has already sized
             // (and possibly refused) the serve against the free memory the
             // tower was occupying.
-            loader.skip_vision = !binds_vision(config);
-            if loader.skip_vision {
+            // `--no-vision` skips it for any port (`serve_load` has already
+            // cleared `config.vision`, so nothing binds it either).
+            loader.skip_vision = !binds_vision(config) || args.no_vision;
+            if args.no_vision {
+                tracing::info!("Vision tower: not loaded (--no-vision).");
+            } else if loader.skip_vision {
                 tracing::info!(
                     "Vision tower: not loaded — the weight loader for model_type '{}' is a \
                      text-only port and binds no vision encoder.",
