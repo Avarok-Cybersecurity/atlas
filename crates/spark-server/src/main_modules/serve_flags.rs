@@ -26,7 +26,7 @@ use crate::cli;
 /// Logged, not silent: a run's kernel selection is the first thing anyone
 /// reproducing a number needs, and reading it back out of the process is not
 /// possible after the fact.
-pub(crate) fn publish_kernel_flags(args: &cli::ServeArgs) {
+pub(crate) fn publish_kernel_flags(args: &cli::ServeArgs) -> anyhow::Result<()> {
     // The three GDN flags are ONE cell in `spark-model`, so they are published
     // together or not at all. Publishing them unconditionally — which is what
     // passing clap defaults amounted to — sealed that cell on every boot and
@@ -158,9 +158,20 @@ pub(crate) fn publish_kernel_flags(args: &cli::ServeArgs) {
     // whether the environment overrode it. The deliverable of the 2026-09-11
     // maintainer review: a reader of a serve log can now tell which
     // configuration produced a number without also having the launch script.
+    // The port sprint's (`port/consumer-opt`) flags and rows are validated and
+    // published first, before any port row resolver is read and before any
+    // model is built (`port_apply.rs`); an invalid value is a startup error.
+    super::port_apply::validate(&args.port_sprint)?;
+    super::port_apply::apply(&args.port_sprint)?;
     tracing::info!(
         "{}",
         spark_model::layers::ops::target_defaults::summary_line()
+    );
+    // The port rows' own line, beside the one above: every resolved port row
+    // and whether the environment overrode it.
+    tracing::info!(
+        "{}",
+        spark_model::layers::ops::target_defaults_port::port_boot_line()
     );
     let gdn = spark_model::layers::qwen3_ssm::gdn_flags::flags();
     tracing::info!(
@@ -189,6 +200,7 @@ pub(crate) fn publish_kernel_flags(args: &cli::ServeArgs) {
         // RESOLVED, not the raw argument — may come from the environment.
         spark_model::layers::ops::prefill_varlen_enabled(),
     );
+    Ok(())
 }
 
 /// Legacy `AVAROK_*` variables that a GDN flag on the command line overrides.

@@ -1,0 +1,11 @@
+Atlas includes third-party software. Each section names its source and license.
+
+Atlas itself is licensed under the GNU Affero General Public License, version 3
+only (AGPL-3.0-only); see LICENSE. The sections below cover code that Atlas
+copies or translates from other projects under permissive licenses. Each
+section names the upstream project, its copyright holder, its license, the
+license text under LICENSES/, and the Atlas files that carry the code. For an
+Apache-2.0 source, the section also reproduces the relevant parts of that
+project's own NOTICE file.
+
+# @port:notice

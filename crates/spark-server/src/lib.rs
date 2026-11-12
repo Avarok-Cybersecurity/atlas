@@ -33,3 +33,7 @@ pub mod env_config;
 pub mod rate_limiter;
 #[path = "refusal.rs"]
 pub mod refusal;
+// The port sprint's (`port/consumer-opt`) modules that the `--lib` tests need
+// are inserted immediately before this marker by the coordinator's fragment
+// apply pass.
+// @port:mods

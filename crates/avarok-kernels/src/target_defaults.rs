@@ -285,4 +285,8 @@ pub struct TargetDefaults {
     /// Upper `M` for the same path on a NARROWING projection (`n <= k`: down).
     /// See [`Self::w8a8_prefill_max_m_widening`].
     pub w8a8_prefill_max_m_narrowing: u32,
+    /// The port sprint's rows (`port/consumer-opt`), every one off or at its
+    /// baseline on every target when it lands
+    /// ([`crate::target_defaults_port`]).
+    pub port: crate::target_defaults_port::PortDefaults,
 }

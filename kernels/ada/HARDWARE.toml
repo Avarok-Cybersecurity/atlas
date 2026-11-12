@@ -154,6 +154,11 @@ memory_fit_consumer = true
 # measurement and is not copied here.
 w8a8_prefill_max_m_widening = 4294967295
 w8a8_prefill_max_m_narrowing = 4294967295
+# ── Port sprint rows (port/consumer-opt) ──
+# The port sprint's rows (`crates/avarok-kernels/build_defaults_port.rs`). Each
+# is false, or its baseline, until a GPU receipt on this card flips it. Rows
+# are inserted immediately before the marker line below.
+# @port:defaults
 
 # ── Kernels this target owns ───────────────────────────────────────────────
 #
@@ -226,4 +231,5 @@ overrides = [
   "prefill_paged_compute.cuh",
   "prefill_paged_compute_asym.cuh",
   "swiglu_quant_fp8_ada.cu",
+  # @port:overrides
 ]

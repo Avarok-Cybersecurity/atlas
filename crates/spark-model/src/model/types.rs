@@ -578,6 +578,8 @@ pub struct TransformerModel {
     /// the batch `Fold`/`Refuse`, which `reject_decode_lora` turns into a loud
     /// bail (the decode-fold is SOLID Incr-4). Encoded 0=Skip 1=Fold 2=Refuse.
     pub(super) decode_moe_route: std::sync::atomic::AtomicI32,
+    /// The port sprint's per-model state (`port/state.rs`), one field per lane.
+    pub port: crate::port::state::ModelPortState,
 }
 
 /// Pinned host memory staging buffer with reusable metadata Vecs.

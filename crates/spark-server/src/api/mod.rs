@@ -47,6 +47,8 @@ pub mod llama_compat;
 pub mod lora_control;
 pub mod misc_handlers;
 pub mod models;
+// The port sprint's (`port/consumer-opt`) `/metrics` series.
+pub mod port_metrics;
 pub mod responses;
 pub mod responses_stream;
 pub mod responses_stream_finalize;

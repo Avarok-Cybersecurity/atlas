@@ -152,7 +152,7 @@ fn startup(
     // where `--help` lists them, `ps` shows them, and a recipe can be read
     // without a ten-line env preamble. The environment stays honoured as a
     // fallback for scripts that predate the flags.
-    super::serve_flags::publish_kernel_flags(&args);
+    super::serve_flags::publish_kernel_flags(&args)?;
 
     // No model named: the dashboard is the front door. Everything above this
     // point is process-scoped — banner, signal listeners, the TUI thread, flag

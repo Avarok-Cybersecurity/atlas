@@ -53,6 +53,8 @@ pub(crate) mod mtp_timing;
 mod phase_continue_prefills;
 mod phase_promote_prefills;
 mod phase_start_prefills;
+// The port sprint's (`port/consumer-opt`) per-sequence state (`ActiveSeq::port`).
+pub(crate) mod port_state;
 mod preempt;
 #[cfg(test)]
 mod preempt_tests;

@@ -191,3 +191,12 @@ any public fork or upstream PR. If TQ+ work needs to be made public, file a
 new fork under Tom Turney's account with full prior-art chain (1) → (2) → (3)
 above prominently cited and the original `TheTom/llama-cpp-turboquant`
 attribution at the top of every modified kernel.
+
+## Port sprint sources (`port/consumer-opt`)
+
+Projects, papers and reports the port sprint's code is copied from, translated
+from or built on as an idea, one entry per source, with its license and the
+Atlas files that carry it. License texts are in `LICENSES/`; notices are in
+`NOTICE`.
+
+<!-- @port:citations -->

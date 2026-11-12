@@ -33,6 +33,12 @@ mod dispatch_proj_decode;
 // SSOT for every lever that differs between one target and another.
 #[path = "ops/target_defaults.rs"]
 pub mod target_defaults;
+// The port sprint's rows (`port/consumer-opt`): their resolution and boot line,
+// and the module list of their per-row resolvers (`ops/port_rows/<row>.rs`).
+// Declared without `#[path]` so `port_rows`' children resolve under
+// `ops/port_rows/`.
+pub mod port_rows;
+pub mod target_defaults_port;
 // Row-wise FP8 routing, split out when it took dispatch_proj.rs over the cap.
 #[path = "ops/dispatch_proj_rowwise.rs"]
 mod dispatch_proj_rowwise;

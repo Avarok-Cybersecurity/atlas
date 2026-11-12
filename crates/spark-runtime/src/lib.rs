@@ -44,6 +44,9 @@ pub mod radix_tree;
 pub mod run_metrics;
 pub mod sampler;
 pub mod weights;
+// The port sprint's (`port/consumer-opt`) new top-level modules are inserted
+// immediately before this marker by the coordinator's fragment apply pass.
+// @port:mods
 
 /// Last paged-KV block boundary strictly below `total_tokens`.
 ///

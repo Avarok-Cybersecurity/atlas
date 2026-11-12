@@ -1241,6 +1241,11 @@ pub struct ServeArgs {
     /// headroom. Empty = today's behaviour, byte-identical.
     #[arg(long, value_name = "NAME=PATH_OR_HF_ID", value_parser = parse_lora_adapter_spec)]
     pub lora_stageable_disk: Vec<(String, String)>,
+
+    // The port sprint's (`port/consumer-opt`) flags (`serve_args_port.rs`).
+    // Not named `port`: that field is the HTTP listen port above.
+    #[command(flatten)]
+    pub port_sprint: super::serve_args_port::PortArgs,
 }
 
 impl ServeArgs {

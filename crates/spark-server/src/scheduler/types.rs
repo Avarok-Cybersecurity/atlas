@@ -418,6 +418,9 @@ pub(super) struct ActiveSeq {
     /// output length rather than decremented per step so it costs nothing
     /// on the decode hot path and is deterministic to test.
     pub preempt_immune_until_tokens: usize,
+    /// The port sprint's per-sequence state (`scheduler/port_state.rs`), one
+    /// field per lane.
+    pub port: super::port_state::SeqPortState,
 }
 
 impl ActiveSeq {

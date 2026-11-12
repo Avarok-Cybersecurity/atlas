@@ -53,6 +53,7 @@ const GB10: TargetDefaults = TargetDefaults {
     memory_fit_consumer: false,
     w8a8_prefill_max_m_widening: 64,
     w8a8_prefill_max_m_narrowing: 384,
+    port: avarok_kernels::target_defaults_port::PORT_BASELINE,
 };
 
 /// `kernels/hopper/HARDWARE.toml` `[defaults]`.
@@ -87,6 +88,7 @@ const HOPPER: TargetDefaults = TargetDefaults {
     // No cap: W8A8 is 2.0-3.1x over W8A16 at every M measured on H100.
     w8a8_prefill_max_m_widening: u32::MAX,
     w8a8_prefill_max_m_narrowing: u32::MAX,
+    port: avarok_kernels::target_defaults_port::PORT_BASELINE,
 };
 
 fn with(defaults: &TargetDefaults, env: &[(&str, &str)]) -> TargetLevers {

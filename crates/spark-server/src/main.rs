@@ -66,6 +66,9 @@ pub mod tool_parser;
 mod tool_rag;
 mod tscg;
 pub mod tui;
+// The port sprint's (`port/consumer-opt`) new top-level modules are inserted
+// immediately before this marker by the coordinator's fragment apply pass.
+// @port:mods
 
 use anyhow::Result;
 use clap::Parser;

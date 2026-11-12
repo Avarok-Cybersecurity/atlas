@@ -41,3 +41,9 @@ attn_gated_bf16_batchm = false
 memory_fit_consumer = false
 w8a8_prefill_max_m_widening = 4294967295
 w8a8_prefill_max_m_narrowing = 4294967295
+# ── Port sprint rows (port/consumer-opt) ──
+# The port sprint's rows (`crates/avarok-kernels/build_defaults_port.rs`). Each
+# is false, or its baseline, on this target: the sprint's receipts are Ada
+# ones, and no row changes here in this sprint. Rows are inserted immediately
+# before the marker line below.
+# @port:defaults

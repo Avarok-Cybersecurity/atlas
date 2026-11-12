@@ -147,6 +147,9 @@ pub async fn metrics_handler() -> impl IntoResponse {
         atlas_low_entropy_ratio {low_ratio:.4}\n"
     );
 
+    // The port sprint's (`port/consumer-opt`) series (`api/port_metrics.rs`).
+    super::port_metrics::render(&mut text);
+
     (
         [(
             axum::http::header::CONTENT_TYPE,

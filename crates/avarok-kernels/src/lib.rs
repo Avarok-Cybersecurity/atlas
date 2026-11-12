@@ -44,6 +44,10 @@ pub use behavior_defaults::{
 // stale and `AVAROK_KERNEL_SET_HASH` below already covers it.
 mod target_defaults;
 pub use target_defaults::TargetDefaults;
+// The port sprint's rows (`port/consumer-opt`): the `port` sub-table of
+// `TargetDefaults`, in a file of its own so the sprint's rows never touch the
+// one above.
+pub mod target_defaults_port;
 
 // The paged-decode attention split-K policy (#928). Lives HERE, below
 // spark-model, because two crates need the same answer: the dispatch that

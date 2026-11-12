@@ -9,6 +9,8 @@ pub(crate) mod kv_dtypes;
 pub(crate) mod middleware;
 pub(crate) mod model_host;
 pub(crate) mod model_swap;
+// The port sprint's (`port/consumer-opt`) flag and row publication.
+pub(crate) mod port_apply;
 pub(crate) mod promotion;
 pub(crate) mod serve;
 pub(crate) mod serve_flags;

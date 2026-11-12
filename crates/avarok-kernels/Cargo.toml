@@ -7,6 +7,7 @@ description = "Atlas CUDA kernel PTX — compiled from kernels/{hw}/{model}/{qua
 
 [dependencies]
 avarok-core = { workspace = true }
+# @port:deps
 
 [build-dependencies]
 toml = "1.1"

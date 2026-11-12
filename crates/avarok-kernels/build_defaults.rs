@@ -20,6 +20,13 @@
 // modules, so a rule that lives only inside build.rs is a rule nothing tests.
 // Same posture as `build_flags.rs` and `build_arch.rs`.
 
+// The port sprint's rows (`port/consumer-opt`), parsed in a file of their own
+// so lanes' rows never touch this one. A `#[path]` here resolves against THIS
+// file's directory, so build.rs and tests/target_defaults*.rs both reach
+// `crates/avarok-kernels/build_defaults_port.rs`.
+#[path = "build_defaults_port.rs"]
+pub(crate) mod build_defaults_port;
+
 /// One target's `[defaults]` table, owned (build-time shape).
 ///
 /// Mirrors `avarok_kernels::TargetDefaults` field for field; [`literal`] emits
@@ -50,6 +57,8 @@ pub(crate) struct Defaults {
     pub memory_fit_consumer: bool,
     pub w8a8_prefill_max_m_widening: u32,
     pub w8a8_prefill_max_m_narrowing: u32,
+    /// The port sprint's rows (`build_defaults_port.rs`).
+    pub port: build_defaults_port::PortFields,
 }
 
 /// What a target that declares NO `[defaults]` table gets.
@@ -111,6 +120,9 @@ pub(crate) fn baseline(hw: &str) -> Defaults {
         // not measured otherwise — H100 included (2.0-3.1x at every M).
         w8a8_prefill_max_m_widening: u32::MAX,
         w8a8_prefill_max_m_narrowing: u32::MAX,
+        // Every port row at its baseline: off, which is what every target
+        // served before the row existed.
+        port: build_defaults_port::PortFields::default(),
     }
 }
 
@@ -231,6 +243,9 @@ pub(crate) fn parse_defaults(hw: &str, hw_toml: &toml::Value) -> Defaults {
             "gdn_batched_gemm" => out.gdn_batched_gemm = boolean(key, value),
             "attn_gated_bf16_batchm" => out.attn_gated_bf16_batchm = boolean(key, value),
             "memory_fit_consumer" => out.memory_fit_consumer = boolean(key, value),
+            // The port sprint's rows parse in `build_defaults_port.rs`; a key
+            // that is not one of them falls through to the panic below.
+            k if build_defaults_port::parse(&mut out.port, k, value) => {}
             other => panic!(
                 "kernels/{hw}/HARDWARE.toml: [defaults] has no key `{other}`. \
                  The lever list is the field list of `TargetDefaults` \
@@ -277,6 +292,7 @@ pub(crate) fn literal(d: &Defaults) -> String {
          \x20   memory_fit_consumer: {memory_fit},\n\
          \x20   w8a8_prefill_max_m_widening: {w8a8_wide},\n\
          \x20   w8a8_prefill_max_m_narrowing: {w8a8_narrow},\n\
+         \x20   port: {port},\n\
          }};\n",
         hw = d.hw,
         batchm = d.lm_head_batchm_max,
@@ -300,6 +316,7 @@ pub(crate) fn literal(d: &Defaults) -> String {
         memory_fit = d.memory_fit_consumer,
         w8a8_wide = d.w8a8_prefill_max_m_widening,
         w8a8_narrow = d.w8a8_prefill_max_m_narrowing,
+        port = build_defaults_port::literal(&d.port),
     )
 }
 

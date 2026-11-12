@@ -123,6 +123,7 @@ pub(super) fn test_seq(
         adaptive: crate::adaptive_sampler::AdaptiveSamplingState::new(0.0),
         cached_prompt_tokens: 0,
         preempt_immune_until_tokens: 0,
+        port: Default::default(),
     };
     (a, rx)
 }

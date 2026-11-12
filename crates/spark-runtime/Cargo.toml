@@ -109,6 +109,7 @@ tokio = { version = "1", features = ["rt", "sync", "time", "parking_lot"] }
 rand = "0.9"
 half = "2"
 parking_lot = { workspace = true }
+# @port:deps
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

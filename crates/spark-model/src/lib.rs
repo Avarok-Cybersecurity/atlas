@@ -27,6 +27,9 @@ pub mod lora;
 pub mod mistral_loader;
 pub mod model;
 pub mod mtp_layout;
+// The port sprint's (`port/consumer-opt`) new top-level modules, declared here
+// because `layers/mod.rs` is at the 500-line cap.
+pub mod port;
 pub mod precision_schedule;
 pub mod preflight;
 pub mod quant_format;

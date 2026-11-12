@@ -21,6 +21,7 @@ safetensors = "0.8"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+# @port:deps
 
 [lints]
 workspace = true

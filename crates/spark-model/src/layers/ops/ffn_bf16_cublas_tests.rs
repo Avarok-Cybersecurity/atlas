@@ -31,6 +31,7 @@ const ADA: TargetDefaults = TargetDefaults {
     memory_fit_consumer: true,
     w8a8_prefill_max_m_widening: u32::MAX,
     w8a8_prefill_max_m_narrowing: u32::MAX,
+    port: avarok_kernels::target_defaults_port::PORT_BASELINE,
 };
 
 /// Any target that does not declare the row (gb10, hopper, b200, b300).

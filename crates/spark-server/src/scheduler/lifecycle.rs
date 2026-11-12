@@ -507,6 +507,7 @@ pub fn resume_swapped_seq(
         adaptive: crate::adaptive_sampler::AdaptiveSamplingState::new(s.temperature),
         cached_prompt_tokens: s.cached_prompt_tokens,
         preempt_immune_until_tokens: immune_until,
+        port: Default::default(),
     })
 }
 
