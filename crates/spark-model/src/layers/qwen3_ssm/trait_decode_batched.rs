@@ -112,6 +112,18 @@ pub(super) enum GdnStates<'a, 'b> {
 }
 
 impl Qwen3SsmLayer {
+    /// True when the BF16 `in_proj_qkvz` is this layer's ONLY live QKVZ copy
+    /// (the Qwen3.5 dense `Bf16Raw` load): no packed, FP8 or NVFP4 sibling
+    /// that an earlier arm of the verify dispatch would pick instead.
+    fn gdn_qkvz_bf16_only(&self) -> bool {
+        self.qkvz_q2.is_none()
+            && self.qkvz_fp8w.is_none()
+            && self.qkvz_fp8.is_none()
+            && self.qkvz_nvfp4.is_none()
+            && self.qkvz_nvfp4_t.is_none()
+            && !self.ssm.in_proj_qkvz.weight.is_null()
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn decode_batched_inner(
         &self,
@@ -189,6 +201,25 @@ impl Qwen3SsmLayer {
                     stream,
                 )?;
             }
+        } else if self.gdn_qkvz_bf16_only()
+            && ops::gdn_batched_gemm::qkvz_arm(ops::gdn_batched_gemm::row(), num_tokens)
+                == ops::gdn_batched_gemm::QkvzArm::Cublas
+        {
+            // `gdn_batched_gemm` row (off on every target): a BF16-only QKVZ
+            // at 3+ rows on ONE cuBLASLt GEMM instead of one `dense_gemv` per
+            // row (3, 4) or the scalar `dense_gemm` (5+). Every arm between
+            // here and those needs a quantized copy this layer lacks, so the
+            // early position changes nothing else. Same call as the
+            // multi-seq decode QKVZ (`ssm_batched_proj.rs`).
+            ops::cublas_bf16_proj_dense(
+                normed,
+                self.ssm.in_proj_qkvz.weight,
+                proj_dst,
+                k,
+                qkvz_size as u32,
+                h as u32,
+                stream,
+            )?;
         // 2..=4: the K=4 verify (num_drafts=3) hits this same NULL-slot
         // hazard — on native-FP8-GDN checkpoints (e.g. nvidia/Qwen3.6-27B-
         // NVFP4, whose GDN layers ship FP8) `in_proj_qkvz`/`qkvz_nvfp4*` are
@@ -940,17 +971,34 @@ impl Qwen3SsmLayer {
         // ── 9. Output projection → [K, H] ──
         let out_proj_buf = ctx.buffers.moe_output(); // [K, H] BF16
         if let Some(ref dense_out) = self.out_proj_dense {
-            ops::dense_gemm(
-                ctx.gpu,
-                self.dense_gemm_k,
-                normed_out_buf,
-                dense_out,
-                out_proj_buf,
-                k,
-                h as u32,
-                value_dim as u32,
-                stream,
-            )?;
+            if ops::gdn_batched_gemm::out_proj_arm(ops::gdn_batched_gemm::row(), num_tokens)
+                == ops::gdn_batched_gemm::OutProjArm::Cublas
+            {
+                // `gdn_batched_gemm` row: the scalar `dense_gemm` (about
+                // 89 GB/s) replaced by the cuBLASLt call the multi-seq decode
+                // out_proj already makes (`ssm_batched_proj.rs`).
+                ops::cublas_bf16_proj_dense(
+                    normed_out_buf,
+                    dense_out.weight,
+                    out_proj_buf,
+                    k,
+                    h as u32,
+                    value_dim as u32,
+                    stream,
+                )?;
+            } else {
+                ops::dense_gemm(
+                    ctx.gpu,
+                    self.dense_gemm_k,
+                    normed_out_buf,
+                    dense_out,
+                    out_proj_buf,
+                    k,
+                    h as u32,
+                    value_dim as u32,
+                    stream,
+                )?;
+            }
         } else if (2..=4).contains(&num_tokens)
             && let Some(ref fp8) = self.out_proj_fp8w
         {

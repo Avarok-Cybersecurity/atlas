@@ -203,6 +203,9 @@ pub struct TargetLevers {
     pub dense_fp8_from_bf16: Resolved<bool>,
     /// The BF16 dense-FFN prefill on cuBLASLt (`layers/ops/ffn_bf16_cublas.rs`).
     pub ffn_bf16_cublas_prefill: Resolved<bool>,
+    /// The BF16 GDN verify projections on one cuBLASLt GEMM
+    /// (`layers/ops/gdn_batched_gemm.rs`). A numerics row.
+    pub gdn_batched_gemm: Resolved<bool>,
     pub w8a8_prefill_max_m_widening: Resolved<u32>,
     pub w8a8_prefill_max_m_narrowing: Resolved<u32>,
 }
@@ -364,6 +367,10 @@ pub fn resolve(
             var("AVAROK_CUBLAS_GEMM").as_deref(),
             var(super::ffn_bf16_cublas::ENV).as_deref(),
         ),
+        gdn_batched_gemm: super::gdn_batched_gemm::resolve(
+            defaults.gdn_batched_gemm,
+            var(super::gdn_batched_gemm::ENV).as_deref(),
+        ),
     }
 }
 
@@ -424,7 +431,7 @@ pub fn format_levers(l: &TargetLevers) -> String {
          attn_m16_tc={attn_m16_tc} lm_head_m16_tc={lm_head_m16_tc} \
          attn_ncol_gemv={attn_ncol_gemv} ffn_gateup_fused={gateup} \
          fp8_act_quant_hopper={act_quant} dense_fp8_from_bf16={fp8_from_bf16} \
-         ffn_bf16_cublas_prefill={bf16_cublas} \
+         ffn_bf16_cublas_prefill={bf16_cublas} gdn_batched_gemm={gdn_gemm} \
          w8a8_prefill_max_m={w8a8_wide}/{w8a8_narrow}{w8a8_src}",
         hw = if l.hw.is_empty() { "unknown" } else { l.hw },
         // Not a resolvable lever — it is a FACT about the part, cross-checked
@@ -448,6 +455,7 @@ pub fn format_levers(l: &TargetLevers) -> String {
         gateup = onoff(l.ffn_gateup_fused),
         fp8_from_bf16 = onoff(l.dense_fp8_from_bf16),
         bf16_cublas = onoff(l.ffn_bf16_cublas_prefill),
+        gdn_gemm = onoff(l.gdn_batched_gemm),
         // Printed as widening/narrowing. `max` reads as "no cap" rather than
         // 4294967295, which would look like a number someone chose.
         w8a8_wide = cap(l.w8a8_prefill_max_m_widening.value),

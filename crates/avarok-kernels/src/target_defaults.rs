@@ -215,6 +215,17 @@ pub struct TargetDefaults {
     /// arm the W8A8 FFN prefill or the MoE shared expert. A set
     /// `AVAROK_CUBLAS_GEMM` (any value, `off` included) decides instead.
     pub ffn_bf16_cublas_prefill: bool,
+    /// The K-token (MTP verify) GDN projections of a BF16-kept GDN layer go
+    /// through ONE cuBLASLt BF16 GEMM over all rows
+    /// (`layers/ops/gdn_batched_gemm.rs`): `in_proj_qkvz` at 3+ rows, where
+    /// it was one `dense_gemv` per row at 3 and 4 and the scalar `dense_gemm`
+    /// above, and `out_proj_dense` at 2+ rows, where it was the scalar
+    /// `dense_gemm`.
+    ///
+    /// FALSE everywhere: cuBLASLt reassociates the K reduction, so verify
+    /// logits move. A NUMERICS row with no receipt; `AVAROK_GDN_BATCHED_GEMM=1`
+    /// is the A/B.
+    pub gdn_batched_gemm: bool,
     /// Upper `M` for the W8A8 block-scaled dense-FFN prefill on a WIDENING
     /// projection (`n > k`: gate/up). `u32::MAX` = no cap, the baseline.
     ///

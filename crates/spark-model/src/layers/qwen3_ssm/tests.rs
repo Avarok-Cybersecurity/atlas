@@ -135,7 +135,7 @@ fn mk_state(gpu: &MockGpuBackend, layer: &Qwen3SsmLayer, n_inter: usize) -> SsmL
 
 /// Drive the batched verify body at ragged ks through `decode_verify_multi`
 /// (the verify_e.rs entry point) and return the result.
-fn run_batched_verify(
+pub(super) fn run_batched_verify(
     gpu: &MockGpuBackend,
     config: &ModelConfig,
     layer: &Qwen3SsmLayer,
@@ -183,7 +183,10 @@ fn run_batched_verify(
         cache_blocks_per_seq: None,
     };
     let mut kv = spark_runtime::kv_cache::PagedKvCache::new(kv_config, 8, gpu).unwrap();
-    let mut states_own: Vec<SsmLayerState> = ks.iter().map(|_| mk_state(gpu, layer, 4)).collect();
+    // Enough intermediates for the widest sequence (at least K=4).
+    let n_inter = ks.iter().copied().max().unwrap_or(0).max(4);
+    let mut states_own: Vec<SsmLayerState> =
+        ks.iter().map(|_| mk_state(gpu, layer, n_inter)).collect();
     let mut states: Vec<&mut (dyn LayerState + 'static)> = states_own
         .iter_mut()
         .map(|s| s as &mut (dyn LayerState + 'static))

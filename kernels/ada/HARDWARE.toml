@@ -106,6 +106,13 @@ dense_fp8_from_bf16 = false
 # included) decides instead of this row; `AVAROK_FFN_BF16_CUBLAS_PREFILL=0`
 # is the A/B against `dense_gemm_tc`.
 ffn_bf16_cublas_prefill = true
+# The MTP-verify GDN projections of a BF16-kept GDN layer (the Qwen3.5 dense
+# Bf16Raw load) on ONE cuBLASLt BF16 GEMM over all rows: `in_proj_qkvz` at 3+
+# rows (today one `dense_gemv` per row at 3 and 4) and `out_proj_dense` at 2+
+# rows (today the scalar `dense_gemm`). OFF: a NUMERICS row (cuBLASLt
+# reassociates, so verify logits move) with no receipt yet.
+# `AVAROK_GDN_BATCHED_GEMM=1` is the A/B.
+gdn_batched_gemm = false
 # Upper M for the W8A8 block-scaled dense-FFN prefill (#917). No cap
 # (u32::MAX, the baseline): Ada has no receipt either way. GB10's cap is a GB10
 # measurement and is not copied here.

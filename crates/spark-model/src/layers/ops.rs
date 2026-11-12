@@ -42,8 +42,12 @@ mod embeddings;
 // cuBLASLt by default where the target declares it (ada).
 #[path = "ops/ffn_bf16_cublas.rs"]
 pub mod ffn_bf16_cublas;
+// The `gdn_batched_gemm` target row: the BF16 GDN verify projections on one
+// cuBLASLt GEMM over all rows (off on every target; `AVAROK_GDN_BATCHED_GEMM`).
 #[path = "ops/fp8_act_quant.rs"]
 mod fp8_act_quant;
+#[path = "ops/gdn_batched_gemm.rs"]
+pub mod gdn_batched_gemm;
 // WHEN the Hopper FP8 act-quant twin runs: the CTA floor, its lever and the
 // route line (#928, round-16 receipt § 2.1). A sibling so neither file crosses
 // the cap.

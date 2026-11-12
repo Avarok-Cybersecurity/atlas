@@ -24,6 +24,7 @@ const ADA: TargetDefaults = TargetDefaults {
     ffn_gateup_fused: false,
     dense_fp8_from_bf16: false,
     ffn_bf16_cublas_prefill: true,
+    gdn_batched_gemm: false,
     w8a8_prefill_max_m_widening: u32::MAX,
     w8a8_prefill_max_m_narrowing: u32::MAX,
 };

@@ -74,6 +74,9 @@ pub use gdn_flags::{
 // ── TransformerLayer impl (delegates to per-file inherent _inner methods) ──
 
 #[cfg(test)]
+#[path = "gdn_batched_gemm_tests.rs"]
+mod gdn_batched_gemm_tests;
+#[cfg(test)]
 #[path = "prefill_alloc_tests.rs"]
 mod prefill_alloc_tests;
 #[cfg(test)]
