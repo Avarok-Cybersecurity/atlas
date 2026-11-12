@@ -395,6 +395,7 @@ pub fn build_model(
         gpu.as_ref(),
         use_speculative,
         !mtp_weights.is_empty(),
+        mtp_vocab_size,
     )?;
 
     // Capture the shared embed + resolved draft NVFP4 head for the DeepSeek-V4
