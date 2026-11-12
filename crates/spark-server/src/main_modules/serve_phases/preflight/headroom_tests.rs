@@ -417,6 +417,8 @@ fn the_fitted_depth_is_published_for_the_allocation_side() {
         PER_SEQ_BLOB,
         usize::MAX,
         0,
+        // No memory budget in play: this test is about the yardstick's fit.
+        usize::MAX,
         &y,
     );
     assert_eq!(fit.slots, 4);

@@ -175,6 +175,18 @@ pub(crate) fn preflight_reserve(
         args.max_batch_size,
     )
     .total_bytes();
+    // The per-sequence SSM state blob — `num_ssm_layers x (h + conv)`, 151.5
+    // MiB on the 27B. Both snapshot regions are whole multiples of it:
+    // Marconi reserves one per cache slot, the decode ring one per active
+    // sequence per ring slot.
+    let per_seq_blob = config.num_ssm_layers() * (h_state_bytes + conv_state_bytes);
+    // Memory left beside the checkpoint. Both snapshot regions yield to a share
+    // of it (`ssm_reserve/budget.rs`): constants sized for a 120 GB part are
+    // most of a 16 GB card.
+    let beside_weights = spark_model::ssm_reserve::memory_beside_weights(
+        free_mem,
+        headroom::checkpoint_bytes(post_load.model_dir).unwrap_or(0) as usize,
+    );
     // Marconi snapshot region. SSOT:
     // `spark_model::ssm_reserve::marconi_snapshot_slots` makes the SAME
     // decision (same env var, same predicate) the runtime allocation in
@@ -183,13 +195,38 @@ pub(crate) fn preflight_reserve(
     // unreachable — 2380 MiB on GLM-5.3 (16 slots x 34 KDA layers x FP32
     // h+conv) that nothing can ever restore from. Kill switch:
     // AVAROK_SSM_MARCONI_FULL.
-    let marconi = spark_model::ssm_reserve::marconi_snapshot_slots(
-        args.ssm_cache_slots,
-        spark_model::ssm_reserve::prefix_caching_active(
-            args.prefix_caching_enabled(),
-            config.kv_only_prefix_cache_is_safe(),
-        ),
+    //
+    // With the cache active the slot count still yields to its share of the
+    // memory beside the weights. The cap is published BEFORE the decision, so
+    // the reserve computed here and the allocation in `TransformerModel::new`
+    // both go through the capped answer. `AVAROK_SSM_MARCONI_FULL` opts out of
+    // the cap too, as it opts out of the skip.
+    let prefix_cache_active = spark_model::ssm_reserve::prefix_caching_active(
+        args.prefix_caching_enabled(),
+        config.kv_only_prefix_cache_is_safe(),
     );
+    if prefix_cache_active && per_seq_blob > 0 && !spark_model::ssm_reserve::marconi_reserve_full()
+    {
+        let cap = spark_model::ssm_reserve::cap_marconi_slots(
+            args.ssm_cache_slots,
+            per_seq_blob,
+            beside_weights,
+        );
+        if cap < args.ssm_cache_slots {
+            spark_model::ssm_reserve::set_marconi_slot_cap(cap);
+            tracing::warn!(
+                "SSM snapshot pool: Marconi capped at {cap} of {} slots ({:.0} MB of {:.0} MB) \
+                 so it takes at most 1/{} of the {:.2} GB beside the weights",
+                args.ssm_cache_slots,
+                (cap * per_seq_blob) as f64 / (1024.0 * 1024.0),
+                (args.ssm_cache_slots * per_seq_blob) as f64 / (1024.0 * 1024.0),
+                spark_model::ssm_reserve::MARCONI_BUDGET_DIVISOR,
+                beside_weights as f64 / (1024.0 * 1024.0 * 1024.0),
+            );
+        }
+    }
+    let marconi =
+        spark_model::ssm_reserve::marconi_snapshot_slots(args.ssm_cache_slots, prefix_cache_active);
     if let Some(reason) = marconi.skip_reason {
         tracing::info!(
             "SSM snapshot pool: Marconi region SKIPPED ({}) — {} slot(s) x {} layer(s) \
@@ -202,11 +239,6 @@ pub(crate) fn preflight_reserve(
                 / (1024 * 1024),
         );
     }
-    // The per-sequence SSM state blob — `num_ssm_layers x (h + conv)`, 151.5
-    // MiB on the 27B. Both snapshot regions are whole multiples of it:
-    // Marconi reserves one per cache slot, the decode ring one per active
-    // sequence per ring slot.
-    let per_seq_blob = config.num_ssm_layers() * (h_state_bytes + conv_state_bytes);
     let marconi_bytes = marconi.slots * per_seq_blob;
     // Same predicate as the pool term: DFlash IS a speculative serve and
     // pays the same graph/JIT/scratch overheads the 4 GB headroom exists for.
@@ -257,6 +289,7 @@ pub(crate) fn preflight_reserve(
         per_seq_blob,
         fixed_reserve + buffer_arena_bytes,
         free_mem,
+        beside_weights,
         &yardstick,
     );
     tracing::info!("{}", fit.decision);
