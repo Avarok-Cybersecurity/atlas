@@ -34,4 +34,6 @@ pub mod kernel;
 #[cfg(feature = "cuda")]
 pub mod registry;
 #[cfg(feature = "cuda")]
+pub mod registry_dyn_smem;
+#[cfg(feature = "cuda")]
 pub mod stream;
