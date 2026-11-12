@@ -210,4 +210,21 @@ fn quantize_ffn_launches_the_block_quantizer_per_projection_and_frees_the_bf16_s
     // Half the bytes of the BF16 weights, plus the scale grid.
     let bf16_bytes = 3 * hidden * inter * 2;
     assert!(total * 2 > bf16_bytes && total * 2 < bf16_bytes + bf16_bytes / 50);
+    // ... and the post-load audit's credit is exactly what that frees.
+    assert_eq!(layer_freed_bytes(hidden, inter), bf16_bytes - total);
+}
+
+#[test]
+fn the_audit_credit_is_bf16_minus_fp8_and_scales_per_layer() {
+    // Holo 3.1 4B / Qwen3.5-4B FFN: hidden 2560, intermediate 9216.
+    // BF16: 3 x 2560 x 9216 x 2 = 141,557,760 bytes. FP8: 70,778,880 bytes
+    // plus three 72 x 20 FP32 scale grids (17,280 bytes).
+    assert_eq!(
+        layer_freed_bytes(2560, 9216),
+        141_557_760 - 70_778_880 - 17_280
+    );
+    // 32 layers: 2.26 GB, what the card's 4B serve frees during the build.
+    assert_eq!(32 * layer_freed_bytes(2560, 9216), 2_264_371_200);
+    // Degenerate shapes free nothing rather than underflow.
+    assert_eq!(layer_freed_bytes(0, 9216), 0);
 }

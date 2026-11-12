@@ -37,6 +37,7 @@
 //! that, the load peak would be the BF16 checkpoint PLUS every FP8 copy.
 
 use anyhow::Result;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::{GpuBackend, KernelHandle};
 use spark_runtime::weights::{WeightDtype, WeightStore};
 
@@ -97,6 +98,69 @@ pub fn layer_shapes_ok(store: &WeightStore, lp: &str, hidden: usize, inter: usiz
 /// FP8 bytes plus the FP32 scale grid one quantized `[n, k]` weight costs.
 pub fn fp8_weight_bytes(n: usize, k: usize) -> (usize, usize) {
     (n * k, n.div_ceil(128) * k.div_ceil(128) * 4)
+}
+
+/// Bytes one qualifying layer hands back: its BF16 gate, up and down minus
+/// the FP8 bytes and scale grids that replace them.
+pub fn layer_freed_bytes(hidden: usize, inter: usize) -> usize {
+    let bf16 = 3 * hidden * inter * 2;
+    let kept: usize = [(inter, hidden), (inter, hidden), (hidden, inter)]
+        .iter()
+        .map(|&(n, k)| {
+            let (w, s) = fp8_weight_bytes(n, k);
+            w + s
+        })
+        .sum();
+    bf16.saturating_sub(kept)
+}
+
+/// What the route will free while the model is built, or 0 when it will not
+/// run on this load: the same clauses as [`Fp8FromBf16::resolve`], without
+/// its log line, over the layers [`layer_shapes_ok`] admits.
+///
+/// WHY. The server's post-load memory audit measures free memory between the
+/// checkpoint upload and `load_layers`, while the BF16 FFN this route replaces
+/// still occupies it, and the inference buffers it guards are allocated after
+/// the layers are built. Without this credit the audit refuses serves that
+/// fit: on a 16 GB card the 4B with `--speculative` and the FP8 FFN measured
+/// 5.98 GB free against 6.68 GB needed, while the route frees 2.2 GB first.
+pub fn deferred_free_bytes(
+    gpu: &dyn GpuBackend,
+    store: &WeightStore,
+    config: &ModelConfig,
+    tp_world_size: usize,
+    lora: bool,
+) -> usize {
+    // The factory's loader choice for this route (`loader_for_config`).
+    let family = config.model_type.to_lowercase().replace(['-', '.'], "_");
+    let dense_loader = matches!(
+        family.as_str(),
+        "qwen3_5_moe" | "qwen3_5" | "qwen35_moe" | "qwen35"
+    ) && config.is_qwen35_dense();
+    let lever = ops::target_defaults::resolved().dense_fp8_from_bf16.value;
+    if !(dense_loader && lever) {
+        return 0;
+    }
+    let quant_k = crate::layers::try_target_kernel(gpu, QUANT_MODULE, QUANT_MODULE);
+    let gemv = crate::layers::dense_ffn::ada_kernels::Fp8FfnKernels::resolve(gpu).gemv;
+    let on = route_selected(RouteInputs {
+        lever,
+        bf16_checkpoint: matches!(
+            crate::weight_map::detect_nvfp4_variant(store, config),
+            Nvfp4Variant::Bf16Raw
+        ),
+        single_gpu: tp_world_size.max(1) == 1,
+        lora,
+        kernels: quant_k.0 != 0 && gemv.0 != 0,
+    });
+    if !on {
+        return 0;
+    }
+    let (h, i) = (config.hidden_size, config.intermediate_size);
+    let layers = (0..config.num_hidden_layers)
+        .filter(|&l| layer_shapes_ok(store, &config.layer_prefix(l), h, i))
+        .count();
+    layers * layer_freed_bytes(h, i)
 }
 
 /// The route, resolved once per load: `Some` when it is on.

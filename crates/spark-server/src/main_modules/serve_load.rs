@@ -594,6 +594,13 @@ pub(crate) fn load_model(
         total_reserve,
         gdn_two_phase_bytes,
         max_batch_tokens_pre,
+        spark_model::weight_loader::fp8_from_bf16::deferred_free_bytes(
+            gpu.as_ref(),
+            &store,
+            &config,
+            world_size,
+            !args.lora_adapter.is_empty(),
+        ),
     )?;
 
     // 5. Build model via factory.
