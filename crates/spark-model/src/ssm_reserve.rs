@@ -15,6 +15,12 @@
 //! here, so every existing `ssm_reserve::decode_rollback_ring_slots` path is
 //! unchanged.
 
+mod budget;
+pub use budget::{
+    MARCONI_BUDGET_DIVISOR, RING_BUDGET_DIVISOR, apply_marconi_cap, cap_decode_ring_slots,
+    cap_marconi_slots, marconi_budget_bytes, memory_beside_weights, published_marconi_slot_cap,
+    ring_budget_bytes, set_marconi_slot_cap,
+};
 mod decode_ring;
 pub use decode_ring::{
     DECODE_RING_FIT_LADDER, DecodeRingDecision, decode_rollback_ring_slots,
@@ -483,7 +489,12 @@ pub fn marconi_snapshot_slots(
     requested: usize,
     prefix_caching_active: bool,
 ) -> MarconiSlotDecision {
-    marconi_snapshot_slots_with(requested, prefix_caching_active, marconi_reserve_full())
+    let mut decision =
+        marconi_snapshot_slots_with(requested, prefix_caching_active, marconi_reserve_full());
+    // Preflight's memory-budget cap (`budget.rs`), when it published one. Both
+    // call sites go through here, so the reserve and the allocation agree.
+    decision.slots = apply_marconi_cap(decision.slots, published_marconi_slot_cap());
+    decision
 }
 
 /// The `AVAROK_SSM_MARCONI_FULL` kill switch (PRESENCE, house convention).
