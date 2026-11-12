@@ -397,6 +397,7 @@ impl AvarokCudaBackend {
         let count = outstanding.len();
         if count > 0 {
             let bytes: usize = outstanding.iter().map(|(_, r)| r.bytes).sum();
+            crate::run_metrics::ledger_sub(bytes);
             // Aggregate before logging: an unreleased pool is hundreds of
             // per-layer allocations from ONE site, and hundreds of lines
             // would bury the site that actually needs fixing.

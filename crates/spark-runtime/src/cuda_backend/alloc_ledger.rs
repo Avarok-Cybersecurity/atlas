@@ -38,13 +38,20 @@ impl AvarokCudaBackend {
         bytes: usize,
         site: &'static std::panic::Location<'static>,
     ) {
-        self.live_allocs
+        let replaced = self
+            .live_allocs
             .lock()
             .insert(ptr.0, AllocRecord { bytes, site });
+        if let Some(old) = replaced {
+            crate::run_metrics::ledger_sub(old.bytes);
+        }
+        crate::run_metrics::ledger_add(bytes);
     }
 
     pub(crate) fn forget_alloc(&self, ptr: crate::gpu::DevicePtr) {
-        self.live_allocs.lock().remove(&ptr.0);
+        if let Some(rec) = self.live_allocs.lock().remove(&ptr.0) {
+            crate::run_metrics::ledger_sub(rec.bytes);
+        }
     }
 
     /// Total live device bytes this backend has allocated and not freed.

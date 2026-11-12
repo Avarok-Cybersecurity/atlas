@@ -117,6 +117,22 @@ pub async fn metrics_handler() -> impl IntoResponse {
         atlas_kernel_lookups_unresolved {unresolved}\n"
     );
 
+    // In-process device memory from the allocation ledger. The device-wide
+    // figure (nvidia-smi) also holds the CUDA context, CUDA Graph pools and
+    // library workspaces, which never pass through the ledger; reading both
+    // separates what Atlas allocated from what the driver did.
+    let (ledger_live, ledger_peak) = spark_runtime::run_metrics::ledger_bytes();
+    let _ = write!(
+        text,
+        "\
+        # HELP atlas_gpu_ledger_live_bytes Device bytes live in the Atlas allocation ledger\n\
+        # TYPE atlas_gpu_ledger_live_bytes gauge\n\
+        atlas_gpu_ledger_live_bytes {ledger_live}\n\
+        # HELP atlas_gpu_ledger_peak_bytes High-water mark of the allocation ledger since the model loaded\n\
+        # TYPE atlas_gpu_ledger_peak_bytes gauge\n\
+        atlas_gpu_ledger_peak_bytes {ledger_peak}\n"
+    );
+
     let _ = write!(
         text,
         "\

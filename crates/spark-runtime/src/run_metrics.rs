@@ -49,6 +49,17 @@ pub struct RunMetrics {
     /// `baseline - free_now`, excluding co-tenants automatically. `0` =
     /// unset (the mock backend in tests) and callers fall back.
     pub baseline_free_bytes: AtomicUsize,
+    /// Bytes live in the device-allocation ledger right now, kept as a
+    /// running total so a reader does not have to walk the ledger's map.
+    pub ledger_live_bytes: AtomicUsize,
+    /// High-water mark of `ledger_live_bytes` since this run began. The
+    /// end-of-load ledger table is a snapshot; this also sees what is
+    /// allocated and freed later (warm-up, scratch growth, load-time
+    /// temporaries freed before the snapshot). It cannot see memory the
+    /// driver allocates outside `GpuBackend::alloc`, such as the CUDA
+    /// context, CUDA Graph pools and library workspaces: the gap between
+    /// this and the device-wide figure is that memory.
+    pub ledger_peak_bytes: AtomicUsize,
     /// `(module, func, loaded, dispatch site)` for every kernel lookup this run
     /// made. The site is the `Location` of the `.kernel(…)` / `try_kernel(…)`
     /// call, carried in through `#[track_caller]`: a bare `module::func` list
@@ -100,6 +111,12 @@ pub fn reset_for_new_run() {
         c.store(0, Ordering::Relaxed);
     }
     m.baseline_free_bytes.store(0, Ordering::Relaxed);
+    // The live total is not per-run: an outgoing model's allocations are
+    // still live until its teardown frees them. The peak restarts from it.
+    m.ledger_peak_bytes.store(
+        m.ledger_live_bytes.load(Ordering::Relaxed),
+        Ordering::Relaxed,
+    );
     m.last_entropy.store(0, Ordering::Relaxed);
     if let Ok(mut v) = m.kernel_audit.lock() {
         v.clear();
@@ -108,6 +125,32 @@ pub fn reset_for_new_run() {
     // the seal from the outgoing model must not outlive it — otherwise every
     // one of the incoming model's own lookups reads as a "late" one.
     crate::kernel_audit::unseal();
+}
+
+/// Enter `bytes` in the ledger totals and raise the peak if they pass it.
+pub fn ledger_add(bytes: usize) {
+    let m = metrics();
+    let live = m.ledger_live_bytes.fetch_add(bytes, Ordering::Relaxed) + bytes;
+    m.ledger_peak_bytes.fetch_max(live, Ordering::Relaxed);
+}
+
+/// Take `bytes` out of the ledger totals. Saturating, so a teardown that
+/// overlaps the next run's reset can never wrap the live figure.
+pub fn ledger_sub(bytes: usize) {
+    let _ = metrics()
+        .ledger_live_bytes
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+            Some(v.saturating_sub(bytes))
+        });
+}
+
+/// `(live, peak)` ledger bytes, as `/metrics` exports them.
+pub fn ledger_bytes() -> (usize, usize) {
+    let m = metrics();
+    (
+        m.ledger_live_bytes.load(Ordering::Relaxed),
+        m.ledger_peak_bytes.load(Ordering::Relaxed),
+    )
 }
 
 /// Prefix-cache activity since the CURRENT model was loaded.
@@ -173,6 +216,24 @@ mod tests {
             "but the next run does not inherit the previous run's hits"
         );
         assert!(tokens < RUN / 10);
+    }
+}
+
+#[cfg(test)]
+mod ledger_peak_tests {
+    use super::*;
+
+    /// Bounds, not equalities: the mailbox is process-global and other tests
+    /// in this binary call `reset_for_new_run` concurrently.
+    #[test]
+    fn the_peak_keeps_a_freed_allocation() {
+        const BIG: usize = 1 << 40;
+        ledger_add(BIG);
+        let (live, peak) = ledger_bytes();
+        assert!(live >= BIG && peak >= BIG);
+        ledger_sub(BIG);
+        let (_, peak_after) = ledger_bytes();
+        assert!(peak_after >= BIG, "a freed allocation stays in the peak");
     }
 }
 
