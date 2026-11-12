@@ -204,6 +204,16 @@ pub struct TargetDefaults {
     /// keep BF16. The 16 GB Ada target is the one it exists for.
     /// `AVAROK_DENSE_FP8_FROM_BF16=0|1` is the A/B against BF16.
     pub dense_fp8_from_bf16: bool,
+    /// The same load-time BF16 -> 128x128 block-scaled FP8 quantization for a
+    /// plain-BF16 dense checkpoint's GDN projections, `in_proj_qkvz` and
+    /// `out_proj` (`weight_loader/qwen35_dense/gdn_fp8_from_bf16.rs`), served
+    /// on the native-FP8 GDN arms: W8A16 GEMVs at decode, W8A8 at prefill.
+    ///
+    /// A NUMERICS lever like the row above, and independent of it. On a 4B
+    /// Holo the GDN projections are 2.0 GB of BF16 read per decode token.
+    /// FALSE on every target in this tree for want of an accuracy receipt;
+    /// `AVAROK_GDN_FP8_FROM_BF16=0|1` is the A/B against BF16.
+    pub gdn_fp8_from_bf16: bool,
     /// The cuBLASLt BF16 GEMM serves the BF16 dense-FFN PREFILL
     /// (`layers/ops/ffn_bf16_cublas.rs`) in place of the hand-written
     /// `dense_gemm_tc`, with no `AVAROK_CUBLAS_GEMM` in the environment.

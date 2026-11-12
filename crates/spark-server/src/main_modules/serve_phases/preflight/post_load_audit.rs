@@ -42,7 +42,7 @@ pub(crate) fn post_load_memory_audit(
     .saturating_add(deferred_free);
     if deferred_free > 0 {
         tracing::info!(
-            "Post-load audit: crediting {:.2} GB the BF16 -> FP8 FFN route frees during the build \
+            "Post-load audit: crediting {:.2} GB the BF16 -> FP8 load routes free during the build \
              ({:.2} GB measured free now)",
             deferred_free as f64 / (1024.0 * 1024.0 * 1024.0),
             actual_free as f64 / (1024.0 * 1024.0 * 1024.0),

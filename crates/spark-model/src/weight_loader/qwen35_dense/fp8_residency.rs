@@ -402,6 +402,9 @@ pub struct TwinsBuilt {
     /// weights, which are freed, so `derived` grows by about half of what the
     /// checkpoint gives back.
     pub ffn_fp8_from_bf16: bool,
+    /// The GDN `[Q|K|V|Z]` and `out_proj` quantized from BF16 at load
+    /// (`gdn_fp8_from_bf16.rs`); like the row above, a replacement.
+    pub gdn_fp8_from_bf16: bool,
 }
 
 impl TwinsBuilt {
@@ -425,6 +428,9 @@ impl TwinsBuilt {
         }
         if self.ffn_fp8_from_bf16 {
             parts.push("ffn-fp8-from-bf16");
+        }
+        if self.gdn_fp8_from_bf16 {
+            parts.push("gdn-fp8-from-bf16");
         }
         if parts.is_empty() {
             "none".to_owned()

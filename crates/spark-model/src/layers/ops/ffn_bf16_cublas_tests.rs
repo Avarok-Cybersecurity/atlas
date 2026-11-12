@@ -23,6 +23,7 @@ const ADA: TargetDefaults = TargetDefaults {
     attn_ncol_gemv: false,
     ffn_gateup_fused: false,
     dense_fp8_from_bf16: false,
+    gdn_fp8_from_bf16: false,
     ffn_bf16_cublas_prefill: true,
     gdn_batched_gemm: false,
     attn_gated_bf16_batchm: true,

@@ -201,6 +201,8 @@ pub struct TargetLevers {
     /// Quantize a BF16 checkpoint's dense FFN to block-scaled FP8 at load
     /// (`weight_loader/qwen35_dense/fp8_from_bf16.rs`). A numerics row.
     pub dense_fp8_from_bf16: Resolved<bool>,
+    /// The same for the GDN projections (`qwen35_dense/gdn_fp8_from_bf16.rs`).
+    pub gdn_fp8_from_bf16: Resolved<bool>,
     /// The BF16 dense-FFN prefill on cuBLASLt (`layers/ops/ffn_bf16_cublas.rs`).
     pub ffn_bf16_cublas_prefill: Resolved<bool>,
     /// The BF16 GDN verify projections on one cuBLASLt GEMM
@@ -362,6 +364,12 @@ pub fn resolve(
             var("AVAROK_DENSE_FP8_FROM_BF16").as_deref(),
             false,
         ),
+        // The same route for the GDN projections, with its own A/B.
+        gdn_fp8_from_bf16: resolve_toggle(
+            defaults.gdn_fp8_from_bf16,
+            var("AVAROK_GDN_FP8_FROM_BF16").as_deref(),
+            false,
+        ),
         // A set `AVAROK_CUBLAS_GEMM` (any value) decides, exactly as before the
         // row; then the row's own variable; then the declaration. The order is
         // `ffn_bf16_cublas::resolve`, which owns it.
@@ -438,8 +446,8 @@ pub fn format_levers(l: &TargetLevers) -> String {
          attn_m16_tc={attn_m16_tc} lm_head_m16_tc={lm_head_m16_tc} \
          attn_ncol_gemv={attn_ncol_gemv} ffn_gateup_fused={gateup} \
          fp8_act_quant_hopper={act_quant} dense_fp8_from_bf16={fp8_from_bf16} \
-         ffn_bf16_cublas_prefill={bf16_cublas} gdn_batched_gemm={gdn_gemm} \
-         attn_gated_bf16_batchm={gated_batchm} \
+         gdn_fp8_from_bf16={gdn_fp8} ffn_bf16_cublas_prefill={bf16_cublas} \
+         gdn_batched_gemm={gdn_gemm} attn_gated_bf16_batchm={gated_batchm} \
          w8a8_prefill_max_m={w8a8_wide}/{w8a8_narrow}{w8a8_src}",
         hw = if l.hw.is_empty() { "unknown" } else { l.hw },
         // Not a resolvable lever — it is a FACT about the part, cross-checked
@@ -462,6 +470,7 @@ pub fn format_levers(l: &TargetLevers) -> String {
         attn_ncol_gemv = onoff(l.attn_ncol_gemv),
         gateup = onoff(l.ffn_gateup_fused),
         fp8_from_bf16 = onoff(l.dense_fp8_from_bf16),
+        gdn_fp8 = onoff(l.gdn_fp8_from_bf16),
         bf16_cublas = onoff(l.ffn_bf16_cublas_prefill),
         gdn_gemm = onoff(l.gdn_batched_gemm),
         gated_batchm = onoff(l.attn_gated_bf16_batchm),

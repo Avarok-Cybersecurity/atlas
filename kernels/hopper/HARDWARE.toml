@@ -347,6 +347,9 @@ ffn_gateup_fused = true
 # OFF: a NUMERICS change with no H100 receipt, on a part with the memory to
 # keep BF16. `AVAROK_DENSE_FP8_FROM_BF16=1` is how that receipt would be taken.
 dense_fp8_from_bf16 = false
+# The same route for the GDN projections. OFF for the same reason;
+# `AVAROK_GDN_FP8_FROM_BF16=1` is how that receipt would be taken.
+gdn_fp8_from_bf16 = false
 # BF16 dense-FFN prefill on cuBLASLt by default. OFF for want of an H100
 # receipt: the win is an Ada measurement. `AVAROK_CUBLAS_GEMM=ffn` still arms
 # it.

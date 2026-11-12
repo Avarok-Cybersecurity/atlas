@@ -24,6 +24,27 @@ pub(super) fn hc_kernel(
     }
 }
 
+/// The M=1 block-scaled FP8 decode GEMV: the sm_89 drop-in `fp8_gemv_ada`
+/// where the target compiled it, else `w8a16_gemv`, which stays REQUIRED (the
+/// `?` this field always had). Bit-identical either way
+/// (`layers/dense_ffn_ada_kernels.rs`), so only the speed of the native-FP8
+/// and load-time-FP8 GDN decode changes, and only on Ada.
+pub(super) fn fp8_m1_gemv_kernel(gpu: &dyn GpuBackend) -> Result<KernelHandle> {
+    let h = crate::layers::dense_ffn::ada_kernels::Fp8FfnKernels::m1_gemv(gpu);
+    if h.0 != 0 {
+        Ok(h)
+    } else {
+        gpu.kernel("w8a16_gemv", "w8a16_gemv")
+    }
+}
+
+/// The in-tree W8A8 block-scaled prefill GEMM: `fp8_gemm_ada_w8a8` on sm_89,
+/// else `fp8_gemm_t_blockscaled` (optional, as before). Same arguments and
+/// grid, same output bits.
+pub(super) fn fp8_w8a8_gemm_kernel(gpu: &dyn GpuBackend) -> KernelHandle {
+    crate::layers::dense_ffn::ada_kernels::Fp8FfnKernels::w8a8_gemm(gpu)
+}
+
 /// Chain-verify K=5..16 WY kernels (one templated gb10-common module;
 /// K=9..16 arrived 2026-08-29 with the gamma>8 window). Index = K-5; a NULL
 /// handle means the target lacks the module, in which case that width keeps

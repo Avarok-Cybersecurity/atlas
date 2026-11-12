@@ -95,6 +95,16 @@ ffn_gateup_fused = false
 # `AVAROK_DENSE_FP8_FROM_BF16=1` against the BF16 default on both holo
 # targets, then decode and prefill tok/s against the same switch.
 dense_fp8_from_bf16 = false
+# The same load-time BF16 -> 128x128 block-scaled FP8 quantization for the GDN
+# projections, `in_proj_qkvz` and `out_proj`
+# (`weight_loader/qwen35_dense/gdn_fp8_from_bf16.rs`), served on the
+# native-FP8 GDN arms: `fp8_gemv_ada` at M=1 decode, the batched W8A16 GEMVs
+# at verify, `fp8_gemm_ada_w8a8` at prefill. OFF until Ada has a receipt: it
+# changes numerics, and GDN errors feed a recurrent state. On a 4B Holo the
+# GDN projections are 2.0 GB of BF16 read per decode token. The receipt that
+# flips it: logit agreement of `AVAROK_GDN_FP8_FROM_BF16=1` against BF16 on
+# both holo targets plus a long-context degeneration check, then tok/s.
+gdn_fp8_from_bf16 = false
 # The BF16 dense-FFN PREFILL on the cuBLASLt BF16 GEMM instead of the
 # hand-written `dense_gemm_tc`, which is very slow on sm_89. ON, on an
 # end-to-end A/B on the RTX 4060 Ti 16 GB (same binary and flags, one env

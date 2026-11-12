@@ -312,6 +312,7 @@ pub fn predicted_derived_bytes(
             // This prediction prices the native-FP8 checkpoint route
             // (`AVAROK_DENSE_FP8=1`); a BF16 checkpoint never reaches it.
             ffn_fp8_from_bf16: false,
+            gdn_fp8_from_bf16: false,
         },
         attn_twin_set: plan.attn_fp8_twins,
     })

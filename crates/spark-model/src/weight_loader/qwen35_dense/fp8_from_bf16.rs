@@ -116,7 +116,8 @@ pub fn layer_freed_bytes(hidden: usize, inter: usize) -> usize {
 
 /// What the route will free while the model is built, or 0 when it will not
 /// run on this load: the same clauses as [`Fp8FromBf16::resolve`], without
-/// its log line, over the layers [`layer_shapes_ok`] admits.
+/// its log line, over the layers [`layer_shapes_ok`] admits, plus what the
+/// GDN projections' route frees (`gdn_fp8_from_bf16::deferred_free_bytes`).
 ///
 /// WHY. The server's post-load memory audit measures free memory between the
 /// checkpoint upload and `load_layers`, while the BF16 FFN this route replaces
@@ -137,30 +138,44 @@ pub fn deferred_free_bytes(
         family.as_str(),
         "qwen3_5_moe" | "qwen3_5" | "qwen35_moe" | "qwen35"
     ) && config.is_qwen35_dense();
-    let lever = ops::target_defaults::resolved().dense_fp8_from_bf16.value;
-    if !(dense_loader && lever) {
+    let levers = ops::target_defaults::resolved();
+    let lever = levers.dense_fp8_from_bf16.value;
+    if !(dense_loader && (lever || levers.gdn_fp8_from_bf16.value)) {
         return 0;
+    }
+    let bf16_checkpoint = matches!(
+        crate::weight_map::detect_nvfp4_variant(store, config),
+        Nvfp4Variant::Bf16Raw
+    );
+    // The GDN projections' route (`gdn_fp8_from_bf16.rs`) frees its BF16
+    // sources in the same build, so it is credited here too.
+    let gdn = super::gdn_fp8_from_bf16::deferred_free_bytes(
+        gpu,
+        config,
+        bf16_checkpoint,
+        tp_world_size,
+        lora,
+    );
+    if !lever {
+        return gdn;
     }
     let quant_k = crate::layers::try_target_kernel(gpu, QUANT_MODULE, QUANT_MODULE);
     let gemv = crate::layers::dense_ffn::ada_kernels::Fp8FfnKernels::resolve(gpu).gemv;
     let on = route_selected(RouteInputs {
         lever,
-        bf16_checkpoint: matches!(
-            crate::weight_map::detect_nvfp4_variant(store, config),
-            Nvfp4Variant::Bf16Raw
-        ),
+        bf16_checkpoint,
         single_gpu: tp_world_size.max(1) == 1,
         lora,
         kernels: quant_k.0 != 0 && gemv.0 != 0,
     });
     if !on {
-        return 0;
+        return gdn;
     }
     let (h, i) = (config.hidden_size, config.intermediate_size);
     let layers = (0..config.num_hidden_layers)
         .filter(|&l| layer_shapes_ok(store, &config.layer_prefix(l), h, i))
         .count();
-    layers * layer_freed_bytes(h, i)
+    layers * layer_freed_bytes(h, i) + gdn
 }
 
 /// The route, resolved once per load: `Some` when it is on.

@@ -261,6 +261,9 @@ fn every_declaring_target_states_every_lever() {
             // booleans: an absent row and a deliberate `false` must not look
             // identical.
             "dense_fp8_from_bf16",
+            // The same route for the GDN projections, stated for the same
+            // reason.
+            "gdn_fp8_from_bf16",
             // The BF16 dense-FFN prefill on cuBLASLt. TRUE on ada on an
             // end-to-end receipt, FALSE elsewhere, and stated everywhere so a
             // deliberate `false` never looks like an inherited one.
@@ -406,6 +409,7 @@ fn the_generated_constant_names_every_field() {
         "attn_decode_splitk: \"auto\"",
         "ffn_gateup_fused: true",
         "dense_fp8_from_bf16: false",
+        "gdn_fp8_from_bf16: false",
         "ffn_bf16_cublas_prefill: false",
         "gdn_batched_gemm: false",
         "attn_gated_bf16_batchm: false",
@@ -438,6 +442,7 @@ fn the_baked_constant_matches_its_own_hardware_tree() {
     assert_eq!(baked.attn_decode_splitk, declared.attn_decode_splitk);
     assert_eq!(baked.ffn_gateup_fused, declared.ffn_gateup_fused);
     assert_eq!(baked.dense_fp8_from_bf16, declared.dense_fp8_from_bf16);
+    assert_eq!(baked.gdn_fp8_from_bf16, declared.gdn_fp8_from_bf16);
     assert_eq!(
         baked.ffn_bf16_cublas_prefill,
         declared.ffn_bf16_cublas_prefill

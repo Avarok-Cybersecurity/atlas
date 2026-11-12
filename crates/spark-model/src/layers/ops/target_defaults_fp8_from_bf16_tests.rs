@@ -49,3 +49,37 @@ fn the_serve_line_names_the_row_and_marks_an_override() {
     let line = format_levers(&with(&GB10, &[("AVAROK_DENSE_FP8_FROM_BF16", "1")]));
     assert!(line.contains("dense_fp8_from_bf16=on (env)"), "{line}");
 }
+
+/// The `gdn_fp8_from_bf16` row: off on both fixtures, its own variable in both
+/// directions, independent of the FFN row, and named on the serve line.
+#[test]
+fn the_gdn_row_is_off_by_default_and_its_own_ab() {
+    for t in [&GB10, &HOPPER] {
+        assert_eq!(
+            empty(t).gdn_fp8_from_bf16,
+            Resolved::target(false),
+            "{}",
+            t.hw
+        );
+    }
+    let on = with(&GB10, &[("AVAROK_GDN_FP8_FROM_BF16", "1")]);
+    assert_eq!(on.gdn_fp8_from_bf16, Resolved::env(true));
+    assert!(!on.dense_fp8_from_bf16.value, "the FFN row must not follow");
+    let ffn_only = with(&GB10, &[("AVAROK_DENSE_FP8_FROM_BF16", "1")]);
+    assert!(
+        !ffn_only.gdn_fp8_from_bf16.value,
+        "nor the GDN row the FFN one"
+    );
+    let declaring = TargetDefaults {
+        gdn_fp8_from_bf16: true,
+        ..GB10
+    };
+    assert_eq!(empty(&declaring).gdn_fp8_from_bf16, Resolved::target(true));
+    assert_eq!(
+        with(&declaring, &[("AVAROK_GDN_FP8_FROM_BF16", "0")]).gdn_fp8_from_bf16,
+        Resolved::env(false),
+    );
+    let line = format_levers(&empty(&GB10));
+    assert!(line.contains("gdn_fp8_from_bf16=off"), "{line}");
+    assert!(format_levers(&on).contains("gdn_fp8_from_bf16=on (env)"));
+}

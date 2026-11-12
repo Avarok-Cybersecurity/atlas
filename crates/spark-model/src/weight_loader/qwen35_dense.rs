@@ -266,6 +266,8 @@ fn ffn_gateup_fused_selected(
 // (`[defaults] dense_fp8_from_bf16`).
 pub mod fp8_from_bf16;
 pub mod fp8_residency;
+// The same route for the GDN projections (`[defaults] gdn_fp8_from_bf16`).
+pub mod gdn_fp8_from_bf16;
 mod loaders_b;
 pub mod predicted_residency;
 mod rowwise_fp8;
@@ -377,6 +379,15 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
         let ffn_from_bf16_route = fp8_from_bf16::Fp8FromBf16::resolve(
             gpu,
             crate::layers::ops::target_defaults::resolved().dense_fp8_from_bf16,
+            variant,
+            config.tp_world_size,
+            config.adapter_max_rank,
+        );
+        // The same route for the GDN projections (`[defaults]
+        // gdn_fp8_from_bf16`), resolved once and independent of the FFN one.
+        let gdn_from_bf16_route = gdn_fp8_from_bf16::GdnFp8FromBf16::resolve(
+            gpu,
+            crate::layers::ops::target_defaults::resolved().gdn_fp8_from_bf16,
             variant,
             config.tp_world_size,
             config.adapter_max_rank,
@@ -1596,6 +1607,51 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                     // out_proj_dense when Some; predequant_for_prefill /
                     // set_fp8_prefill_only_weights are skipped (NVFP4/FP8 only).
                     if matches!(variant, Nvfp4Variant::Bf16Raw) {
+                        // Load-time BF16 -> block-scaled FP8 (`gdn_fp8_from_bf16.rs`):
+                        // the layer is then built exactly as the native-FP8 GDN arm
+                        // above builds it (BF16 and NVFP4 slots NULL, the FP8 pair the
+                        // only live weights), so every consumer is that arm's.
+                        let gdn_shapes = gdn_fp8_from_bf16::GdnShapes::of(config);
+                        if let Some(route) =
+                            gdn_from_bf16_route.filter(|_| tp_size == 1 && gdn_shapes.qualify())
+                        {
+                            let (qkvz_f, out_f) = route.quantize_gdn(
+                                store,
+                                qkvz_dense,
+                                out_proj_dense,
+                                gdn_shapes,
+                                gpu,
+                                stream,
+                                &mut residency,
+                            )?;
+                            residency.twins.gdn_fp8_from_bf16 = true;
+                            let ssm = SsmWeights {
+                                in_proj_qkvz: DenseWeight {
+                                    weight: spark_runtime::gpu::DevicePtr::NULL,
+                                },
+                                in_proj_ba: ba_dense,
+                                conv1d,
+                                a_log,
+                                dt_bias,
+                                norm,
+                                out_proj: crate::weight_map::QuantizedWeight::null(),
+                            };
+                            let mut layer = Qwen3SsmLayer::new_sequential(
+                                input_norm,
+                                ssm,
+                                post_attn_norm,
+                                ffn,
+                                None,
+                                None,
+                                None,
+                                config,
+                                gpu,
+                            )?;
+                            layer.set_fp8_decode_weights(Some(qkvz_f), Some(out_f));
+                            layer.set_w8a8_out_proj_prefill(true);
+                            layers.push(Box::new(layer));
+                            continue;
+                        }
                         let ssm = SsmWeights {
                             in_proj_qkvz: qkvz_dense,
                             in_proj_ba: ba_dense,

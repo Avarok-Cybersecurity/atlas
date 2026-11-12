@@ -104,7 +104,7 @@ impl Qwen3SsmLayer {
             dense_gemv_batch2_k: gpu.kernel("dense_gemv_bf16_batch2", "dense_gemv_bf16_batch2")?,
             w4a16_gemv_k: gpu.kernel("w4a16_gemv", "w4a16_gemv")?,
             w4a16_gemv_sw_k: super::super::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_sw"),
-            w8a16_gemv_k: gpu.kernel("w8a16_gemv", "w8a16_gemv")?,
+            w8a16_gemv_k: init_kernels::fp8_m1_gemv_kernel(gpu)?,
             w4a16_gemv_qkvz_k: gpu.kernel("w4a16_gemv", "w4a16_gemv_qkvz")?,
             deinterleave_k: gpu.kernel("ssm_preprocess", "deinterleave_qkvz")?,
             conv1d_k: gpu.kernel("causal_conv1d", "causal_conv1d_update")?,
@@ -466,11 +466,8 @@ impl Qwen3SsmLayer {
             w4a16_gemv_batch16_k: super::super::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_batch16"),
             w8a16_gemm_t_k: super::super::try_kernel(gpu, "w8a16_gemm_t", "w8a16_gemm_t"),
             per_token_group_quant_fp8_k: ops::Fp8ActQuant::resolve(gpu),
-            fp8_gemm_t_blockscaled_k: super::super::try_kernel(
-                gpu,
-                "fp8_gemm_t_blockscaled",
-                "fp8_gemm_t_blockscaled",
-            ),
+            fp8_gemm_t_blockscaled_k: init_kernels::fp8_w8a8_gemm_kernel(gpu),
+            out_proj_w8a8_prefill: false,
             fp8_act_scale_kmajor_k: super::super::try_kernel(
                 gpu,
                 "fp8_scale_transpose",

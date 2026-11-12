@@ -112,7 +112,11 @@ pub(super) fn native_fp8_gdn_layer(
 }
 
 /// SSM state with `n_inter` pool-style intermediates (enough for K=4).
-fn mk_state(gpu: &MockGpuBackend, layer: &Qwen3SsmLayer, n_inter: usize) -> SsmLayerState {
+pub(super) fn mk_state(
+    gpu: &MockGpuBackend,
+    layer: &Qwen3SsmLayer,
+    n_inter: usize,
+) -> SsmLayerState {
     let h_bytes = layer.h_state_bytes;
     let conv_bytes = layer.conv_state_bytes;
     // One contiguous slab per family, mirroring the ssm_pool layout.

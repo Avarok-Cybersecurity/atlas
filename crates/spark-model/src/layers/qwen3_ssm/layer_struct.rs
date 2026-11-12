@@ -439,6 +439,11 @@ pub struct Qwen3SsmLayer {
     // `AVAROK_FP8_W8A8=1` for staged rollout.
     pub(super) per_token_group_quant_fp8_k: ops::Fp8ActQuant,
     pub(super) fp8_gemm_t_blockscaled_k: KernelHandle,
+    /// The `out_proj` prefill takes the in-tree W8A8 arm without
+    /// `AVAROK_FP8_W8A8=1`. Set only by the load-time BF16 -> FP8 GDN route
+    /// (`weight_loader/qwen35_dense/gdn_fp8_from_bf16.rs`); false on every
+    /// other build, whose `out_proj` prefill is unchanged.
+    pub(super) out_proj_w8a8_prefill: bool,
     /// `fp8_act_scale_to_kmajor` — rewrites the quantizer's `[M, K/128]`
     /// VEC128 activation scales into the `[K/128, ceil16(M)]` layout cuBLASLt
     /// documents. 0 when the module is absent, which makes the cuBLASLt QKVZ

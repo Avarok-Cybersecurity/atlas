@@ -78,6 +78,19 @@ impl Fp8FfnKernels {
             gemm_w8a8: prefer(gpu, gemm),
         }
     }
+
+    /// The M=1 decode GEMV role alone, for a layer that needs no other role
+    /// (the GDN layer's `w8a16_gemv_k`): one lookup where the target has no
+    /// drop-in, exactly the lookup that layer issued before.
+    pub fn m1_gemv(gpu: &dyn GpuBackend) -> KernelHandle {
+        prefer(gpu, FP8_FFN_KERNELS[0])
+    }
+
+    /// The W8A8 prefill GEMM role alone (the GDN layer's
+    /// `fp8_gemm_t_blockscaled_k`), on the same terms as [`Self::m1_gemv`].
+    pub fn w8a8_gemm(gpu: &dyn GpuBackend) -> KernelHandle {
+        prefer(gpu, FP8_FFN_KERNELS[3])
+    }
 }
 
 #[cfg(test)]

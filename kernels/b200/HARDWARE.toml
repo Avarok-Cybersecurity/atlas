@@ -128,6 +128,9 @@ ffn_gateup_fused = false
 # Load-time BF16 -> FP8 for a dense FFN. OFF for want of a receipt, like every
 # other row here; a NUMERICS row.
 dense_fp8_from_bf16 = false
+# The same route for the GDN projections. OFF for want of a receipt; a
+# NUMERICS row.
+gdn_fp8_from_bf16 = false
 # BF16 dense-FFN prefill on cuBLASLt by default. OFF for want of a receipt:
 # the win is an Ada measurement (`kernels/ada/HARDWARE.toml`) and is not
 # copied here. `AVAROK_CUBLAS_GEMM=ffn` still arms it.
