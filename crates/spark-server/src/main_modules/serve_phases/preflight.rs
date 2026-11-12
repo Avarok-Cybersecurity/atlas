@@ -18,6 +18,7 @@ mod headroom;
 mod per_sequence_state;
 mod post_load_audit;
 mod refusal;
+mod spec_headroom;
 mod ssm_h_fp16;
 #[cfg(any(feature = "cuda", feature = "metal"))]
 pub(crate) use gpu_backend::init_gpu_backend;
@@ -245,13 +246,14 @@ pub(crate) fn preflight_reserve(
         );
     }
     let marconi_bytes = marconi.slots * per_seq_blob;
-    // Same predicate as the pool term: DFlash IS a speculative serve and
-    // pays the same graph/JIT/scratch overheads the 4 GB headroom exists for.
-    let cuda_headroom: usize = if spec_on_pool {
-        4 * 1024 * 1024 * 1024
-    } else {
-        512 * 1024 * 1024
-    };
+    // Same predicate as the pool term (`spec_headroom::cuda_headroom`): the
+    // Qwen MTP head is priced from what it allocates after the KV sizing,
+    // every other drafter keeps the flat 4 GiB.
+    let (cuda_headroom, headroom_why) = spec_headroom::cuda_headroom(args, config);
+    tracing::info!(
+        "Preflight CUDA headroom: {} MB ({headroom_why})",
+        cuda_headroom / (1024 * 1024)
+    );
     let gdn_two_phase_bytes: usize = {
         let key_dim = config.linear_num_key_heads * config.linear_key_head_dim;
         let value_dim = config.linear_num_value_heads * config.linear_value_head_dim;
