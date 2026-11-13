@@ -317,3 +317,122 @@ fn the_row_off_constructor_is_the_plain_gate() {
         }
     }
 }
+
+// ── One stream: the row is a no-op ───────────────────────────────────────
+
+#[test]
+fn an_interval_at_one_stream_is_the_base_whatever_the_backoff() {
+    for confirms in 0..=40 {
+        assert_eq!(interval(256, 1, confirms), 256);
+        assert_eq!(interval(1024, 1, confirms), 1024);
+        assert_eq!(interval(256, 0, confirms), 256, "nothing recorded yet");
+    }
+    // Two streams is the first width the row paces per stream.
+    assert_eq!(interval(256, 2, 0), 512);
+}
+
+/// Drive a row-on and a row-off gate through the same single-stream trace and
+/// compare everything the scheduler can observe after every step: which step
+/// runs next, the fresh decision, the standing mode and whether a probe is
+/// running. The trace is long enough for several serial refreshes (1024
+/// tokens apart) that each CONFIRM the standing mode, which is what the
+/// backoff reacts to at wider widths.
+fn assert_one_stream_identical(shape: Shape, steps: usize) -> (Tally, Tally) {
+    assert_eq!(shape.width, 1);
+    let (mut off, mut on) = (
+        MtpGate::with_width_policy(1, false),
+        MtpGate::with_width_policy(1, true),
+    );
+    let (mut a, mut b) = (Tally::default(), Tally::default());
+    for i in 0..steps {
+        assert_eq!(off.next_step(), on.next_step(), "step {i}");
+        assert_eq!(off.is_probing(), on.is_probing(), "step {i}");
+        assert_eq!(off.in_serial_mode(), on.in_serial_mode(), "step {i}");
+        let (ta, tb) = (run(&mut off, 1, shape), run(&mut on, 1, shape));
+        // `run` drains the fresh decision; the hand-off counts must match.
+        assert_eq!(ta.disables, tb.disables, "step {i}");
+        assert_eq!(ta.mtp_steps, tb.mtp_steps, "step {i}");
+        assert_eq!(ta.dec_steps, tb.dec_steps, "step {i}");
+        for (t, d) in [(&mut a, ta), (&mut b, tb)] {
+            t.mtp_steps += d.mtp_steps;
+            t.dec_steps += d.dec_steps;
+            t.tokens += d.tokens;
+            t.wall_ms += d.wall_ms;
+            t.disables += d.disables;
+        }
+    }
+    (a, b)
+}
+
+#[test]
+fn one_stream_takes_the_row_off_path_step_for_step() {
+    // MTP wins at one stream: the gate stays in Mtp and refreshes the serial
+    // baseline every 1024 tokens, 8000 steps being about 16 refreshes, each
+    // of which holds the standing mode.
+    let (a, b) = assert_one_stream_identical(ONE, 8000);
+    assert!(
+        a.dec_steps > 0,
+        "the trace must include serial probes: {a:?}"
+    );
+    assert_eq!(a.dec_steps, b.dec_steps);
+    assert_eq!(a.mtp_steps, b.mtp_steps);
+    assert_eq!(a.wall_ms, b.wall_ms);
+    assert_eq!(b.disables, 0);
+}
+
+#[test]
+fn one_stream_where_decode_wins_takes_the_row_off_path_step_for_step() {
+    // The mirror: MTP loses at one stream (acceptance collapsed), the gate
+    // switches to Serial and re-probes MTP every 256 tokens, each probe
+    // confirming Serial. The row must not stretch those intervals at C=1.
+    let losing = Shape {
+        mtp_tokens: 1,
+        mtp_ms: 45,
+        ..ONE
+    };
+    let (a, b) = assert_one_stream_identical(losing, 8000);
+    assert_eq!(a.mtp_steps, b.mtp_steps);
+    assert_eq!(a.disables, b.disables);
+    assert!(a.disables >= 1, "the gate should have gone Serial: {a:?}");
+}
+
+#[test]
+fn the_screen_trace_never_leaves_mtp_or_probes_with_the_row_on() {
+    // The bench C=1 phase: three requests of 256 tokens, 153 verify passes
+    // each, 1.66 tokens a pass. 768 tokens stay inside the 1024-token refresh
+    // interval, so no serial step may run, with the row on or off.
+    for row in [false, true] {
+        let mut g = MtpGate::with_width_policy(1, row);
+        let t = run(&mut g, 3 * 153, ONE);
+        assert_eq!(t.dec_steps, 0, "row {row}: {t:?}");
+        assert_eq!(t.disables, 0);
+        assert!(!g.is_probing() && !g.in_serial_mode());
+    }
+}
+
+/// Per-step cost of the gate at one stream, row off against row on. Timing
+/// is machine dependent, so this prints and asserts only a loose bound:
+/// `cargo test -p spark-server -- --ignored one_stream_gate_cost --nocapture`.
+#[test]
+#[ignore = "timing probe, run by hand"]
+fn one_stream_gate_cost_per_step() {
+    const N: usize = 2_000_000;
+    let mut ns = [0.0f64; 2];
+    for (i, row) in [false, true].into_iter().enumerate() {
+        let mut g = MtpGate::with_width_policy(1, row);
+        let wall = Duration::from_millis(38);
+        let t0 = std::time::Instant::now();
+        for _ in 0..N {
+            std::hint::black_box(g.next_step());
+            g.record_verify_step(std::hint::black_box(wall), 2, 1);
+            std::hint::black_box(g.take_fresh_decision());
+        }
+        ns[i] = t0.elapsed().as_nanos() as f64 / N as f64;
+    }
+    println!(
+        "gate per step at one stream: row off {:.1} ns, row on {:.1} ns",
+        ns[0], ns[1]
+    );
+    // Both are far below a 33 ms step; a regression to microseconds would show.
+    assert!(ns[1] < ns[0] + 200.0, "{ns:?}");
+}

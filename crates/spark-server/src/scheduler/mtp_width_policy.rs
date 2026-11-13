@@ -59,6 +59,23 @@
 //! to the configured depth (D-Cut) as a function of the live batch and the
 //! measured acceptance.
 //!
+//! # One stream is untouched
+//!
+//! With one active sequence (width regime 1) the row adds nothing per step and
+//! changes no decision. The bench screen of 2026-11-13 measured C=1 at 51 then
+//! 49 tok/s and read it as a cost of the row; the logs say otherwise: both arms
+//! ran 153 verify passes at 1.66 tokens a pass (accept rate 66.0%), and
+//! neither ever probed (`gate_serial_tps=0.0` in both), so the gate took the
+//! identical decisions. Per step the row costs one compare of the width regime
+//! in `note_width` (the first step of a serve, and any width change, take the
+//! switch path; the next step does not) and the interval arithmetic of
+//! [`interval`], which is the base value at one stream: no allocation, lock,
+//! sync, metrics query or re-plan. The arm that ran second also shows host
+//! contention in its own timers (`draft_ms` 278 to 331 and `commit_ms` 2.8 to
+//! 9.0 across its three requests against flat 275 and 2.4 to 3.0 in the first
+//! arm), which a one-draft step at 33 ms feels. The backoff is also off at one
+//! stream, so the probe cadence there is the old one.
+//!
 //! # What it does not change
 //!
 //! Both modes emit verified tokens, so outputs are those of whichever mode
@@ -91,8 +108,17 @@ pub(super) fn bucket(regime: usize) -> usize {
 
 /// A probe interval in aggregate tokens: `base` tokens per stream at width
 /// regime `regime`, doubled once per confirming probe up to the cap.
+///
+/// One stream (regime 0 or 1) is the pre-row interval whatever the backoff:
+/// the row is a no-op there, so the single-stream cadence is the old one and
+/// the gate takes the same decisions at the same steps with the row on and off
+/// (`one_stream_takes_the_row_off_path_step_for_step` in the tests).
+#[inline]
 pub(super) fn interval(base: usize, regime: usize, confirms: u32) -> usize {
-    base.saturating_mul(regime.max(1))
+    if regime <= 1 {
+        return base;
+    }
+    base.saturating_mul(regime)
         .saturating_mul(1usize << confirms.min(MAX_BACKOFF_LOG2))
 }
 
