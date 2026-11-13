@@ -12,7 +12,11 @@
 use anyhow::{Context, Result, bail};
 
 mod blocks;
+/// The IQ4 family (port lane L19): public so the GPU oracles can share the code book and block sizes.
+pub mod iq4;
 
+#[cfg(test)]
+mod iq4_tests;
 #[cfg(test)]
 mod tests;
 
@@ -47,6 +51,10 @@ pub enum GgmlType {
     Q2_0 {
         group: usize,
     },
+    /// ggml id 23: 256 weights in 136 bytes, eight 6-bit sub-scales over the `kvalues_iq4nl` code book.
+    Iq4Xs,
+    /// ggml id 20: 32 weights in 18 bytes, one f16 scale over the same code book.
+    Iq4Nl,
 }
 
 impl GgmlType {
@@ -73,6 +81,8 @@ impl GgmlType {
             34 => Self::Tq1_0,
             35 => Self::Tq2_0,
             42 => Self::Q2_0 { group: q2_0_group },
+            20 => Self::Iq4Nl,
+            23 => Self::Iq4Xs,
             other => bail!("unsupported / unknown ggml type id {other}"),
         })
     }
@@ -81,8 +91,15 @@ impl GgmlType {
     pub fn block_size(self) -> usize {
         match self {
             Self::F32 | Self::F16 | Self::Bf16 => 1,
-            Self::Q4_0 | Self::Q4_1 | Self::Q5_0 | Self::Q5_1 | Self::Q8_0 | Self::Q8_1 => 32,
-            Self::Q2K
+            Self::Q4_0
+            | Self::Q4_1
+            | Self::Q5_0
+            | Self::Q5_1
+            | Self::Q8_0
+            | Self::Q8_1
+            | Self::Iq4Nl => 32,
+            Self::Iq4Xs
+            | Self::Q2K
             | Self::Q3K
             | Self::Q4K
             | Self::Q5K
@@ -119,6 +136,8 @@ impl GgmlType {
                 }
                 2 + group / 4
             }
+            Self::Iq4Xs => iq4::IQ4_XS_BLOCK_BYTES,
+            Self::Iq4Nl => iq4::IQ4_NL_BLOCK_BYTES,
         })
     }
 }
@@ -257,6 +276,8 @@ fn dequant_block(t: GgmlType, blk: &[u8], out: &mut [f32]) {
         GgmlType::Tq1_0 => blocks::dequant_tq1_0(blk, out),
         GgmlType::Tq2_0 => blocks::dequant_tq2_0(blk, out),
         GgmlType::Q2_0 { group } => blocks::dequant_q2_0_gn(blk, out, group),
+        GgmlType::Iq4Xs => iq4::dequant_iq4_xs(blk, out),
+        GgmlType::Iq4Nl => iq4::dequant_iq4_nl(blk, out),
     }
 }
 

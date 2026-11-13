@@ -196,6 +196,8 @@ impl GgmlType {
             Q8_K => (256, 292),
             Tq1_0 => (256, 54),
             Tq2_0 => (256, 66),
+            Iq4Xs if super::keep_packed_iq4::enabled() => (256, 136), // port L19, row gguf_native_iq4
+            Iq4Nl if super::keep_packed_iq4::enabled() => (32, 18), // port L19, row gguf_native_iq4
             Q2_0 => match q2 {
                 Q2Group::G128 => (128, 34),
                 Q2Group::G64 => (64, 18),

@@ -36,6 +36,8 @@ mod expert_lru_pool;
 mod expert_prefetch;
 mod expert_reads;
 pub mod expert_stream;
+/// Port lane L19: the keep-packed IQ4_XS / Q4_K / Q6_K route (row `gguf_native_iq4`, off by default).
+pub mod keep_packed_iq4;
 mod names;
 mod shards;
 mod sidecar;
@@ -279,6 +281,11 @@ impl super::WeightLoader for GgufLoader {
             tracing::info!(
                 "AVAROK_GGUF_NATIVE_Q2=1: keeping id-42 FFN projections packed (group {q2_group})"
             );
+        }
+        // The IQ4_XS / Q4_K / Q6_K twin of the switch above, published from the `gguf_native_iq4` row
+        // (`AVAROK_GGUF_NATIVE_IQ4`) by spark-server before any load; see `keep_packed_iq4`.
+        if keep_packed_iq4::enabled() {
+            tracing::info!("{}", keep_packed_iq4::boot_line());
         }
 
         // ── Backbone (text model) ──

@@ -68,17 +68,29 @@ pub fn open_gguf(path: &Path) -> Result<(std::fs::File, memmap2::Mmap, container
 /// that are fused rather than name-mapped), for the pre-flight OOM estimate.
 pub fn est_bf16(gguf: &container::GgufFile, arch: &str) -> usize {
     let is_clip = value_transform::is_clip(arch);
+    // Port L19 (row `gguf_native_iq4`, `None` / no-op when off): the MTP head's names and the packed size
+    // of the tensors the keep-packed route will not expand.
+    let mtp_layer = super::keep_packed_iq4::qwen35_mtp_layer(gguf, arch);
     gguf.tensors
         .iter()
         .filter(|t| !(arch == "deepseek41" && names::deepseek41_deferred_name(&t.name).is_some()))
         .filter(|t| {
             (is_clip && value_transform::vision_patch_frame(&t.name).is_some())
                 || !matches!(
-                    names::translate(&t.name, arch),
+                    names::translate_with_mtp(&t.name, arch, mtp_layer),
                     None | Some(names::GgufName::Drop)
                 )
         })
-        .map(|t| t.num_elements() * WeightDtype::BF16.byte_size())
+        .map(|t| {
+            let packed = match names::translate_with_mtp(&t.name, arch, mtp_layer) {
+                Some(names::GgufName::Direct(hf)) => {
+                    let shape: Vec<usize> = t.dims.iter().rev().copied().collect();
+                    super::keep_packed_iq4::est_bytes(t.ggml_type.id(), &hf, arch, &shape)
+                }
+                _ => None,
+            };
+            packed.unwrap_or(t.num_elements() * WeightDtype::BF16.byte_size())
+        })
         .sum()
 }
 
@@ -117,6 +129,8 @@ pub fn load_pass(
         None
     };
     let mut patch_frames: Vec<Option<Vec<f32>>> = Vec::new();
+    // Port L19: the qwen35 MTP head block under row `gguf_native_iq4` (`None` with the row off).
+    let mtp_layer = super::keep_packed_iq4::qwen35_mtp_layer(gguf, arch);
 
     for tensor in &gguf.tensors {
         let num_elements = tensor.num_elements();
@@ -163,7 +177,7 @@ pub fn load_pass(
             );
             continue;
         }
-        let target = match names::translate(&tensor.name, arch) {
+        let target = match names::translate_with_mtp(&tensor.name, arch, mtp_layer) {
             Some(names::GgufName::Drop) | None => continue,
             Some(t) => t,
         };
@@ -257,6 +271,17 @@ pub fn load_pass(
                     },
                 },
             );
+            continue;
+        }
+
+        // ── Port L19: keep-packed IQ4_XS / Q4_K / Q6_K (row `gguf_native_iq4`; `None` when off) ──
+        if let names::GgufName::Direct(ref hf_name) = target
+            && let Some(t) = super::keep_packed_iq4::try_load(
+                gpu, id, hf_name, arch, raw, &hf_shape, gdn, force_cpu,
+            )
+            .with_context(|| format!("keep-packed tensor {}", tensor.name))?
+        {
+            weights.insert(hf_name.clone(), t);
             continue;
         }
 

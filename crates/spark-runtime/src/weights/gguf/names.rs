@@ -18,9 +18,12 @@
 //! tensors like `rope_freqs.weight` that carry no learnable weight).
 
 mod deepseek41;
+/// Port lane L19: the qwen35 MTP head (`blk.<L>.nextn.*`) names, used only under `gguf_native_iq4`.
+mod qwen35_mtp;
 
 pub use deepseek41::deepseek41_deferred_name;
 use deepseek41::translate_deepseek41;
+pub use qwen35_mtp::{is_dense_qwen35, mtp_layer, translate_with_mtp};
 
 /// Result of translating one GGUF tensor name.
 #[derive(Debug, Clone, PartialEq, Eq)]
