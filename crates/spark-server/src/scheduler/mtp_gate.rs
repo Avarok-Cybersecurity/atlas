@@ -187,7 +187,37 @@ enum Mode {
     Serial,
 }
 
-#[derive(Default)]
+/// What one arbitration concluded. Only the `mtp_width_policy` backoff reads
+/// it; with that row off the value is dropped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Arbitration {
+    /// A baseline is missing or stale: nothing was compared.
+    NoData,
+    /// The standing mode stayed ahead.
+    Held,
+    /// The other mode is ahead by more than the margin; dwell not yet met.
+    Losing,
+    /// The dwell was met and the mode switched.
+    Switched,
+}
+
+/// What the gate knows about one batch-width bucket: saved when the width
+/// leaves the bucket and restored when it returns (`mtp_width_policy.rs`,
+/// row `mtp_width_policy`).
+#[derive(Clone, Copy)]
+struct WidthSnapshot {
+    mode: Mode,
+    mtp: ModeStats,
+    serial: ModeStats,
+    /// Tokens since the last probe event. A bucket left in the middle of a
+    /// probe is saved with that probe due again.
+    tokens_since_event: usize,
+    measured_at_depth: usize,
+    /// Probe-interval doublings earned at this width.
+    confirms: u32,
+}
+
+#[derive(Default, Clone, Copy)]
 struct ModeStats {
     /// Delivered-throughput EWMA (tokens/sec), `None` until first window.
     tps: Option<f64>,
@@ -255,6 +285,10 @@ pub struct MtpGate {
     fresh: Option<GateDecision>,
     /// Depth-regime changes this serve (Done-line / tests).
     regime_reprobes: usize,
+    /// Row `mtp_width_policy`: one saved state per batch-width bucket and the
+    /// probe backoff of the live one. `None` with the row off, and then every
+    /// rule in this file is the pre-row rule.
+    width_memory: Option<super::mtp_width_policy::WidthMemory<WidthSnapshot>>,
 }
 
 impl MtpGate {
@@ -280,6 +314,12 @@ impl MtpGate {
     /// `num_drafts` is retained for construction-site compatibility and
     /// logging; arbitration is measurement-driven and does not model K.
     pub fn new(num_drafts: usize) -> Self {
+        Self::with_width_policy(num_drafts, super::mtp_width_policy::row())
+    }
+
+    /// [`Self::new`] with the `mtp_width_policy` row given, so a CPU test
+    /// drives both polarities without the process-wide row table.
+    pub(crate) fn with_width_policy(num_drafts: usize, width_policy: bool) -> Self {
         // Resolved once per gate rather than cached in two statics: the gate
         // belongs to the run, and `event_interval` reads these on every decode
         // step, which is too hot for a per-call getenv.
@@ -289,6 +329,14 @@ impl MtpGate {
             "MTP gate: throughput-arbitrated (K={num_drafts}); window={WINDOW_STEPS} steps, \
              dwell={SWITCH_DWELL_WINDOWS}, reprobe={reprobe} tok, refresh={refresh} tok",
         );
+        if width_policy {
+            tracing::info!(
+                "MTP gate: mtp_width_policy on: one memory per batch-width bucket, reprobe and \
+                 refresh count tokens per stream (x width), confirming probes back off up to {}x. \
+                 AVAROK_MTP_WIDTH_POLICY=0 restores the single-stream pacing.",
+                1u32 << super::mtp_width_policy::MAX_BACKOFF_LOG2,
+            );
+        }
         Self {
             reprobe,
             refresh,
@@ -307,6 +355,7 @@ impl MtpGate {
             width_regime: 0,
             fresh: None,
             regime_reprobes: 0,
+            width_memory: width_policy.then(super::mtp_width_policy::WidthMemory::new),
         }
     }
 
@@ -331,6 +380,11 @@ impl MtpGate {
             self.mtp.stale = true;
             self.serial.stale = true;
             self.measured_at_depth = current_depth;
+            // A new depth regime owes a prompt look: drop any probe backoff
+            // (row `mtp_width_policy`; nothing to drop with the row off).
+            if let Some(m) = self.width_memory.as_mut() {
+                m.reset_backoff();
+            }
             // Refresh the off-mode soon rather than waiting a full interval.
             self.tokens_since_event = self.tokens_since_event.max(self.event_interval());
             self.regime_reprobes = self.regime_reprobes.saturating_add(1);
@@ -366,7 +420,9 @@ impl MtpGate {
     /// compared a full-batch MTP rate against a one-sequence serial rate
     /// and DisableMtp was unreachable.
     pub fn record_decode(&mut self, wall: Duration, width: usize) {
-        self.note_width(width.max(1));
+        if self.note_width(width.max(1)) {
+            return;
+        }
         self.record_step(wall, width.max(1));
     }
 
@@ -376,7 +432,9 @@ impl MtpGate {
     /// propose cost are charged to Mtp mode — they are part of what MTP
     /// costs to run.
     pub fn record_verify_step(&mut self, wall: Duration, emitted: usize, width: usize) {
-        self.note_width(width.max(1));
+        if self.note_width(width.max(1)) {
+            return;
+        }
         self.record_step(wall, emitted.max(1));
     }
 
@@ -390,10 +448,17 @@ impl MtpGate {
     /// window, marks BOTH baselines stale and pulls the next probe forward
     /// — exactly the [`Self::maybe_remeasure`] policy. A stale other-mode
     /// EWMA cannot win a switch, so the gate re-measures before it re-arbitrates.
-    fn note_width(&mut self, width: usize) {
+    ///
+    /// Returns true when the step being recorded must NOT be counted, which
+    /// only the `mtp_width_policy` row can answer
+    /// ([`Self::switch_width_bucket`]); with the row off it is always false.
+    fn note_width(&mut self, width: usize) -> bool {
         let regime = width.next_power_of_two();
         if regime == self.width_regime {
-            return;
+            return false;
+        }
+        if self.width_memory.is_some() {
+            return self.switch_width_bucket(regime);
         }
         if self.width_regime != 0 {
             tracing::info!(
@@ -411,6 +476,95 @@ impl MtpGate {
             self.tokens_since_event = self.tokens_since_event.max(self.event_interval());
         }
         self.width_regime = regime;
+        false
+    }
+
+    /// Row `mtp_width_policy`: leave the live batch-width bucket and enter
+    /// `regime` (`mtp_width_policy.rs` has the why).
+    ///
+    /// The outgoing bucket's mode, baselines, depth and pacing are saved. A
+    /// bucket seen before is restored and runs on without a probe; a mode
+    /// that differs from the outgoing one is handed to the scheduler through
+    /// `fresh`, exactly like an arbitrated switch, so pending drafts are
+    /// cleared and the draft head is resynced on the way to Serial. A bucket
+    /// never measured takes the pre-row rule: stale baselines, probe pulled
+    /// forward.
+    ///
+    /// Returns true when the step being recorded ran in a mode the restored
+    /// bucket is not in: it was dispatched before the gate could know the
+    /// width had changed, and counting it would open the bucket's window
+    /// with another mode's step.
+    fn switch_width_bucket(&mut self, regime: usize) -> bool {
+        let ran = if self.probing {
+            Self::other(self.mode)
+        } else {
+            self.mode
+        };
+        let from = self.width_regime;
+        if from != 0 {
+            let snapshot = WidthSnapshot {
+                mode: self.mode,
+                mtp: self.mtp,
+                serial: self.serial,
+                tokens_since_event: if self.probing {
+                    self.event_interval()
+                } else {
+                    self.tokens_since_event
+                },
+                measured_at_depth: self.measured_at_depth,
+                confirms: self.width_memory.as_ref().map_or(0, |m| m.confirms()),
+            };
+            if let Some(m) = self.width_memory.as_mut() {
+                m.save(from, snapshot);
+            }
+        }
+        // The partial window mixes widths, and a running probe belonged to
+        // the bucket just left.
+        self.win_tokens = 0.0;
+        self.win_wall = 0.0;
+        self.win_steps = 0;
+        self.losing_windows = 0;
+        self.probing = false;
+        self.probe_windows_left = 0;
+        self.width_regime = regime;
+        let Some(saved) = self.width_memory.as_mut().and_then(|m| m.take(regime)) else {
+            if from != 0 {
+                tracing::info!(
+                    "MTP gate: batch-width regime changed ({from} -> {regime}), first visit; \
+                     baselines stale, will re-probe on cadence",
+                );
+                self.mtp.stale = true;
+                self.serial.stale = true;
+                if let Some(m) = self.width_memory.as_mut() {
+                    m.reset_backoff();
+                }
+                self.tokens_since_event = self.tokens_since_event.max(self.event_interval());
+            }
+            return false;
+        };
+        let was = self.mode;
+        self.mode = saved.mode;
+        self.mtp = saved.mtp;
+        self.serial = saved.serial;
+        self.tokens_since_event = saved.tokens_since_event;
+        self.measured_at_depth = saved.measured_at_depth;
+        if let Some(m) = self.width_memory.as_mut() {
+            m.resume(saved.confirms);
+        }
+        if saved.mode != was {
+            self.fresh = Some(match saved.mode {
+                Mode::Mtp => GateDecision::KeepMtp,
+                Mode::Serial => GateDecision::DisableMtp,
+            });
+        }
+        tracing::info!(
+            "MTP gate: batch width {from} -> {regime}: resumed {:?} without a probe \
+             (mtp {:.1} tok/s, serial {:.1} tok/s)",
+            self.mode,
+            self.mtp.tps.unwrap_or(0.0),
+            self.serial.tps.unwrap_or(0.0),
+        );
+        ran != self.mode
     }
 
     fn other(m: Mode) -> Mode {
@@ -421,9 +575,15 @@ impl MtpGate {
     }
 
     fn event_interval(&self) -> usize {
-        match self.mode {
+        let base = match self.mode {
             Mode::Mtp => self.refresh,
             Mode::Serial => self.reprobe,
+        };
+        match &self.width_memory {
+            // Row `mtp_width_policy`: tokens per stream, backed off by probes
+            // that confirmed the standing mode.
+            Some(m) => super::mtp_width_policy::interval(base, self.width_regime, m.confirms()),
+            None => base,
         }
     }
 
@@ -469,7 +629,18 @@ impl MtpGate {
             self.probe_windows_left = self.probe_windows_left.saturating_sub(1);
             if self.probe_windows_left == 0 {
                 self.probing = false;
-                self.arbitrate();
+                let outcome = self.arbitrate();
+                // Row `mtp_width_policy`: a probe that confirmed the standing
+                // mode earns a longer interval, one that favored the other
+                // mode resets it (a switch already did, in `arbitrate`), and
+                // one that compared nothing leaves the pacing alone.
+                if let Some(m) = self.width_memory.as_mut() {
+                    match outcome {
+                        Arbitration::Held => m.note_probe(true),
+                        Arbitration::Losing => m.note_probe(false),
+                        Arbitration::Switched | Arbitration::NoData => {}
+                    }
+                }
                 self.tokens_since_event = 0;
             }
             return;
@@ -485,9 +656,9 @@ impl MtpGate {
     }
 
     /// Compare mode EWMAs with a hysteresis margin; switch after dwell.
-    fn arbitrate(&mut self) {
+    fn arbitrate(&mut self) -> Arbitration {
         let (Some(mtp), Some(serial)) = (self.mtp.tps, self.serial.tps) else {
-            return; // need both baselines before any switch
+            return Arbitration::NoData; // need both baselines before any switch
         };
         // A stale other-mode EWMA is a measurement from a different depth
         // regime. Switching onto it dumps a long think into serial for a
@@ -498,7 +669,7 @@ impl MtpGate {
             Mode::Serial => self.mtp.stale,
         };
         if other_stale {
-            return;
+            return Arbitration::NoData;
         }
         let (cur, other, other_dev) = match self.mode {
             Mode::Mtp => (mtp, serial, self.serial.dev),
@@ -524,9 +695,17 @@ impl MtpGate {
                     Mode::Mtp => GateDecision::KeepMtp,
                     Mode::Serial => GateDecision::DisableMtp,
                 });
+                // A new standing mode starts at the base probe interval
+                // (row `mtp_width_policy`; nothing to reset with it off).
+                if let Some(m) = self.width_memory.as_mut() {
+                    m.reset_backoff();
+                }
+                return Arbitration::Switched;
             }
+            Arbitration::Losing
         } else {
             self.losing_windows = 0;
+            Arbitration::Held
         }
     }
 

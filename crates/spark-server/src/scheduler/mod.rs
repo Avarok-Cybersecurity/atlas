@@ -51,6 +51,9 @@ mod mtp_gate;
 mod mtp_stats;
 mod mtp_step;
 pub(crate) mod mtp_timing;
+// Row `mtp_width_policy` (off by default): the gate's per-batch-width memory
+// and probe pacing.
+mod mtp_width_policy;
 mod phase_continue_prefills;
 mod phase_promote_prefills;
 mod phase_start_prefills;
