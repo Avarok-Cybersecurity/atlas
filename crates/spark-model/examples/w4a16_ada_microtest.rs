@@ -233,7 +233,13 @@ fn parity_gates(
                 "parity: {} == M x w4a16_gemv, M={}..={}",
                 r.id, r.t_min, r.t_max
             ),
-            &["ulp_row1", "row_shifted"],
+            // ulp_row1 perturbs row 1 only, so a route whose largest M is 1 cannot see it: planting it there makes
+            // the gate vacuous by construction, not by a blind kernel. row_shifted is visible at M = 1.
+            if r.t_max >= 2 {
+                &["ulp_row1", "row_shifted"]
+            } else {
+                &["row_shifted"]
+            },
             |v| {
                 let want = reference(r.t_max as usize, v)?;
                 let mut bad = Vec::new();
