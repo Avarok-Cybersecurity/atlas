@@ -268,4 +268,27 @@ Atlas files that carry it. License texts are in `LICENSES/`; notices are in
 - The GGUF format and the IQ4_XS, Q4_K, Q5_K and Q6_K quantization types
   are llama.cpp's (`docs/` and `gguf-py/` of the same repository).
 - See `GGUF-IQ4-ATTRIBUTION.md`.
+
+### EXL3 trellis weights: ExLlamaV3, TensorFold and QTIP (L20a, L20b)
+
+- ExLlamaV3 (https://github.com/turboderp-org/exllamav3), Copyright (c) 2025
+  Turboderp, MIT (`LICENSES/ExLlamaV3-MIT.txt`). Source of the EXL3 format
+  Atlas reads: trellis int16 tiles with a circular bitstream, the `3inst`,
+  `mcg` and `mul1` codebooks, 1 to 8 bits in half-bit steps, and
+  `W = diag(suh) H W_q H diag(svh)` with 128-point Hadamard rotations. No
+  ExLlamaV3 source is copied.
+- TensorFold (https://github.com/ashhart/TensorFold, commit 3885dce),
+  Copyright 2026 TensorFold contributors, Apache-2.0 (code written before 0.6.0
+  also MIT). Its independent Zig reader and reference decoder
+  (`zig/src/core/exl3_format.zig`, `exl3_load.zig`, `exl3_layout.zig`,
+  `exl3_prepare.zig`) are translated into
+  `crates/spark-runtime/src/weights/exl3/`; its format description
+  (`docs/recipes/exl3.md`) is the spec the reader's fixtures are written from;
+  its numpy oracle (`zig/tests/fixtures/exl3_oracle.bin`, read from a local
+  clone, not vendored) is the reader's independent check. Its EXL3 CUDA kernels
+  are lane L20b's source. Files, line ranges and changes: `EXL3-ATTRIBUTION.md`.
+- QTIP: A. Tseng, Q. Sun, D. Hou, C. De Sa, "QTIP: Quantization with Trellises
+  and Incoherence Processing" (NeurIPS 2024; arXiv:2406.11235, cited from
+  memory, check before publishing). The trellis-coded, Hadamard-incoherent
+  quantization method EXL3 follows. Cited for the method; no code.
 <!-- @port:citations -->

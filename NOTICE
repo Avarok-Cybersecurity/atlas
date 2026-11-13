@@ -126,6 +126,41 @@ llama.cpp / ggml (CUDA quant engine and GGUF block formats)
   and Rust translations of the block decoders and launch geometry. See
   GGUF-IQ4-ATTRIBUTION.md.
 
+== ExLlamaV3 and TensorFold (EXL3 trellis weights) ==
+
+Format:  ExLlamaV3, https://github.com/turboderp-org/exllamav3
+License: MIT License, Copyright (c) 2025 Turboderp
+         (LICENSES/ExLlamaV3-MIT.txt)
+Code:    TensorFold, https://github.com/ashhart/TensorFold, commit 3885dce
+License: Apache License, Version 2.0 (LICENSES/Apache-2.0.txt); code written
+         before TensorFold 0.6.0 is also available under the MIT License
+         (LICENSES/TensorFold-pre0.6-MIT.txt)
+
+TensorFold's NOTICE file reads:
+
+  TensorFold
+  Copyright 2026 TensorFold contributors
+  https://github.com/ashhart/TensorFold
+
+  TensorFold is licensed under the Apache License, Version 2.0 (LICENSE) from 0.6.0.
+  Releases up to 0.5.0 were MIT-licensed, and code written before 0.6.0 keeps its
+  MIT notice in LICENSES/MIT.txt. Third-party code and its licenses are listed in
+  THIRD_PARTY_NOTICES.md.
+
+Atlas reads ExLlamaV3's EXL3 format (its trellis layout and bitstream, its
+"3inst", "mcg" and "mul1" codebooks, its half-integer bit widths, its
+tensor-core fragment order and its Hadamard-rotated scales). Atlas translates
+TensorFold's Zig reader and reference decoder of that format into Rust, and
+copies and adapts TensorFold's EXL3 CUDA kernels; TensorFold's implementations
+are its own, checked by TensorFold bit for bit against ExLlamaV3's
+dequantization, and no ExLlamaV3 source is copied. The files that carry it are
+listed, with the upstream paths and line ranges and the changes made, in
+EXL3-ATTRIBUTION.md:
+  crates/spark-runtime/src/weights/exl3/ (lane L20a: the reader)
+  kernels/ada/common/exl3_decode_ada.cuh, exl3_linear_ada.cu,
+         exl3_hadamard_ada.cu, crates/spark-model/src/port/exl3/
+         (lane L20b: the kernels and the linear)
+
 == LMCache (KV block transfer, pinned host pool, LRU blob store) ==
 
 Source:  https://github.com/LMCache/LMCache, commit 3aefae1
