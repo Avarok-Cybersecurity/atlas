@@ -140,5 +140,53 @@ pub struct PortArgs {
     /// message to score the blocks (default 512, at most 2048).
     #[arg(long = "kv-view-query-tokens", value_name = "TOKENS")]
     pub kv_view_query_tokens: Option<u32>,
+    /// RetroInfer retrieval attention (lane L33, row `retro_attn`,
+    /// `AVAROK_RETRO_ATTN`): APPROXIMATE full-attention decode from
+    /// `--retro-min-context` tokens on (exact sink, tail and retrieval
+    /// clusters, centroid estimates for the next clusters). Off by default;
+    /// decode runs without CUDA graphs while it is on.
+    #[arg(long = "retro-attn")]
+    pub retro_attn: bool,
+    /// RetroInfer: fraction of clusters attended exactly (default 0.018,
+    /// `AVAROK_RETRO_RETRIEVAL_BUDGET`).
+    #[arg(long = "retro-retrieval-budget", value_name = "FRACTION")]
+    pub retro_retrieval_budget: Option<f64>,
+    /// RetroInfer: fraction of clusters estimated through their centroids
+    /// (default 0.232, `AVAROK_RETRO_ESTIMATION_BUDGET`).
+    #[arg(long = "retro-estimation-budget", value_name = "FRACTION")]
+    pub retro_estimation_budget: Option<f64>,
+    /// RetroInfer: tokens per k-means segment at index build (default 8192,
+    /// `AVAROK_RETRO_SEGMENT_TOKENS`).
+    #[arg(long = "retro-segment-tokens", value_name = "TOKENS")]
+    pub retro_segment_tokens: Option<u32>,
+    /// RetroInfer: average tokens per cluster (default 16, `AVAROK_RETRO_AVG_CLUSTER`).
+    #[arg(long = "retro-avg-cluster", value_name = "TOKENS")]
+    pub retro_avg_cluster: Option<u32>,
+    /// RetroInfer: attention-sink tokens kept exact (default 4, `AVAROK_RETRO_SINK`).
+    #[arg(long = "retro-sink", value_name = "TOKENS")]
+    pub retro_sink: Option<u32>,
+    /// RetroInfer: most recent tokens kept exact (default 64, `AVAROK_RETRO_WINDOW`).
+    #[arg(long = "retro-window", value_name = "TOKENS")]
+    pub retro_window: Option<u32>,
+    /// RetroInfer: below this context a sequence runs dense attention
+    /// (default 16384, `AVAROK_RETRO_MIN_CONTEXT`).
+    #[arg(long = "retro-min-context", value_name = "TOKENS")]
+    pub retro_min_context: Option<u32>,
+    /// RetroInfer: generated tokens clustered into the index at a time
+    /// (default 1024, `AVAROK_RETRO_UPDATE_INTERVAL`).
+    #[arg(long = "retro-update-interval", value_name = "TOKENS")]
+    pub retro_update_interval: Option<u32>,
+    /// RetroInfer shadow mode (`AVAROK_RETRO_SHADOW`): measure the retro zones
+    /// against dense attention on the CPU every `AVAROK_RETRO_SHADOW_EVERY`
+    /// (64) decode steps for the layers in `AVAROK_RETRO_SHADOW_LAYERS` (all),
+    /// published as `atlas_retro_shadow_*`. The output is unchanged; decode
+    /// runs without CUDA graphs while it is on.
+    #[arg(long = "retro-shadow")]
+    pub retro_shadow: bool,
+    /// RetroInfer: device memory for indexes, the prefix index cache and build
+    /// scratch, in MiB (default 2048, `AVAROK_RETRO_INDEX_CACHE_MB`), charged
+    /// to the KV-block budget while retro attention is on.
+    #[arg(long = "retro-index-cache-mb", value_name = "MIB")]
+    pub retro_index_cache_mb: Option<u32>,
     // @port:fields
 }

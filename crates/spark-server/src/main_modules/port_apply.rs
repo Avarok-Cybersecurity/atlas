@@ -66,6 +66,19 @@ pub(crate) fn apply(args: &PortArgs) -> anyhow::Result<()> {
         recent_tokens: args.attn_sparse_recent_tokens,
     })?;
     crate::scheduler::kv_view::apply_args(args)?;
+    spark_model::port::retro::api::apply(spark_model::port::retro::api::CliValues {
+        retro_attn: args.retro_attn,
+        retrieval_budget: args.retro_retrieval_budget,
+        estimation_budget: args.retro_estimation_budget,
+        segment_tokens: args.retro_segment_tokens,
+        avg_cluster: args.retro_avg_cluster,
+        sink: args.retro_sink,
+        window: args.retro_window,
+        min_context: args.retro_min_context,
+        update_interval: args.retro_update_interval,
+        shadow: args.retro_shadow,
+        index_cache_mb: args.retro_index_cache_mb,
+    })?;
     // @port:apply
     Ok(())
 }
@@ -107,6 +120,19 @@ pub(crate) fn validate(args: &PortArgs) -> anyhow::Result<()> {
         recent_tokens: args.attn_sparse_recent_tokens,
     })?;
     crate::scheduler::kv_view::validate_args(args)?;
+    spark_model::port::retro::api::validate(&spark_model::port::retro::api::CliValues {
+        retro_attn: args.retro_attn,
+        retrieval_budget: args.retro_retrieval_budget,
+        estimation_budget: args.retro_estimation_budget,
+        segment_tokens: args.retro_segment_tokens,
+        avg_cluster: args.retro_avg_cluster,
+        sink: args.retro_sink,
+        window: args.retro_window,
+        min_context: args.retro_min_context,
+        update_interval: args.retro_update_interval,
+        shadow: args.retro_shadow,
+        index_cache_mb: args.retro_index_cache_mb,
+    })?;
     // @port:validate
     Ok(())
 }
