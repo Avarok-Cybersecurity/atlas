@@ -13,6 +13,9 @@
 /// lane's field is its type's `Default` and is never read.
 #[derive(Default)]
 pub struct ModelPortState {
+    /// Topology-signature tables of the batched graph caches (lane L09,
+    /// `model/trait_impl/graph_family.rs`); empty unless `graph_exec_update` is on.
+    pub graph_family: crate::port::graph_stats::FamilyState,
     /// Lane L25: staging of the batched sequence swap (`kv_batched_swap`).
     pub kv_swap: spark_runtime::kv_cache::block_io::swap::SwapStaging,
     /// Host-RAM KV tier (lane L26b, `model/kv_tier_glue.rs`).

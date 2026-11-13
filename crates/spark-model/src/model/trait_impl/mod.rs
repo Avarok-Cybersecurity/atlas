@@ -31,6 +31,7 @@ mod drafter_prefill;
 mod ep_misc;
 mod gdn_woa;
 mod graph_borrow;
+mod graph_family;
 mod lm_head_batched;
 mod meta;
 mod port_ext;

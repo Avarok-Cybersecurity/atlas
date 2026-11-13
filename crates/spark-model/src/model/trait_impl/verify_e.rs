@@ -691,8 +691,16 @@ impl TransformerModel {
                 }
             }
 
-            if capture {
+            // Row `graph_exec_update` (port lane L09, `graph_family.rs`); off = the arm below.
+            if capture && super::graph_family::exec_update_active(self.gpu.as_ref()) {
+                use super::graph_family::FamilyCache::BatchVerify;
+                let cache = graphs.as_deref_mut();
+                if self.graph_family_finish(BatchVerify, cache, graph_key, stream)? {
+                    outcome = super::verify_e2::VerifyGraphOutcome::Capture;
+                }
+            } else if capture {
                 let graph = self.gpu.end_capture(stream)?;
+                super::graph_family::note_capture(graph);
                 if graph.0 != 0 {
                     tracing::info!(
                         "Captured CUDA graph for batched verify ks={ks:?} (n={n}, key={:?})",
@@ -700,6 +708,7 @@ impl TransformerModel {
                     );
                     if let (Some(ref mut g), Some(key)) = (graphs.as_mut(), graph_key) {
                         if g.0.len() >= super::verify_e2::VERIFY_BATCHED_GRAPH_CAP {
+                            super::graph_family::note_eviction();
                             // Evict the least-recently-used graph. Safe to
                             // destroy: every batched verify step ends with a
                             // blocking argmax D2H on this stream, so any

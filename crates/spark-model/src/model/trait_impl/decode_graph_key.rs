@@ -168,6 +168,9 @@ impl TransformerModel {
         graph: GraphHandle,
     ) {
         let cap = batch_decode_graph_cap(self.buffers.decode_meta().rows());
+        if cache.0.len() >= cap && !cache.0.contains_key(&key) {
+            super::graph_family::note_eviction();
+        }
         for old in lru_insert_graph(cache, cap, key, graph) {
             if let Err(e) = self.gpu.destroy_graph(old) {
                 tracing::warn!("batched-decode graph evict: {e:#}");
