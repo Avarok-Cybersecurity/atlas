@@ -768,6 +768,13 @@ model_swap_timing = false
 #                            fp8_gemv_ada (`layers/dense_ffn_ada_kernels/verify.rs`,
 #                            row `ffn_fp8_verify_gemv`). gb10's
 #                            w8a16_gemv_batch4 is the LUT counterpart at M <= 4.
+#                            The same entries serve a multi-sequence decode
+#                            step behind row `ffn_fp8_decode_gemv`
+#                            (`layers/dense_ffn/fp8_decode_gemv.rs`). Activation
+#                            rows are addressed by a 32-bit word index: the
+#                            64-bit row-pointer form was miscompiled by CUDA
+#                            13.3's ptxas at M = 7 (the file's `fgb_act_word`
+#                            note has the SASS and the memcheck record).
 #
 #   rmsnorm_quant_fp8_ada.cu ADDITION. residual_add_rms_norm and the W8A8
 #                            FFN input's per_token_group_quant_fp8 in one pass,

@@ -196,6 +196,23 @@ fn parity(
     k: u32,
     role: usize,
 ) -> Result<usize> {
+    // Fault localization (queue-1, 2026-11-13: the run died with
+    // CUDA_ERROR_ILLEGAL_ADDRESS after the M=2 rows, and a row that passes
+    // prints nothing between M=2 and M=8). `L15_TRACE` drains the stream after
+    // each of the three launch groups and names it on stderr, so a fault is
+    // pinned to one entry point; `L15_SKIP_L2EF` leaves the evict-first twin
+    // out, which separates a fault in the plain batch-M kernels (rows
+    // `ffn_fp8_verify_gemv`, `ffn_fp8_decode_gemv`) from one in the hinted
+    // twins (row `l2_evict_first_weights`).
+    let trace = std::env::var_os("L15_TRACE").is_some();
+    let skip_twin = std::env::var_os("L15_SKIP_L2EF").is_some();
+    let step = |what: &str| -> Result<()> {
+        if trace {
+            gpu.synchronize(0)?;
+            eprintln!("  trace N={n} K={k} M={m} {}: {what} ok", ROLES[role]);
+        }
+        Ok(())
+    };
     let bytes = m * n as usize * 2;
     let (r, b, t) = (
         guarded_pair(gpu, bytes)?,
@@ -203,6 +220,7 @@ fn parity(
         guarded_pair(gpu, bytes)?,
     );
     reference(gpu, m1, role, x, m, n, k, [r[0].ptr(), r[1].ptr()])?;
+    step("M x M=1 reference")?;
     batched(
         gpu,
         bm.k[role],
@@ -213,22 +231,32 @@ fn parity(
         k,
         [b[0].ptr(), b[1].ptr()],
     )?;
-    batched(
-        gpu,
-        bm.l2ef[role],
-        role,
-        x,
-        x.a,
-        n,
-        k,
-        [t[0].ptr(), t[1].ptr()],
-    )?;
+    step("batch-M")?;
+    if !skip_twin {
+        batched(
+            gpu,
+            bm.l2ef[role],
+            role,
+            x,
+            x.a,
+            n,
+            k,
+            [t[0].ptr(), t[1].ptr()],
+        )?;
+        step("l2ef twin")?;
+    }
     let (rv, bv, tv) = (
         read_pair(gpu, &r)?,
         read_pair(gpu, &b)?,
         read_pair(gpu, &t)?,
     );
-    let (bad_b, bad_t) = (unequal_bytes(&bv, &rv), unequal_bytes(&tv, &rv));
+    // A skipped twin left its buffer at the sentinel; it is not compared.
+    let bad_t = if skip_twin {
+        0
+    } else {
+        unequal_bytes(&tv, &rv)
+    };
+    let bad_b = unequal_bytes(&bv, &rv);
     let mut host_bad = 0;
     // The exact host model, on the plain role at the edge shape.
     if role == 0 && n < 512 {

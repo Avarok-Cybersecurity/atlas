@@ -8,7 +8,9 @@
 
 // Ada (sm_89) FP8-E4M3 W8A16 GEMVs for M = 2..8 activation rows on ONE pass
 // over the weight: the dense FFN's speculative VERIFY rows (MTP / DFlash K+1
-// rows), port row `ffn_fp8_verify_gemv` (off by default).
+// rows), port row `ffn_fp8_verify_gemv` (off by default), and the rows of a
+// multi-sequence DECODE step (2 to 8 streams), port row `ffn_fp8_decode_gemv`
+// (off by default; `layers/dense_ffn/fp8_decode_gemv.rs`).
 //
 //   C[t, n] = sum_k A[t, k] * E4M3(B[n, k]) * block_scale[n/128, k/128],  t < M
 //
@@ -133,14 +135,44 @@ struct FgbLoadEvictFirst {
 
 // ── Activation sources ───────────────────────────────────────────────────
 
+// Index, in 8-byte words (4 BF16), of the four activations of row t at
+// K = 16*k16 + 4*j, counted from the start of an [M, K] BF16 buffer
+// (K % 16 == 0, so a row is K/4 whole words).
+//
+// UNSIGNED 32-BIT ON PURPOSE. Written as a 64-bit row pointer
+// (`a + (size_t)t * k`, then `+ k16 * 4 + j`), the M = 7 plain kernel was
+// miscompiled by CUDA 13.3's ptxas: with seven live row pointers it walks ONE
+// pointer down the rows (+2K bytes a row) and rewinds it by a 64-bit negative
+// multiple of K (-10K + 8), which it builds in uniform registers as a
+// 32x32 -> 64 unsigned multiply by 0xfffffff6 plus a high-word correction of
+// -K. The correction was materialized twice; the second time read a uniform
+// register the first had negated in place, so the high word came out 2K too
+// large and every thread loaded from `address + (2K << 32)`
+// (compute-sanitizer, 2026-11-13: invalid __global__ read of size 8 at
+// fp8_gemv_ada_batchm_7+0x2ec0, address 0x1408_0e60_5010 for a buffer at
+// 0x8_0e60_5010 with K = 2560, 2K = 0x1400; the SASS of that entry shows
+// `UIADD3 UR8, URZ, -UR8, URZ` at +0x990 and `UIADD3 UR6, -UR8, URZ, URZ` at
+// +0x2e30). M = 2..6 used positive multiples of K from the row-0 pointer and
+// were correct, which is why the fault first appeared at M = 7.
+//
+// An index kept in unsigned 32 bits cannot be folded into a 64-bit pointer
+// recurrence across rows (unsigned wrap is defined, so the compiler may not
+// assume it away), so each address is `base + zext(index) * 8` and any row
+// stepping it synthesizes is a 32-bit add, which wraps exactly and needs no
+// high word. The values loaded, and every floating-point operation on them,
+// are unchanged. Range: the largest index is below M * K / 4 <= 2K words, so
+// any K below 2^31 fits.
+__device__ __forceinline__ unsigned int fgb_act_word(int t, unsigned int k, unsigned int k16, int j) {
+    return (unsigned int)t * (k >> 2) + k16 * 4u + (unsigned int)j;
+}
+
 // Plain BF16 rows A[M, K]: the four values of row t at K = 16*k16 + 4*j + 0..3.
 struct FgbActRows {
     const __nv_bfloat16* __restrict__ a;
     unsigned int k;
 
     __device__ __forceinline__ void quad(int t, unsigned int k16, int j, float* out) const {
-        const uint2* row = reinterpret_cast<const uint2*>(a + (size_t)t * k);
-        const uint2 w = __ldg(row + k16 * 4 + j);
+        const uint2 w = __ldg(reinterpret_cast<const uint2*>(a) + fgb_act_word(t, k, k16, j));
         out[0] = fgb_bf16_lo(w.x);
         out[1] = fgb_bf16_hi(w.x);
         out[2] = fgb_bf16_lo(w.y);
@@ -156,9 +188,10 @@ struct FgbActSilu {
     unsigned int k;
 
     __device__ __forceinline__ void quad(int t, unsigned int k16, int j, float* out) const {
-        const size_t row = (size_t)t * k;
-        const uint2 g2 = __ldg(reinterpret_cast<const uint2*>(gate + row) + k16 * 4 + j);
-        const uint2 u2 = __ldg(reinterpret_cast<const uint2*>(up + row) + k16 * 4 + j);
+        // 32-bit word index, for the reason given at `fgb_act_word`.
+        const unsigned int w = fgb_act_word(t, k, k16, j);
+        const uint2 g2 = __ldg(reinterpret_cast<const uint2*>(gate) + w);
+        const uint2 u2 = __ldg(reinterpret_cast<const uint2*>(up) + w);
         const float g[4] = {fgb_bf16_lo(g2.x), fgb_bf16_hi(g2.x), fgb_bf16_lo(g2.y), fgb_bf16_hi(g2.y)};
         const float u[4] = {fgb_bf16_lo(u2.x), fgb_bf16_hi(u2.x), fgb_bf16_lo(u2.y), fgb_bf16_hi(u2.y)};
 #pragma unroll
