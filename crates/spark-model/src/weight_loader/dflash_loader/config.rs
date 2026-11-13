@@ -246,13 +246,20 @@ impl DflashConfig {
     ///   target's layer range;
     /// * `num_target_layers`, when the checkpoint states it, equals the
     ///   target's layer count (32 for Qwen3.5-4B and `holo-3.1-4b`);
-    /// * the drafter's `vocab_size` equals the target's (shared embed/LM head);
-    /// * `mask_token_id` is inside the vocabulary.
+    /// * the drafter's `vocab_size` equals `target_table_rows`, the number of
+    ///   rows of the embedding / LM-head table the two models share, as the
+    ///   target's checkpoint ships it. That is NOT the served vocabulary: the
+    ///   server caps `ModelConfig::vocab_size` to the tokenizer's count
+    ///   (248070 on Qwen3.5-4B) while the table keeps its 248320 rows, and
+    ///   the drafter walks all of them and keeps its mask token in the
+    ///   padding. `factory/dflash_pairing.rs` reads the rows from the
+    ///   target's weight store;
+    /// * `mask_token_id` is inside the drafter's vocabulary.
     pub fn validate_for_target(
         &self,
         target_hidden: usize,
         target_layers: usize,
-        target_vocab: usize,
+        target_table_rows: usize,
     ) -> anyhow::Result<()> {
         let Some(sub) = self.dflash_config.as_ref() else {
             anyhow::bail!("DFlash drafter config.json has no `dflash_config` block");
@@ -291,9 +298,10 @@ impl DflashConfig {
         // `d2t` remap states the target's vocabulary in `vocab_size` and is
         // handled (or refused) by the loader, not judged here.
         anyhow::ensure!(
-            self.vocab_size == target_vocab,
-            "DFlash drafter vocabulary ({}) differs from the target's {target_vocab}; the \
-             drafter shares the target's embedding and LM head, so ids would not line up",
+            self.vocab_size == target_table_rows,
+            "DFlash drafter vocabulary ({}) differs from the {target_table_rows} rows of the \
+             target's embedding table; the drafter shares the target's embedding and LM head, \
+             so ids would not line up",
             self.vocab_size,
         );
         anyhow::ensure!(

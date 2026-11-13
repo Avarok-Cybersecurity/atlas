@@ -152,6 +152,9 @@ pub fn loader_for_config(config: &ModelConfig) -> Result<Box<dyn ModelWeightLoad
 }
 
 mod build;
+// What the DFlash drafter/target pairing check compares the drafter's
+// vocabulary against: the shared table's rows, not the served vocabulary.
+mod dflash_pairing;
 mod lm_head_setup;
 mod m2_setup;
 

@@ -155,11 +155,13 @@ pub fn build_model(
         // builds the pair as it did before the sprint and only logs the
         // finding. `AVAROK_DFLASH_SKIP_PAIR_CHECK` (presence) downgrades the
         // refusal to a warning on Ada too.
-        if let Err(e) = args.drafter_config.validate_for_target(
-            config.hidden_size,
-            config.num_hidden_layers,
-            config.vocab_size,
-        ) {
+        //
+        // The vocabulary is compared against the ROWS of the table the two
+        // models share, read from the store, not against `config.vocab_size`:
+        // the server has capped that to the tokenizer's count by now, and the
+        // comparison refused every correct drafter on a padded table
+        // (`dflash_pairing.rs`, queue-1 S4.L14).
+        if let Err(e) = super::dflash_pairing::check(&args.drafter_config, &config, &store) {
             let refuse = crate::layers::ops::target_defaults::resolved()
                 .memory_fit_consumer
                 .value
