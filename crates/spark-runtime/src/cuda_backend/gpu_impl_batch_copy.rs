@@ -35,9 +35,12 @@ use super::{
     cuMemcpyHtoDAsync_v2, cuStreamSynchronize,
 };
 use crate::gpu::{CopyEntry, DevicePtr, GpuBackend, port_ext};
+use crate::pinned_hosts;
 
 /// Set by the first failing `cuMemcpyBatchAsync`: every later batch takes the per-copy path.
 static BATCH_OFF: AtomicBool = AtomicBool::new(false);
+/// Set once the "registered memory takes the per-copy path" line was logged.
+static REGISTERED_NOTED: AtomicBool = AtomicBool::new(false);
 /// The probe's verdict, computed once on first use.
 static BATCH_PROBE: OnceLock<bool> = OnceLock::new();
 
@@ -88,7 +91,22 @@ impl AvarokCudaBackend {
         }
         // 0 is the legacy NULL stream, 1 is `CU_STREAM_LEGACY`: both refused by the batch API.
         let real_stream = stream > 1;
+        // `cuMemcpyBatchAsync` into or out of memory locked with `cuMemHostRegister` (the host
+        // tier's pinned pool) raises CUDA_ERROR_ILLEGAL_ADDRESS asynchronously on WSL2
+        // (driver 13030), whatever the register flags and copy attributes, in both directions
+        // (`examples/batch_host_kind_probe.rs`; `cuMemAllocHost` memory and the per-copy path
+        // are fine). The fault is sticky, so it cannot be probed in process: such batches
+        // always take the per-copy path.
+        let registered_host =
+            pinned_hosts::any_tier_owned(entries.iter().map(|e| (e.host, e.bytes)));
+        if registered_host && !REGISTERED_NOTED.swap(true, Ordering::Relaxed) {
+            tracing::info!(
+                "batched copies touching cuMemHostRegister memory (the host KV tier) use one \
+                 async copy per entry: cuMemcpyBatchAsync faults on that memory kind"
+            );
+        }
         if real_stream
+            && !registered_host
             && self.supports_copy_batch_cu()
             && !GpuBackend::stream_is_capturing(self, stream)
         {

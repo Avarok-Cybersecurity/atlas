@@ -156,6 +156,29 @@ pub fn is_tier_owned(src: &[u8]) -> bool {
     containing(src).is_some_and(|r| r.tier)
 }
 
+/// Does any `(address, bytes)` range of `ranges` start inside a live tier-owned region? One read
+/// lock for the whole walk. Zero-byte ranges are skipped. Tier-owned regions are the ones locked
+/// with `cuMemHostRegister` (`GpuBackend::host_register`) over ordinary memory, which
+/// `cuMemcpyBatchAsync` must not touch on a driver that faults on it (see
+/// `cuda_backend::gpu_impl_batch_copy`).
+pub fn any_tier_owned(ranges: impl IntoIterator<Item = (usize, usize)>) -> bool {
+    let g = read();
+    if !g.iter().any(|r| r.tier) {
+        return false;
+    }
+    ranges
+        .into_iter()
+        .filter(|&(_, bytes)| bytes > 0)
+        .any(|(start, _)| {
+            let r = match g.binary_search_by_key(&start, |r| r.base) {
+                Ok(i) => g[i],
+                Err(0) => return false,
+                Err(i) => g[i - 1],
+            };
+            r.tier && start >= r.base && start < r.base + r.len
+        })
+}
+
 /// Must a transient (`copy_h2d_async`) copy from `src` wait for the DMA before
 /// returning? True for a page-locked source that no tier owns.
 pub fn needs_transient_sync(src: &[u8]) -> bool {
@@ -276,6 +299,38 @@ mod tests {
         unregister(v.as_ptr());
         assert!(!is_tier_owned(&v));
         assert_eq!(region_len(v.as_ptr()), None);
+    }
+
+    #[test]
+    fn any_tier_owned_sees_only_tier_regions_and_skips_empty_ranges() {
+        let tier = vec![0u8; 4096];
+        let plain = vec![0u8; 4096];
+        let pageable = vec![0u8; 4096];
+        let (t, p, g) = (
+            tier.as_ptr() as usize,
+            plain.as_ptr() as usize,
+            pageable.as_ptr() as usize,
+        );
+        register_tier(tier.as_ptr(), tier.len());
+        register(plain.as_ptr(), plain.len());
+        assert!(any_tier_owned([(t, 4096)]), "start inside a tier region");
+        assert!(
+            any_tier_owned([(g, 64), (t + 4000, 64)]),
+            "one tier range is enough"
+        );
+        assert!(
+            !any_tier_owned([(p, 64)]),
+            "a plain page-locked region is not tier-owned"
+        );
+        assert!(
+            !any_tier_owned([(g, 64)]),
+            "pageable memory is not tier-owned"
+        );
+        assert!(!any_tier_owned([(t, 0)]), "zero-byte ranges are skipped");
+        assert!(!any_tier_owned(std::iter::empty()));
+        unregister(tier.as_ptr());
+        unregister(plain.as_ptr());
+        assert!(!any_tier_owned([(t, 64)]), "gone after unregister");
     }
 
     #[test]
