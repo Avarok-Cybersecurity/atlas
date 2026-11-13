@@ -54,7 +54,23 @@ impl Qwen3AttentionLayer {
             ..
         } = *c;
 
-        if n == 3
+        // Packed q/k/v (port lane L22b, `w4_proj.rs`): row-invariant W4 decode, any n.
+        if self.w4_proj.is_installed() {
+            let (qd, kv_dim) = (q_proj_dim as usize, (nkv * hd) as usize);
+            self.w4_qkv_strided(
+                fwd.gpu,
+                normed,
+                n,
+                h,
+                qd,
+                kv_dim,
+                nq,
+                hd,
+                qkv_buf,
+                per_seq_qkv,
+                stream,
+            )?;
+        } else if n == 3
             && self.q_weight.as_ref().and_then(|w| w.as_nvfp4()).is_some()
             && self.k_weight.as_ref().and_then(|w| w.as_nvfp4()).is_some()
             && self.v_weight.as_ref().and_then(|w| w.as_nvfp4()).is_some()

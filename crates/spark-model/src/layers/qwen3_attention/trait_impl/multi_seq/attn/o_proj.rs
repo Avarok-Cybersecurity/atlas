@@ -11,6 +11,7 @@ use super::super::ctx::MultiSeqCtx;
 use crate::layers::ops;
 use crate::layers::qwen3_attention::HeadGateActivation;
 use crate::layers::qwen3_attention::Qwen3AttentionLayer;
+use crate::layers::qwen3_attention::w4_proj::W4Slot;
 use crate::weight_map::WeightQuantFormat;
 
 /// The shared shape of `ops::w8a16_gemv_batch{4,16}` (contiguous A and C), so
@@ -148,7 +149,13 @@ impl Qwen3AttentionLayer {
         }
 
         let o_out = fwd.buffers.moe_output();
-        if let Some(q2) = self.o_weight.as_ref().and_then(|w| w.as_packed_q2()) {
+        if let Some(w4) = self.w4_proj.get(W4Slot::O) {
+            // Packed o_proj (port lane L22b, `w4_proj.rs`): both operands contiguous, row-invariant
+            // W4 decode in chunks of the weight's window.
+            let k_in = (nq * hd) as usize;
+            let what = "attention o_proj";
+            self.w4_decode_rows(w4, what, fwd.gpu, attn_out, n, o_out, h, k_in, stream)?;
+        } else if let Some(q2) = self.o_weight.as_ref().and_then(|w| w.as_packed_q2()) {
             // Keep-packed Q2_0 (Tier-1c): per-token 2-bit o_proj GEMV.
             for i in 0..n {
                 let attn_out_i = attn_out.offset(i * q_dim as usize * bf16);
@@ -410,3 +417,8 @@ impl Qwen3AttentionLayer {
 #[cfg(test)]
 #[path = "o_proj_tests.rs"]
 mod tests;
+
+// Mock-backend dispatch tests of the batched packed q/k/v and o arms (port lane L22b).
+#[cfg(test)]
+#[path = "o_proj_w4_tests.rs"]
+mod w4_tests;

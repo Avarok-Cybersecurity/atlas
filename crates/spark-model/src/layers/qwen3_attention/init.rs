@@ -151,6 +151,7 @@ impl Qwen3AttentionLayer {
             v_weight: v_nvfp4.map(QuantWeight::Nvfp4),
             o_weight: None,
             o_dense_bf16: None,
+            w4_proj: Default::default(),
             mla: None,
             // ── DeepSeek-V4 Manifold-Constrained Hyper-Connections (mHC) ──
             // `hc` stays None for non-V4 models; the V4 loader attaches real

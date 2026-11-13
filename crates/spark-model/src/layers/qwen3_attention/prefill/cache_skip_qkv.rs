@@ -11,6 +11,7 @@ use spark_runtime::gpu::DevicePtr;
 
 use super::super::Qwen3AttentionLayer;
 use super::super::prefill_qkv_w8a8::QkvW8a8;
+use super::super::w4_proj::W4Slot;
 use crate::layer::ForwardContext;
 use crate::layers::ops;
 
@@ -193,7 +194,16 @@ impl Qwen3AttentionLayer {
 
         let use_t_pipelined =
             std::env::var("AVAROK_ATTN_PREFILL_T_PIPE").ok().as_deref() == Some("1");
-        if ctx.dispatch.cutlass_nvfp4_attn_qkv(label)
+        let w4 = self.w4_proj.get(match proj {
+            SkipProj::Q => W4Slot::Q,
+            SkipProj::K => W4Slot::K,
+            SkipProj::V => W4Slot::V,
+        });
+        if let Some(w4) = w4 {
+            // Packed q/k/v (port lane L22b, `w4_proj.rs`): W4 prefill, BF16 dequant on a decline.
+            let (m, n_out, k_in) = (n as usize, out_dim as usize, h as usize);
+            self.w4_prefill_rows(w4, label, ctx, normed, m, out, n_out, k_in, stream)?;
+        } else if ctx.dispatch.cutlass_nvfp4_attn_qkv(label)
             && let Some(nvfp4_t) = nvfp4_t
         {
             ops::log_cutlass_nvfp4_route(ctx.gpu, label, n, out_dim, h);

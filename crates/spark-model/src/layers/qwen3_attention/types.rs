@@ -106,6 +106,8 @@ pub struct Qwen3AttentionLayer {
     /// NVFP4 path (`attn.o_proj`). Used by Gemma-4 dense which honors
     /// Nvidia ModelOpt's official ignore list.
     pub(super) o_dense_bf16: Option<DenseWeight>,
+    /// Packed (W4) q/k/v/o, installed by `set_w4_proj` (port lane L22b). Empty = every arm off.
+    pub(super) w4_proj: super::w4_proj::AttnW4,
     // ── MLA (Multi-head Latent Attention) — 2-step decode ──
     pub(crate) mla: Option<MlaWeights>,
     // ── Manifold-Constrained Hyper-Connections (mHC) — DeepSeek-V4 ──
