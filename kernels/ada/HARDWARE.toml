@@ -768,5 +768,7 @@ overrides = [
   "exl3_hadamard_ada.cu",
   "exl3_linear_ada.cu",
   "attn_page_sparse_ada.cu",
+  "kv_page_score_ada.cu",
+  "kv_page_sketch_ada.cu",
   # @port:overrides
 ]
