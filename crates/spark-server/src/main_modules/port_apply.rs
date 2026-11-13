@@ -21,6 +21,9 @@ use crate::cli::serve_args_port::PortArgs;
 /// Publish every port flag and row value. Empty until a lane adds a line.
 #[allow(unused_variables)]
 pub(crate) fn apply(args: &PortArgs) -> anyhow::Result<()> {
+    spark_runtime::weights::keep_packed_iq4::set_enabled(
+        spark_model::layers::ops::port_rows::gguf_native_iq4::row(),
+    );
     spark_runtime::pinned_pool::set_default_chunk_mb(args.pinned_pool_chunk_mb);
     spark_runtime::radix_tree::set_lru_index_enabled(
         spark_model::layers::ops::port_rows::radix_lru_index::row(),
