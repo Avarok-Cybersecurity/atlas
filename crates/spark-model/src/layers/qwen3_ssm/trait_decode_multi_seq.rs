@@ -241,10 +241,15 @@ impl Qwen3SsmLayer {
                 // streams an FP8 layer would land on the W8A8 arm (about 1.6x
                 // the weight-bandwidth floor on sm_89, and lossy). Ask the
                 // batch-M GEMVs first; `false` launched nothing
-                // (`dense_ffn/fp8_decode_gemv.rs`).
+                // (`dense_ffn/fp8_decode_gemv.rs`). Row `ffn_fp8_m16_tc` (off
+                // by default) is asked before it: up to 16 streams on the
+                // 16-row tensor-core GEMM (`dense_ffn/fp8_m16_tc.rs`).
                 if !self
                     .ffn
-                    .try_forward_fp8_decode_rows(normed_base, n, ctx, stream)?
+                    .try_forward_fp8_m16_tc(normed_base, n, ctx, stream)?
+                    && !self
+                        .ffn
+                        .try_forward_fp8_decode_rows(normed_base, n, ctx, stream)?
                 {
                     self.ffn.forward_prefill(normed_base, n, ctx, stream)?;
                 }

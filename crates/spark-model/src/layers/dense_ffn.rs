@@ -3184,6 +3184,11 @@ pub mod w4;
 #[path = "dense_ffn/fp8_decode_gemv.rs"]
 pub mod fp8_decode_gemv;
 
+/// Decode and verify rows 5..16 on the FP8 16-row tensor-core GEMM (row
+/// `ffn_fp8_m16_tc`). A child module for the size cap.
+#[path = "dense_ffn/fp8_m16_tc.rs"]
+pub mod fp8_m16_tc;
+
 /// The FFN family's cuBLASLt choice for a BF16 fallback GEMM. Read here so the
 /// `ffn` family is armed only from its own file (`dispatch_config_routing_tests`);
 /// `dense_ffn/w4.rs` asks through this.

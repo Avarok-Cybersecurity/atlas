@@ -208,7 +208,12 @@ impl Qwen3AttentionLayer {
                 eps,
                 stream,
             )?;
-            self.ffn.forward_prefill(normed2, n, fwd, stream)?;
+            // Row `ffn_fp8_m16_tc` (off by default): up to 16 decode or verify
+            // rows of a native-FP8 layer on the 16-row tensor-core GEMM;
+            // `false` launched nothing (`dense_ffn/fp8_m16_tc.rs`).
+            if !self.ffn.try_forward_fp8_m16_tc(normed2, n, fwd, stream)? {
+                self.ffn.forward_prefill(normed2, n, fwd, stream)?;
+            }
             let moe_out = fwd.buffers.moe_output();
             ops::residual_add(
                 fwd.gpu,

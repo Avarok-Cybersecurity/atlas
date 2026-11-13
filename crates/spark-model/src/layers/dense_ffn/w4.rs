@@ -192,6 +192,12 @@ impl DenseFfnLayer {
         if self.fp8_weights.is_none() || self.q2_weights.is_some() {
             return Ok(false);
         }
+        // Row `ffn_fp8_m16_tc`: 5 to 8 of these rows on the 16-row tensor-core
+        // GEMM (`fp8_m16_tc.rs`), asked first at the widths it takes. `false`,
+        // and nothing launched, with that row off.
+        if self.fp8_m16_tc_arm(input, m as usize, ctx, stream)? {
+            return Ok(true);
+        }
         if super::ada_kernels::verify::forward_km_fp8(
             self,
             input,
