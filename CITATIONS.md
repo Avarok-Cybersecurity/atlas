@@ -306,6 +306,20 @@ copied.
 - **Prompt lookup decoding** (A. Saxena, 2023, https://github.com/apoorvumang/prompt-lookup-decoding): the public
   technique behind Atlas's `--ngram-speculative` proposer (`ngram.rs`), which the copy drafter's legacy index serves.
 
+### DFlash and the Qwen3.5-4B drafter (L14)
+
+- Chen, Liang and Liu, "DFlash: Block Diffusion for Flash Speculative
+  Decoding", arXiv:2602.06036 (2026). The method behind `--dflash`; Atlas's
+  `BlockDiffusionDraftHead` is its own implementation. Port sprint use: the
+  Ada 4B pairing, `kernels/ada/holo-3.1-4b/MODEL.toml` `[dflash]`.
+- `z-lab/Qwen3.5-4B-DFlash` (https://huggingface.co/z-lab/Qwen3.5-4B-DFlash),
+  Z Lab and Modal, Apache-2.0, about 1.27 GB BF16, not bundled. Its
+  `config.json` is a test fixture
+  (`crates/spark-model/src/weight_loader/dflash_loader/fixtures/`). The model
+  card reports speedups on B200 with SGLang (up to 4.60x at concurrency 1
+  with block 16, 2.61x at concurrency 32 with block 8); those numbers are the
+  upstream's, on another card and engine, and are not Atlas measurements.
+
 ### Affine 4-bit route: TensorFold and the MLX format (L17a, L17b, L17c)
 
 - TensorFold (https://github.com/ashhart/TensorFold, commit 3885dce), Copyright

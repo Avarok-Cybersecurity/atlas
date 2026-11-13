@@ -135,6 +135,23 @@ Changes: translated from Zig to Rust; the latest-earlier-occurrence contract
   lists earliest first so it returns the token Atlas's earlier scan returns.
   See COPY-DRAFT-ATTRIBUTION.md.
 
+== z-lab/Qwen3.5-4B-DFlash (drafter configuration text) ==
+
+Source:  https://huggingface.co/z-lab/Qwen3.5-4B-DFlash (Z Lab and Modal)
+License: Apache License, Version 2.0 (LICENSES/Apache-2.0.txt)
+
+Atlas copies one file from this repository: the drafter's config.json, byte
+for byte, as a unit-test fixture for the DFlash drafter configuration parser
+and tensor shape check:
+  crates/spark-model/src/weight_loader/dflash_loader/fixtures/qwen3_5_4b_dflash_config.json
+No weights are bundled with Atlas; the drafter is fetched at run time when an
+operator passes --dflash (or given with --draft-model). The model repository
+ships no NOTICE file (checked 2026-11-12: README.md, config.json and
+model.safetensors only). The DFlash method is described in arXiv:2602.06036;
+Atlas's drafter head is its own implementation (see CITATIONS.md).
+Atlas change: none to the fixture; the loader tests in loader_tests.rs pin the
+values it carries.
+
 == TensorFold (affine 4-bit route) ==
 
 Source:  https://github.com/ashhart/TensorFold, commit 3885dce
