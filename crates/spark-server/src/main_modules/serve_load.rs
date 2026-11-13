@@ -894,6 +894,10 @@ pub(crate) fn load_model(
     // decode_logits_seq.rs / compile_tools.rs; `lean` was an Atlas-only
     // decode artifact, now fixed at the grammar `first_char` rule.)
 
+    // Opt-in `--chat-template` / AVAROK_CHAT_TEMPLATE (stored by port_apply): replaces the chat template
+    // and its OpenAI variant. With no choice stored the tokenizer is returned unchanged.
+    let tokenizer = crate::tokenizer::template_select::apply_selected(tokenizer)?;
+
     // Tokenizer-derived runtime: vocab cap, reasoning parser, think tokens,
     // im_start hard-stop, tool-call open/close tokens, and the XGrammar
     // engine.
@@ -1303,6 +1307,8 @@ pub(crate) fn load_model(
         .map(parse_default_chat_template_kwargs)
         .transpose()?
         .unwrap_or_default();
+    // Server-wide `terse` default for the Sharp chat template (`--default-chat-template-kwargs`).
+    crate::tokenizer::terse_render::set_default_terse(default_kwargs.terse);
 
     let state = Arc::new(AppState {
         tokenizer,

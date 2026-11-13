@@ -38,6 +38,13 @@ pub(crate) struct RenderFlags<'a> {
     /// `preserve_thinking is undefined` test distinguishes the two and
     /// `none` would silently flip its default from keep to strip.
     pub preserve_thinking: Option<bool>,
+    /// Tri-state `terse` (Sharp chat template). `None` leaves the variable
+    /// out of the Jinja context entirely, so a template that reads it
+    /// (`terse if terse is defined else true`) applies its own default and
+    /// every other template never sees it. `Some(_)` pins it. Set from the
+    /// request's `chat_template_kwargs.terse`, else the server-level
+    /// `--default-chat-template-kwargs` value.
+    pub terse: Option<bool>,
     /// Diagnostic "continue final message" mode: when true AND the last
     /// message is an assistant turn, render without a generation prompt and
     /// strip the trailing `<|im_end|>` so the assistant content becomes the
@@ -118,6 +125,11 @@ pub(crate) fn render_chat(
         preserve_thinking => preserve_thinking,
         disable_tool_steering => flags.disable_tool_steering,
         add_vision_id => false,
+    };
+    // `terse` joins the context only when pinned; see [`RenderFlags::terse`].
+    let ctx = match flags.terse {
+        Some(terse) => minijinja::context! { ..ctx, ..minijinja::context! { terse => terse } },
+        None => ctx,
     };
 
     let mut rendered = tmpl.render(ctx).map_err(|e| {

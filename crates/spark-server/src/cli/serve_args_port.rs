@@ -211,5 +211,12 @@ pub struct PortArgs {
     /// attention sinks).
     #[arg(long = "kv-window-head-tokens", value_name = "N")]
     pub kv_window_head_tokens: Option<u32>,
+    /// Chat template: `sharp` (the embedded Sharp template for Qwen3.5/3.6/3.8), `sharp-no-terse` (the same
+    /// template with its terseness system prompt off), `model` (the default: the model's own template, with
+    /// the `jinja-templates/` overrides as before) or the path of a Jinja file. Mirrors `AVAROK_CHAT_TEMPLATE`;
+    /// the flag wins and an empty value counts as unset. An unknown word or an unreadable path fails startup.
+    /// A choice overrides `jinja-templates/` and the OpenAI variants. Off by default.
+    #[arg(long = "chat-template", value_name = "sharp|sharp-no-terse|model|PATH")]
+    pub chat_template: Option<String>,
     // @port:fields
 }

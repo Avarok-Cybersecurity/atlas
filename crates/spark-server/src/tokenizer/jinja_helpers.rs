@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //
 // Jinja template helpers for ChatTokenizer. Free fns split out of
-// chat_impl.rs to keep the parent under 500 LoC.
+// chat_impl.rs to keep the parent under 500 LoC. The Python-style string
+// methods `startswith`/`endswith` live in `jinja_string_methods.rs`.
 
 use anyhow::{Context, Result};
 use std::path::Path;
+
+#[path = "jinja_string_methods.rs"]
+mod jinja_string_methods;
 
 pub(super) const TEMPLATE_OVERRIDE_DIR: &str = "jinja-templates";
 
@@ -110,7 +114,14 @@ pub(crate) fn build_jinja_env_with(
                         if let Some(sep) = sep {
                             filter_args.push(sep);
                         }
-                        return state.apply_filter("split", &filter_args);
+                        // The filter returns a lazy iterable, which supports
+                        // `[0]` but not `[-1]` (no length to count back
+                        // from). Python's `str.split` returns a list, and
+                        // templates index it from the end
+                        // (`content.split('</think>')[-1]`), so materialize
+                        // it as a sequence.
+                        let parts = state.apply_filter("split", &filter_args)?;
+                        return Ok(minijinja::Value::from_iter(parts.try_iter()?));
                     }
                     "find" | "rfind" => {
                         let (needle,): (String,) = from_args(args)?;
@@ -138,6 +149,9 @@ pub(crate) fn build_jinja_env_with(
                         let _: () = from_args(args)?;
                         let s = value.as_str().unwrap_or_default().trim_end().to_string();
                         return Ok(minijinja::Value::from(s));
+                    }
+                    "startswith" | "endswith" => {
+                        return jinja_string_methods::affix_method(value, method, args);
                     }
                     _ => {}
                 }

@@ -85,6 +85,7 @@ pub(crate) fn apply(args: &PortArgs) -> anyhow::Result<()> {
         args.prefill_sparse_stride,
     );
     spark_model::port::kv_window::apply_flags(args.kv_window_tokens, args.kv_window_head_tokens)?;
+    crate::tokenizer::template_select::apply_cli(args.chat_template.as_deref())?;
     // @port:apply
     Ok(())
 }
@@ -148,6 +149,7 @@ pub(crate) fn validate(args: &PortArgs) -> anyhow::Result<()> {
         args.kv_window_tokens,
         args.kv_window_head_tokens,
     )?;
+    crate::tokenizer::template_select::validate(args.chat_template.as_deref())?;
     // @port:validate
     Ok(())
 }

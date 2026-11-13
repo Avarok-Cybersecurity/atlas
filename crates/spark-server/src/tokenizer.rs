@@ -68,6 +68,8 @@ mod deepseek_v4;
 pub(crate) mod jinja_helpers;
 mod kimi_k3;
 mod message_preprocess;
+pub(crate) mod template_select;
+pub(crate) mod terse_render;
 
 pub(crate) use message_preprocess::{
     autoclose_assistant_think, remap_developer_role, resolve_think_control,

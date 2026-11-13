@@ -311,6 +311,7 @@ impl ChatTokenizer {
                 disable_tool_steering,
                 reasoning_effort,
                 preserve_thinking,
+                terse: None,
                 allow_continue_final: true,
             },
         )?;
@@ -382,6 +383,7 @@ impl ChatTokenizer {
                     disable_tool_steering,
                     reasoning_effort,
                     preserve_thinking,
+                    terse: None,
                     allow_continue_final: false,
                 },
             )

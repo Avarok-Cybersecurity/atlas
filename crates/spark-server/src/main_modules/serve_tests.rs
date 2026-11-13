@@ -221,3 +221,18 @@ fn official_k3_mxfp4_is_distinct_from_nvfp4_and_bf16() {
     assert!(!quant_pair_compatible("bf16", "mxfp4"));
     assert!(!quant_pair_compatible("nvfp4", "mxfp4"));
 }
+
+/// Sharp chat template: the server-wide `terse` default parses as a bool and is
+/// absent (`None`, so the template's own default applies) unless set.
+#[test]
+fn default_kwargs_terse_parses_and_defaults_to_unset() {
+    let terse = |s: &str| parse_default_chat_template_kwargs(s).map(|kw| kw.terse);
+    assert_eq!(terse(r#"{"terse":false}"#).unwrap(), Some(false));
+    assert_eq!(
+        terse(r#"{"terse":true,"enable_thinking":true}"#).unwrap(),
+        Some(true)
+    );
+    assert_eq!(terse(r#"{"enable_thinking":true}"#).unwrap(), None);
+    assert_eq!(terse("").unwrap(), None);
+    assert!(terse(r#"{"terse":"no"}"#).is_err());
+}
