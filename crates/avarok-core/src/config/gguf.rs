@@ -7,7 +7,8 @@
 //! sibling `config.json`. This module reads those keys through the
 //! [`GgufMeta`] accessor (implemented by the GGUF parser in spark-runtime, so
 //! avarok-core keeps no GGUF dependency) and produces a validated
-//! [`ModelConfig`] for the llama / qwen2 / qwen3 / gemma decoder families.
+//! [`ModelConfig`] for the llama / qwen2 / qwen3 / qwen3.5 (GDN hybrid) / gemma
+//! decoder families.
 //!
 //! Strategy: synthesize an HF-config-shaped JSON object from the GGUF keys and
 //! deserialize it into `ModelConfig` (serde `#[serde(default)]` fills the many
@@ -20,7 +21,7 @@
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
 
-use super::{ModelConfig, finalize_config};
+use super::{LayerType, ModelConfig, finalize_config};
 
 /// Typed read access to GGUF metadata. Implemented by the spark-runtime GGUF
 /// parser over its parsed key/value table. All getters return `None` when the
@@ -93,11 +94,25 @@ fn arch_to_model_type(arch: &str) -> Result<(&'static str, bool)> {
         // (every FFN is MoE or the shared expert), so the required-key handling
         // below treats that key as optional for MoE arches.
         "deepseek41" => ("deepseek_v41", false),
+        // Qwen3.5 / 3.6 / 3.8 GDN hybrids (Gated DeltaNet linear attention in
+        // three of every four layers, gated full attention in the fourth).
+        // llama.cpp names the dense family `qwen35` and the MoE family
+        // `qwen35moe`; Atlas's safetensors path calls them `qwen3_5` (dense,
+        // `num_experts == 0`) and `qwen3_5_moe`. Q carries an output gate
+        // (`attn_q` is `2 * heads * head_dim` wide), as in dispatch.rs.
+        "qwen35" | "qwen3_5" => ("qwen3_5", true),
+        "qwen35moe" => ("qwen3_5_moe", true),
         other => bail!(
             "GGUF general.architecture '{other}' has no Atlas model_type mapping. \
-             Supported GGUF arches: llama, qwen2, qwen3, qwen3moe, gemma/gemma2/gemma3/gemma4, deepseek41."
+             Supported GGUF arches: llama, qwen2, qwen3, qwen3moe, qwen35, qwen35moe, \
+             gemma/gemma2/gemma3/gemma4, deepseek41."
         ),
     })
+}
+
+/// The Qwen3.5-family GDN-hybrid GGUF architectures (see [`apply_qwen35_hybrid`]).
+fn is_qwen35_family(arch: &str) -> bool {
+    matches!(arch, "qwen35" | "qwen3_5" | "qwen35moe")
 }
 
 /// Build a validated [`ModelConfig`] from GGUF metadata.
@@ -119,12 +134,33 @@ pub fn config_from_gguf(inputs: &GgufConfigInputs) -> Result<ModelConfig> {
 
     // ── Core dimensions (required) ──
     let hidden_size = req_u64("embedding_length")? as usize;
-    let num_hidden_layers = req_u64("block_count")? as usize;
+    let block_count = req_u64("block_count")? as usize;
+    // llama.cpp writes a Qwen3.5-family multi-token-prediction head as extra
+    // blocks AFTER the trunk and counts them in `block_count` (the 27B ships
+    // `block_count = 65`, `nextn_predict_layers = 1`: 64 trunk layers plus the
+    // head in `blk.64`). Atlas's `num_hidden_layers` is the trunk only; the
+    // head is `mtp_num_hidden_layers`.
+    let qwen35 = is_qwen35_family(&arch);
+    let nextn_layers = if qwen35 {
+        meta.get_u64(&k("nextn_predict_layers")).unwrap_or(0) as usize
+    } else {
+        0
+    };
+    let num_hidden_layers = match block_count.checked_sub(nextn_layers) {
+        Some(n) if n > 0 => n,
+        _ => bail!(
+            "GGUF: '{arch}.nextn_predict_layers' ({nextn_layers}) leaves no trunk layers of \
+             '{arch}.block_count' ({block_count})"
+        ),
+    };
     // `feed_forward_length` is the DENSE FFN width. A pure-MoE arch may not ship
     // it at all (DeepSeek-V4.1 has only `expert_feed_forward_length`), so it is
     // required only when the file declares no experts. Resolving to 0 for a MoE
     // file is correct: nothing dispatches a dense FFN there.
-    let has_experts = meta.get_u64(&k("expert_count")).unwrap_or(0) > 0;
+    // A `qwen35moe` file with `expert_count` missing is still a MoE file; its
+    // missing key is reported below, not as a missing dense width.
+    let moe_arch = matches!(arch.as_str(), "qwen3moe" | "qwen35moe");
+    let has_experts = moe_arch || meta.get_u64(&k("expert_count")).unwrap_or(0) > 0;
     let intermediate_size = match meta.get_u64(&k("feed_forward_length")) {
         Some(v) => v as usize,
         None if has_experts => 0,
@@ -206,14 +242,14 @@ pub fn config_from_gguf(inputs: &GgufConfigInputs) -> Result<ModelConfig> {
     let tie_word_embeddings = !inputs.has_output_weight;
 
     // ── MoE (only for MoE arches) ──
-    let num_experts = if arch == "qwen3moe" {
+    let num_experts = if moe_arch {
         req_u64("expert_count")? as usize
     } else {
         meta.get_u64(&k("expert_count"))
             .map(|v| v as usize)
             .unwrap_or(0)
     };
-    if arch == "qwen3moe" && num_experts == 0 {
+    if moe_arch && num_experts == 0 {
         bail!("GGUF metadata key '{arch}.expert_count' must be greater than zero");
     }
 
@@ -259,6 +295,20 @@ pub fn config_from_gguf(inputs: &GgufConfigInputs) -> Result<ModelConfig> {
         body.insert("num_experts_per_tok".into(), json!(experts_per_tok));
         body.insert("moe_intermediate_size".into(), json!(moe_ffn));
     }
+    if arch == "qwen35moe" {
+        // Qwen3.5 MoE always runs one shared expert beside the routed ones, and
+        // its router always renormalizes the top-K weights (hardcoded in HF's
+        // `Qwen3_5MoeTopKRouter`, so no GGUF key; dispatch.rs sets it too).
+        let shared = req_u64("expert_shared_feed_forward_length")? as usize;
+        if shared == 0 {
+            bail!(
+                "GGUF metadata key '{arch}.expert_shared_feed_forward_length' must be greater \
+                 than zero"
+            );
+        }
+        body.insert("shared_expert_intermediate_size".into(), json!(shared));
+        body.insert("norm_topk_prob".into(), json!(true));
+    }
 
     // sliding_window (gemma hybrid attention); 0/absent ⇒ full attention.
     if let Some(sw) = meta.get_u64(&k("attention.sliding_window")) {
@@ -293,6 +343,10 @@ pub fn config_from_gguf(inputs: &GgufConfigInputs) -> Result<ModelConfig> {
             ),
             None => 0.0,
         };
+    }
+
+    if qwen35 {
+        apply_qwen35_hybrid(&mut config, meta, &arch, nextn_layers)?;
     }
 
     // ── DeepSeek-V4.1 post-parse fixups ──
@@ -412,12 +466,158 @@ pub fn config_from_gguf(inputs: &GgufConfigInputs) -> Result<ModelConfig> {
     Ok(config)
 }
 
+/// Fill the GDN-hybrid fields of a Qwen3.5-family config (`qwen35`,
+/// `qwen35moe`) from the `{arch}.*` metadata, the same fields the safetensors
+/// path reads from `text_config` (dispatch.rs, `qwen3_5` arm).
+///
+/// | `ModelConfig` field | GGUF key / rule |
+/// |---|---|
+/// | `full_attention_interval`, `layer_types` | `full_attention_interval`; layer `i` is full attention iff `(i + 1) % interval == 0`, else GDN (llama.cpp's `recurrent_layer_arr`) |
+/// | `linear_num_key_heads` | `ssm.group_count` |
+/// | `linear_num_value_heads` | `ssm.time_step_rank` |
+/// | `linear_key_head_dim` | `ssm.state_size` |
+/// | `linear_value_head_dim` | `ssm.inner_size / ssm.time_step_rank` |
+/// | `linear_conv_kernel_dim` | `ssm.conv_kernel` |
+/// | `partial_rotary_factor` | `rope.dimension_count / head_dim` |
+/// | `mrope_section`, `mrope_interleaved` | `rope.dimension_sections` (llama.cpp stores four, the fourth is 0 here); interleaved because llama.cpp runs these archs with IMROPE |
+/// | `mtp_num_hidden_layers` | `nextn_predict_layers` |
+///
+/// `layer_types` must be explicit: `ModelCapabilities` derives "has GDN layers"
+/// from it, not from `full_attention_interval`. Every key above is required.
+/// A missing or inconsistent value is an error, never a guess, because a
+/// wrongly laid out hybrid stack still produces fluent-looking text.
+fn apply_qwen35_hybrid(
+    config: &mut ModelConfig,
+    meta: &dyn GgufMeta,
+    arch: &str,
+    nextn_layers: usize,
+) -> Result<()> {
+    let k = |suffix: &str| format!("{arch}.{suffix}");
+    let req = |suffix: &str| -> Result<usize> {
+        meta.get_u64(&k(suffix))
+            .map(|v| v as usize)
+            .with_context(|| {
+                format!("GGUF: Qwen3.5-family arch '{arch}' missing required key '{arch}.{suffix}'")
+            })
+    };
+    let nonzero = |suffix: &str, v: usize| -> Result<usize> {
+        if v == 0 {
+            bail!("GGUF metadata key '{arch}.{suffix}' must be greater than zero");
+        }
+        Ok(v)
+    };
+
+    // Layer layout.
+    let interval = nonzero("full_attention_interval", req("full_attention_interval")?)?;
+    config.full_attention_interval = interval;
+    config.layer_types = (0..config.num_hidden_layers)
+        .map(|i| {
+            if (i + 1).is_multiple_of(interval) {
+                LayerType::FullAttention
+            } else {
+                LayerType::LinearAttention
+            }
+        })
+        .collect();
+    if !config.layer_types.contains(&LayerType::FullAttention) {
+        bail!(
+            "GGUF: '{arch}.full_attention_interval' ({interval}) puts no full-attention layer \
+             in {} trunk layers",
+            config.num_hidden_layers
+        );
+    }
+
+    // GDN geometry.
+    let num_k_heads = nonzero("ssm.group_count", req("ssm.group_count")?)?;
+    let num_v_heads = nonzero("ssm.time_step_rank", req("ssm.time_step_rank")?)?;
+    let inner = nonzero("ssm.inner_size", req("ssm.inner_size")?)?;
+    let key_head_dim = nonzero("ssm.state_size", req("ssm.state_size")?)?;
+    let conv_kernel = nonzero("ssm.conv_kernel", req("ssm.conv_kernel")?)?;
+    if !num_v_heads.is_multiple_of(num_k_heads) {
+        bail!(
+            "GGUF: '{arch}.ssm.time_step_rank' ({num_v_heads}) must be a multiple of \
+             '{arch}.ssm.group_count' ({num_k_heads})"
+        );
+    }
+    if !inner.is_multiple_of(num_v_heads) {
+        bail!(
+            "GGUF: '{arch}.ssm.inner_size' ({inner}) must be a multiple of \
+             '{arch}.ssm.time_step_rank' ({num_v_heads})"
+        );
+    }
+    config.linear_num_key_heads = num_k_heads;
+    config.linear_num_value_heads = num_v_heads;
+    config.linear_key_head_dim = key_head_dim;
+    config.linear_value_head_dim = inner / num_v_heads;
+    config.linear_conv_kernel_dim = conv_kernel;
+
+    // Full-attention head geometry. Atlas carries one `head_dim` for K and V.
+    if let Some(v) = meta.get_u64(&k("attention.value_length"))
+        && v as usize != config.head_dim
+    {
+        bail!(
+            "GGUF: '{arch}.attention.value_length' ({v}) differs from \
+             '{arch}.attention.key_length' ({}); ModelConfig carries one head_dim",
+            config.head_dim
+        );
+    }
+
+    // Partial RoPE and MRoPE.
+    let rotary = nonzero("rope.dimension_count", req("rope.dimension_count")?)?;
+    if rotary > config.head_dim {
+        bail!(
+            "GGUF: '{arch}.rope.dimension_count' ({rotary}) exceeds head_dim ({})",
+            config.head_dim
+        );
+    }
+    config.partial_rotary_factor = rotary as f64 / config.head_dim as f64;
+    if let Some(sections) = meta.get_u64_arr(&k("rope.dimension_sections")) {
+        // llama.cpp stores [T, H, W, extra]; Atlas has [T, H, W]. The extra
+        // section is 0 for every Qwen3.5-family file; refuse anything else.
+        if sections.len() < 3 || sections.len() > 4 || sections.get(3).is_some_and(|v| *v != 0) {
+            bail!(
+                "GGUF: '{arch}.rope.dimension_sections' {sections:?} must be [T, H, W] or \
+                 [T, H, W, 0]"
+            );
+        }
+        let section = [
+            sections[0] as usize,
+            sections[1] as usize,
+            sections[2] as usize,
+        ];
+        let total: usize = section.iter().sum();
+        if total > 0 {
+            if total * 2 != rotary {
+                bail!(
+                    "GGUF: '{arch}.rope.dimension_sections' {sections:?} sum to {total}, but \
+                     twice the sum must equal '{arch}.rope.dimension_count' ({rotary})"
+                );
+            }
+            config.mrope_section = section;
+            config.mrope_interleaved = true;
+        }
+    }
+
+    config.mtp_num_hidden_layers = nextn_layers;
+
+    // The MoE variant takes the Qwen3.6 kernel-target name exactly when the
+    // safetensors path does (dispatch.rs): MRoPE-interleaved MoE.
+    if config.model_type == "qwen3_5_moe"
+        && config.mrope_interleaved
+        && config.mrope_section.iter().sum::<usize>() > 0
+    {
+        config.model_type = "qwen3_6_moe".to_string();
+    }
+    Ok(())
+}
+
 // ── Fields GGUF does NOT provide, and how they are set (explicit, no silent
 //    prod defaults) ──
 //   * partial_rotary_factor / rotary_dim: left at struct default 1.0 (full
-//     RoPE). `{arch}.rope.dimension_count` could refine this for partial-rotary
-//     models; deliberately NOT auto-applied here until a target arch needs it.
-//   * layer_types / hybrid fields: left empty (homogeneous decoder).
+//     RoPE) except for the Qwen3.5 family, which derives the factor from
+//     `{arch}.rope.dimension_count` (see `apply_qwen35_hybrid`).
+//   * layer_types / hybrid fields: left empty (homogeneous decoder) except for
+//     the Qwen3.5 family (see `apply_qwen35_hybrid`).
 //   * All SSM/MLA/DeepSeek/MiniMax/vision fields: 0 / empty — not applicable to
 //     the llama/qwen/gemma decoder families this builder targets.
 //   * ep_rank/ep_world_size/tp_*: set at runtime by the caller, not here.
