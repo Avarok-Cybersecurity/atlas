@@ -80,6 +80,29 @@ vLLM Marlin W4A16 kernels
   torch-free ScalarType usable in device code without relaxed constexpr;
   sm_89 only. See VLLM-MARLIN-ATTRIBUTION.md.
 
+vLLM Marlin W4A16 host logic (translated to Rust)
+  Source: https://github.com/vllm-project/vllm, commit 8a36f08
+  Files: csrc/quantization/marlin/marlin.cu (lines 69-403: thread configs,
+         get_scales_cache_size, get_kernel_cache_size, is_valid_config,
+         determine_exec_config, the M split of marlin_mm),
+         csrc/quantization/marlin/gptq_marlin_repack.cu and
+         awq_marlin_repack.cu (the repack index rule),
+         vllm/model_executor/layers/quantization/utils/marlin_utils.py
+         (get_scale_perms, marlin_permute_scales, marlin_zero_points,
+         awq_to_marlin_zero_points, marlin_make_workspace_new),
+         quant_utils.py (quantize_weights, pack_rows, pack_cols, unpack_cols,
+         awq_pack), marlin_utils_test.py (the test permutation oracle)
+  Copyright contributors to the vLLM project.
+  Copyright (C) Marlin.2024 Elias Frantar. Adapted from
+  https://github.com/IST-DASLab/marlin.
+  Licensed under the Apache License, Version 2.0 (LICENSES/Apache-2.0.txt).
+  Atlas files: crates/spark-model/src/port/marlin/ (translation; no code
+  copied), crates/spark-model/examples/marlin_ada_microtest.rs and
+  crates/spark-model/examples/marlin_ada_microtest/.
+  Changes: C++, CUDA and Python restated as Rust host code; the repack runs on
+  the CPU; a row-invariant decode policy; Atlas's W4Linear contract. See
+  VLLM-MARLIN-HOST-ATTRIBUTION.md.
+
 == LMCache (KV block transfer, pinned host pool, LRU blob store) ==
 
 Source:  https://github.com/LMCache/LMCache, commit 3aefae1
