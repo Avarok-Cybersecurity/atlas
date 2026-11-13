@@ -419,4 +419,8 @@ required-features = ["cuda", "gpu-examples"]
 name = "kv_swap_roundtrip"
 required-features = ["cuda", "gpu-examples"]
 
+[[example]]
+name = "kv_host_tier_roundtrip"
+required-features = ["cuda", "gpu-examples"]
+
 # @port:examples
