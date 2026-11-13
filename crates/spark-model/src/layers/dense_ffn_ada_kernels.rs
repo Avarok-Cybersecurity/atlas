@@ -37,11 +37,13 @@
 //!   weight loads, then falls back to the table above.
 //! * `ffn_fp8_verify_gemv`: the verify rows' batch-M GEMVs
 //!   ([`verify`], `fp8_gemv_ada_batchm.cu`).
+//! * `ffn_fp8_decode_gemv`: the same batch-M GEMVs on a multi-sequence decode
+//!   step (`dense_ffn/fp8_decode_gemv.rs`); it primes the same handles.
 //! * `rmsnorm_fp8_quant_fused`: the fused residual-add + RMSNorm + FP8 group
 //!   quantizer ([`RMSNORM_QUANT_KERNEL`]) the prefill FFN-norm sites call
 //!   (`dense_ffn_w8a8_prefill/norm_fused.rs`).
 //!
-//! The last two have no layer field to live in, so their handles are looked up
+//! The last three have no layer field to live in, so their handles are looked up
 //! HERE, at layer construction, through the backend's [`OpCache`]
 //! (`spark_runtime::op_cache`): construction is on the eager build path the
 //! boot kernel audit sees, and the forward-time reads of the same names are
@@ -100,6 +102,10 @@ pub struct AdaFp8Rows {
     pub verify_gemv: bool,
     /// `rmsnorm_fp8_quant_fused`.
     pub rmsnorm_quant: bool,
+    /// `ffn_fp8_decode_gemv`: multi-sequence decode on the batch-M GEMVs
+    /// (`dense_ffn/fp8_decode_gemv.rs`). It reads the same handles as
+    /// `verify_gemv`, so it primes the same lookups.
+    pub decode_gemv: bool,
 }
 
 impl AdaFp8Rows {
@@ -110,6 +116,7 @@ impl AdaFp8Rows {
             l2_evict_first: port_rows::l2_evict_first_weights::row(),
             verify_gemv: port_rows::ffn_fp8_verify_gemv::row(),
             rmsnorm_quant: port_rows::rmsnorm_fp8_quant_fused::row(),
+            decode_gemv: port_rows::ffn_fp8_decode_gemv::row(),
         }
     }
 }
@@ -218,7 +225,7 @@ pub fn rmsnorm_quant_kernel(gpu: &dyn GpuBackend) -> KernelHandle {
 /// Construction-time lookups of the row-gated kernels that have no layer
 /// field, so every lookup stays eager. Nothing is looked up with the rows off.
 fn prime_port_kernels(gpu: &dyn GpuBackend, rows: AdaFp8Rows) {
-    if rows.verify_gemv {
+    if rows.verify_gemv || rows.decode_gemv {
         verify::prime(gpu, rows.l2_evict_first);
     }
     if rows.rmsnorm_quant {

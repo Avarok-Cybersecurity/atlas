@@ -3179,6 +3179,11 @@ pub mod ada_kernels;
 #[path = "dense_ffn/w4.rs"]
 pub mod w4;
 
+/// Multi-sequence decode on the FP8 batch-M GEMVs (row `ffn_fp8_decode_gemv`).
+/// A child module for the size cap.
+#[path = "dense_ffn/fp8_decode_gemv.rs"]
+pub mod fp8_decode_gemv;
+
 /// The FFN family's cuBLASLt choice for a BF16 fallback GEMM. Read here so the
 /// `ffn` family is armed only from its own file (`dispatch_config_routing_tests`);
 /// `dense_ffn/w4.rs` asks through this.

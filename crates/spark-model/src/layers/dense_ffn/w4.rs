@@ -192,14 +192,20 @@ impl DenseFfnLayer {
         if self.fp8_weights.is_none() || self.q2_weights.is_some() {
             return Ok(false);
         }
-        super::ada_kernels::verify::forward_km_fp8(
+        if super::ada_kernels::verify::forward_km_fp8(
             self,
             input,
             m as usize,
             ctx.buffers.moe_output(),
             ctx,
             stream,
-        )
+        )? {
+            return Ok(true);
+        }
+        // Row `ffn_fp8_decode_gemv`: the same kernels on a multi-sequence
+        // DECODE step (`fp8_decode_gemv.rs`). `false`, and nothing launched,
+        // with that row off or on a verify or prefill pass.
+        self.fp8_decode_arm(input, m as usize, ctx, stream)
     }
 
     /// M = 1 decode through the W4 weights; returns the output buffer the

@@ -236,7 +236,18 @@ impl Qwen3SsmLayer {
                 && self.ffn.is_dense()
                 && ssm_ffn_prefill_enabled() =>
             {
-                self.ffn.forward_prefill(normed_base, n, ctx, stream)?;
+                // Row `ffn_fp8_decode_gemv` (off by default): this arm goes to
+                // `forward_prefill` without passing `forward_km`, so at 5..8
+                // streams an FP8 layer would land on the W8A8 arm (about 1.6x
+                // the weight-bandwidth floor on sm_89, and lossy). Ask the
+                // batch-M GEMVs first; `false` launched nothing
+                // (`dense_ffn/fp8_decode_gemv.rs`).
+                if !self
+                    .ffn
+                    .try_forward_fp8_decode_rows(normed_base, n, ctx, stream)?
+                {
+                    self.ffn.forward_prefill(normed_base, n, ctx, stream)?;
+                }
                 ops::residual_add(
                     ctx.gpu,
                     self.residual_add_k,

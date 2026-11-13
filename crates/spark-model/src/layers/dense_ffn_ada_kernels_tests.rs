@@ -63,6 +63,7 @@ const ALL_ROWS: AdaFp8Rows = AdaFp8Rows {
     l2_evict_first: true,
     verify_gemv: true,
     rmsnorm_quant: true,
+    decode_gemv: true,
 };
 
 fn module_lookups(gpu: &MockGpuBackend, module: &str) -> usize {
@@ -175,6 +176,31 @@ fn the_verify_row_primes_every_batchm_entry_once_through_the_op_cache() {
         seen.iter()
             .all(|(m, f)| m != verify::BATCHM_MODULE || !f.contains("l2ef"))
     );
+}
+
+#[test]
+fn the_decode_row_alone_primes_the_same_batchm_entries() {
+    // `ffn_fp8_decode_gemv` reads the verify row's handles at forward time, so
+    // it must prime them at construction whether or not the verify row is on.
+    let gpu = MockGpuBackend::new();
+    let rows = AdaFp8Rows {
+        decode_gemv: true,
+        ..AdaFp8Rows::default()
+    };
+    Fp8FfnKernels::resolve_with(&gpu, rows);
+    let primed = module_lookups(&gpu, verify::BATCHM_MODULE);
+    assert_eq!(primed, 3 * (verify::MAX_ROWS - verify::MIN_ROWS + 1));
+    // Both rows on prime once, not twice.
+    let both = MockGpuBackend::new();
+    Fp8FfnKernels::resolve_with(
+        &both,
+        AdaFp8Rows {
+            decode_gemv: true,
+            verify_gemv: true,
+            ..AdaFp8Rows::default()
+        },
+    );
+    assert_eq!(module_lookups(&both, verify::BATCHM_MODULE), primed);
 }
 
 #[test]

@@ -265,12 +265,7 @@ pub(crate) fn forward_km_fp8_with(
     ctx: &ForwardContext,
     stream: u64,
 ) -> Result<bool> {
-    let hidden = ctx.config.hidden_size;
-    let inter = ctx.config.intermediate_size;
-    let Some(route) = plan(layer, k, m, hidden, inter, ctx.levers.decode_split_silu) else {
-        return Ok(false);
-    };
-    let Some(fp8w) = layer.fp8_weights.as_ref() else {
+    let Some(route) = launch_km_fp8(layer, k, x, m, out, ctx, stream)? else {
         return Ok(false);
     };
     if ctx.stats.once("log:ffn_fp8_verify_gemv") {
@@ -280,6 +275,31 @@ pub(crate) fn forward_km_fp8_with(
              the prefill ladder."
         );
     }
+    Ok(true)
+}
+
+/// The launches of [`forward_km_fp8_with`] without its log line, so the
+/// multi-sequence decode caller (`dense_ffn/fp8_decode_gemv.rs`, row
+/// `ffn_fp8_decode_gemv`) can name its own row. Returns the route taken, or
+/// `Ok(None)` when the layer is not eligible (nothing was launched).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn launch_km_fp8(
+    layer: &DenseFfnLayer,
+    k: &RowKernels,
+    x: DevicePtr,
+    m: usize,
+    out: DevicePtr,
+    ctx: &ForwardContext,
+    stream: u64,
+) -> Result<Option<VerifyRoute>> {
+    let hidden = ctx.config.hidden_size;
+    let inter = ctx.config.intermediate_size;
+    let Some(route) = plan(layer, k, m, hidden, inter, ctx.levers.decode_split_silu) else {
+        return Ok(None);
+    };
+    let Some(fp8w) = layer.fp8_weights.as_ref() else {
+        return Ok(None);
+    };
     let (h, i, rows) = (hidden as u32, inter as u32, m as u32);
     let gpu = ctx.gpu;
     let gate_out = ctx.buffers.expert_gate_out();
@@ -318,7 +338,7 @@ pub(crate) fn forward_km_fp8_with(
             gemv_batchm(gpu, k.plain, gate_out, d, out, h, i, stream)?;
         }
     }
-    Ok(true)
+    Ok(Some(route))
 }
 
 /// `out[m, n] = a[m, k] x E4M3(w[n, k])^T * scales`, M fixed by the handle.
