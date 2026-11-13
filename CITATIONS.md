@@ -216,6 +216,13 @@ their code is copied; the entries record the task definitions, protocols and dat
 - **TensorFold** (Apache-2.0), `docs/cache-benchmarks.md` and `tools/bench_evidence.py`, commit 3885dce: the definition of the per-request fingerprints `token_sha` (token-id hash) and `output_sha256` (hash of the content and reasoning digests, independent of chunk boundaries), the cold/reused `cached_tokens` rule, and the practice of comparing a drafted run, a concurrent run and a resumed run by fingerprint. Idea and definition only; no code copied. Atlas: `crates/spark-server/src/api/evidence.rs`, `crates/spark-server/src/api/evidence/`.
 - **Cascade routing on a cheap confidence signal** (idea only, as in RouteLLM-style threshold calibration): escalate a request to a larger model when the small model's own confidence is low. The summary is a measurement; whether it is a useful trigger is decided by an offline AUROC study, not assumed. Atlas: `crates/spark-server/src/scheduler/conf_summary.rs`.
 
+- **vLLM adaptive verification** (Apache-2.0, commit 8a36f08), `vllm/v1/worker/gpu/spec_decode/adaptive_verification.py`
+  and `acceptance_estimator.py`: the cost-optimal draft budget and the online logistic acceptance calibration
+  (damped Newton-IRLS). Translated for `scheduler/mtp_dcut_cost.rs` and `scheduler/mtp_accept_estimator.rs`
+  (row `mtp_dcut_cost_model`). Attribution: `DCUT-V2-ATTRIBUTION.md`.
+- **D-Cut** (arXiv 2607.14647): adaptive verification-depth pruning by survival score, the v1 policy that D-Cut v2
+  extends (`scheduler/mtp_dcut.rs`).
+
 ### GPU backend extensions (L08)
 
 - Cinference (https://github.com/satellitedown/cinference, commit `383e5db`,

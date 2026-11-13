@@ -8,6 +8,17 @@ license text under LICENSES/, and the Atlas files that carry the code. For an
 Apache-2.0 source, the section also reproduces the relevant parts of that
 project's own NOTICE file.
 
+vLLM (D-Cut v2: cost-optimal verify budget and online acceptance calibration)
+  Source: https://github.com/vllm-project/vllm, commit 8a36f08
+  Files: vllm/v1/worker/gpu/spec_decode/adaptive_verification.py,
+         vllm/v1/worker/gpu/spec_decode/acceptance_estimator.py
+  Copyright contributors to the vLLM project. Licensed under the Apache
+  License, Version 2.0 (LICENSES/Apache-2.0.txt).
+  Atlas files: crates/spark-server/src/scheduler/mtp_dcut_cost.rs,
+         crates/spark-server/src/scheduler/mtp_accept_estimator.rs
+  Changes: translated from Python/Triton to Rust; the cost table is learned
+  online; the budget is chosen on the host per verify batch. See
+  DCUT-V2-ATTRIBUTION.md.
 
 Cinference (CUDA Graph topology signature)
   Source: https://github.com/satellitedown/cinference, commit 383e5db
