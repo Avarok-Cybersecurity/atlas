@@ -129,6 +129,22 @@ pub struct PortDefaults {
     /// restores those blocks by one batched H2D into fresh blocks that re-enter
     /// the radix tree, so its prefill sees an ordinary GPU hit.
     pub kv_host_tier: bool,
+    /// Asynchronous host-tier KV restore (spark-server
+    /// scheduler/restore_queue.rs, lane L27): a new request whose prefix the host
+    /// KV tier (kv_host_tier) restores is parked outside the batch while its
+    /// host-to-device copy runs on the tier's copy stream, every other sequence
+    /// keeps its decode ticks, and the request re-enters the front of the pending
+    /// queue at the top of the tick after the copy finished, then admits as an
+    /// HBM prefix hit.
+    pub kv_restore_async: bool,
+    /// Disk tier and warm restart for the host KV tier (spark-runtime
+    /// kv_host_tier/disk.rs, lane L27): blocks the host tier evicts are demoted
+    /// to one record file each under --kv-tier-dir (temp file plus atomic rename,
+    /// O_DIRECT when aligned with a logged buffered fallback, budget
+    /// --kv-tier-disk-gb, least recently used first), a later lookup promotes
+    /// them back after checking the record's checksums, and a restarted server
+    /// adopts the records a previous run wrote for the same model fingerprint.
+    pub kv_tier_disk: bool,
     /// Radix prefix-cache eviction takes its victim from an ordered (last_access,
     /// node id) index of evictable leaves, maintained at every transition of the
     /// victim predicate, instead of scanning every node once per evicted block
@@ -161,6 +177,8 @@ pub const PORT_BASELINE: PortDefaults = PortDefaults {
     kv_batched_swap: false,
     ssm_store_lru: false,
     kv_host_tier: false,
+    kv_restore_async: false,
+    kv_tier_disk: false,
     radix_lru_index: false,
     prefix_cow_tail: false,
     // @port:baseline

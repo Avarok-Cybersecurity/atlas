@@ -226,6 +226,33 @@ ssm_store_lru = false
 # is the A/B; the `atlas_kv_tier_*` series show residency, hits, restores and
 # gate declines.
 kv_host_tier = false
+# Asynchronous host-tier KV restore (spark-server scheduler/restore_queue.rs,
+# lane L27): a new request whose prefix the host KV tier (kv_host_tier) restores
+# is parked outside the batch while its host-to-device copy runs on the tier's
+# copy stream, every other sequence keeps its decode ticks, and the request
+# re-enters the front of the pending queue at the top of the tick after the copy
+# finished, then admits as an HBM prefix hit. A failed, stuck (10 s) or
+# past-deadline restore admits the request for recompute; a client that
+# disconnects while parked is dropped and its restore finishes in the
+# background; a request is parked at most once. It only reorders when a request
+# is admitted, so outputs are unchanged. OFF until the receipt on this card:
+# reuse.py mixed (4 decoding streams plus one 12K-token restore) with decode p99
+# inter-chunk gap during the restore no worse than the synchronous arm's and
+# within 1.5x of the no-restore baseline, and atlas_kv_restore_parked_total > 0.
+kv_restore_async = false
+# Disk tier and warm restart for the host KV tier (spark-runtime
+# kv_host_tier/disk.rs, lane L27): blocks the host tier evicts are demoted to
+# one record file each under --kv-tier-dir (temp file plus atomic rename,
+# O_DIRECT when aligned with a logged buffered fallback, budget
+# --kv-tier-disk-gb, least recently used first), a later lookup promotes them
+# back after checking the record's checksums, and a restarted server adopts the
+# records a previous run wrote for the same model fingerprint. Needs the host
+# tier (kv_host_tier) and both flags; refused under --hermetic, since it carries
+# KV state across restarts. OFF until the receipt on this card: the restart test
+# (prime, stop, start, query) shows atlas_kv_tier_disk_adopted_total > 0 and
+# atlas_kv_tier_disk_hits_total > 0 with greedy output equal to the primed run,
+# and a promote is faster than recomputing the same prefix.
+kv_tier_disk = false
 # Radix prefix-cache eviction takes its victim from an ordered (last_access,
 # node id) index of evictable leaves, maintained at every transition of the
 # victim predicate, instead of scanning every node once per evicted block
