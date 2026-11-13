@@ -294,5 +294,20 @@ overrides = [
   "affine4_lane_ada.cu",
   "affine_frag_ada.cuh",
   "affine_pack_ada.cu",
+  # Affine 4-bit prompt GEMMs (port lane L17b; TensorFold qmm_prefill.cu and
+  # w4a8_prefill.cu, Apache-2.0, see TENSORFOLD-ATTRIBUTION.md). ADDITIONS, no
+  # gb10 counterpart. Looked up only when an affine route row is on and a call
+  # has more rows than the decode window (crates/spark-model/src/port/affine/
+  # prefill_launch.rs); the int8 entries only with affine4_prefill_int8 on.
+  #   affine_prefill_ada.cu      BF16-activation prompt GEMM (128x128 tile, 3
+  #                              stages, single and _many) and the W4A8 int8
+  #                              prompt GEMM (int8 mma, 4 stages, single and
+  #                              _many), with the device-side exceptional gate;
+  #                              dynamic shared memory through prefill_dyn_smem.cuh
+  #   affine_swiglu_sums_ada.cu  int8 activation quantizer (64-input group scale
+  #                              and FP32 sum) and the fused SwiGLU + group sums +
+  #                              int8 quantizer of the dense FFN's down input
+  "affine_prefill_ada.cu",
+  "affine_swiglu_sums_ada.cu",
   # @port:overrides
 ]
