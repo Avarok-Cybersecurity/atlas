@@ -456,4 +456,12 @@ copied.
   `scripts-5060ti/proto/proto_page_sparse.cu`: the RTX 5060 Ti page-sparse prototype whose correct bound (not the
   pager's `q * max(kmin, kmax)`) the port follows, as described in the port sprint's report 77 (section 5.2, BR-4);
   no source read. Attribution: `QUEST-PAGE-SPARSE-ATTRIBUTION.md`.
+
+- **KVMem query-time bounded KV view** (arXiv:2609.04852; the kvmem/kvmem-llama.cpp repository carries no license,
+  so it is idea only and no source was read): a per-page mean of the pre-RoPE keys captured at write time, the
+  post-norm pre-RoPE query rows of the last 512 tokens of the final user message, page-softmax block scoring with a
+  GQA mean or max-then-renormalize, and a picker that keeps sink, recent and query-span blocks and fills the budget by
+  score in chronological order. Independent implementation in `crates/spark-runtime/src/kv_cache/sketch.rs`,
+  `crates/spark-runtime/src/kv_select/`, `kernels/ada/common/{kv_page_sketch_ada.cu, kv_page_score_ada.cu}` and
+  `crates/spark-model/src/port/kv_view/query_capture.rs` (lane L31; wiring and row `kv_view_selection` are L32's).
 <!-- @port:citations -->
