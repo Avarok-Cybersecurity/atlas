@@ -36,6 +36,10 @@ const PORT_LEVERS: &[&str] = &[
     "marlin_w4a16",
     "gguf_native_iq4",
     "weights_exl3",
+    "dense_affine4_from_bf16",
+    "gdn_affine4_from_bf16",
+    "attn_affine4_from_bf16",
+    "affine4_prefill_int8",
     "dense_nvfp4_from_bf16",
     "kv_batched_swap",
     "ssm_store_lru",
@@ -96,6 +100,22 @@ fn the_baked_port_rows_match_their_own_hardware_tree() {
     assert_eq!(baked.port.gguf_native_iq4, declared.port.gguf_native_iq4);
     assert_eq!(baked.port.weights_exl3, declared.port.weights_exl3);
     assert_eq!(
+        baked.port.dense_affine4_from_bf16,
+        declared.port.dense_affine4_from_bf16
+    );
+    assert_eq!(
+        baked.port.gdn_affine4_from_bf16,
+        declared.port.gdn_affine4_from_bf16
+    );
+    assert_eq!(
+        baked.port.attn_affine4_from_bf16,
+        declared.port.attn_affine4_from_bf16
+    );
+    assert_eq!(
+        baked.port.affine4_prefill_int8,
+        declared.port.affine4_prefill_int8
+    );
+    assert_eq!(
         baked.port.dense_nvfp4_from_bf16,
         declared.port.dense_nvfp4_from_bf16
     );
@@ -115,6 +135,10 @@ fn ada_port_rows_hold_their_write_time_values() {
     assert_eq!(declared("ada").port.marlin_w4a16, false);
     assert_eq!(declared("ada").port.gguf_native_iq4, false);
     assert_eq!(declared("ada").port.weights_exl3, false);
+    assert_eq!(declared("ada").port.dense_affine4_from_bf16, false);
+    assert_eq!(declared("ada").port.gdn_affine4_from_bf16, false);
+    assert_eq!(declared("ada").port.attn_affine4_from_bf16, false);
+    assert_eq!(declared("ada").port.affine4_prefill_int8, false);
     assert_eq!(declared("ada").port.dense_nvfp4_from_bf16, false);
     assert_eq!(declared("ada").port.kv_batched_swap, false);
     assert_eq!(declared("ada").port.ssm_store_lru, false);
@@ -131,6 +155,10 @@ fn non_ada_targets_keep_every_port_row_at_its_baseline() {
         assert!(!declared(hw).port.marlin_w4a16, "{hw}");
         assert!(!declared(hw).port.gguf_native_iq4, "{hw}");
         assert!(!declared(hw).port.weights_exl3, "{hw}");
+        assert!(!declared(hw).port.dense_affine4_from_bf16, "{hw}");
+        assert!(!declared(hw).port.gdn_affine4_from_bf16, "{hw}");
+        assert!(!declared(hw).port.attn_affine4_from_bf16, "{hw}");
+        assert!(!declared(hw).port.affine4_prefill_int8, "{hw}");
         assert!(!declared(hw).port.dense_nvfp4_from_bf16, "{hw}");
         assert!(!declared(hw).port.kv_batched_swap, "{hw}");
         assert!(!declared(hw).port.ssm_store_lru, "{hw}");

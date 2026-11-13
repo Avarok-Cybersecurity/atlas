@@ -57,6 +57,36 @@ pub struct PortDefaults {
     /// via TensorFold Apache-2.0).
     pub weights_exl3: bool,
     /// On a plain-BF16 dense Qwen3.5 checkpoint (Holo 3.1 0.8B and 4B), the dense
+    /// FFN's gate, up and down are quantized once at load by the GPU quantizer
+    /// into MLX affine codes (a bf16 scale and bias per group of inputs;
+    /// --w4-bits and --w4-group, default 4 bits at group 64, 4.5 bits a weight),
+    /// each BF16 source freed right after its own quantize, and served through
+    /// W4Linear: decode and verify rows 1..16 on TensorFold's lane MMA GEMV
+    /// (kernels/ada/common/affine4_lane_ada.cu), prompts on the affine prompt
+    /// GEMM or a BF16 dequant plus cuBLASLt
+    /// (weight_loader/qwen35_dense/affine4_from_bf16.rs).
+    pub dense_affine4_from_bf16: bool,
+    /// On a plain-BF16 dense Qwen3.5 checkpoint, each GDN layer's `[Q|K|V|Z]`
+    /// in-projection (the loader's BF16 concat) and out_proj are quantized once
+    /// at load to MLX affine codes (the common --w4-bits and --w4-group, or
+    /// AVAROK_W4_GDN_GROUP for these projections alone, for example 32), each
+    /// BF16 source freed after its own quantize, and served through W4Linear on
+    /// the same kernels (weight_loader/qwen35_dense/gdn_affine4_from_bf16.rs).
+    pub gdn_affine4_from_bf16: bool,
+    /// On a plain-BF16 dense Qwen3.5 checkpoint, each full-attention layer's q
+    /// (doubled when gated), k, v and o are quantized once at load to MLX affine
+    /// codes (--w4-bits, --w4-group), each checkpoint tensor freed after its own
+    /// quantize, and served through W4Linear on the same kernels
+    /// (weight_loader/qwen35_dense/attn_affine4_from_bf16.rs).
+    pub attn_affine4_from_bf16: bool,
+    /// The affine routes' prompt GEMM (more than 16 rows) quantizes the
+    /// activation rows to int8 per group and runs the W4A8 int8 tensor-core GEMM
+    /// over the same 4-bit codes (kernels/ada/common/affine_prefill_ada.cu,
+    /// port::affine::prefill) instead of the BF16-activation prompt GEMM; a chunk
+    /// with a non-finite or overflowing activation group falls back to BF16 and
+    /// is counted.
+    pub affine4_prefill_int8: bool,
+    /// On a plain-BF16 dense Qwen3.5 checkpoint (Holo 3.1 0.8B and 4B), the dense
     /// FFN's gate, up and down are quantized once at load with the existing NVFP4
     /// quantizer (E2M1 codes, E4M3 per-16 scales, one F32 tensor scale; 4.5 bits
     /// a weight), each BF16 source freed right after its own quantize, and served
@@ -107,6 +137,10 @@ pub const PORT_BASELINE: PortDefaults = PortDefaults {
     marlin_w4a16: false,
     gguf_native_iq4: false,
     weights_exl3: false,
+    dense_affine4_from_bf16: false,
+    gdn_affine4_from_bf16: false,
+    attn_affine4_from_bf16: false,
+    affine4_prefill_int8: false,
     dense_nvfp4_from_bf16: false,
     kv_batched_swap: false,
     ssm_store_lru: false,

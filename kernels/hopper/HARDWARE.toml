@@ -438,6 +438,58 @@ gguf_native_iq4 = false
 # route installs EXL3 weights.
 weights_exl3 = false
 # On a plain-BF16 dense Qwen3.5 checkpoint (Holo 3.1 0.8B and 4B), the dense
+# FFN's gate, up and down are quantized once at load by the GPU quantizer into
+# MLX affine codes (a bf16 scale and bias per group of inputs; --w4-bits and
+# --w4-group, default 4 bits at group 64, 4.5 bits a weight), each BF16 source
+# freed right after its own quantize, and served through W4Linear: decode and
+# verify rows 1..16 on TensorFold's lane MMA GEMV
+# (kernels/ada/common/affine4_lane_ada.cu), prompts on the affine prompt GEMM
+# or a BF16 dequant plus cuBLASLt
+# (weight_loader/qwen35_dense/affine4_from_bf16.rs). On the 4B it keeps 1.27
+# GB of FFN weights where BF16 keeps 4.53 GB and FP8 2.27 GB, which is what a
+# bandwidth-bound decode step reads. It declines on tensor parallel, a pending
+# LoRA adapter, an unserved width and group, or absent kernels (every non-Ada
+# target), and dense_fp8_from_bf16 wins when both are on. Round-to-nearest
+# 4-bit is a numerics change, so it is off until the D7 receipt on the 4B:
+# teacher-forced NLL delta at most twice the FP8 FFN route's, full-vocabulary
+# KL mean at most 0.05, coherence and 4K/8K recall pass, and MTP drafted
+# output equal to plain at temperature 0.
+dense_affine4_from_bf16 = false
+# On a plain-BF16 dense Qwen3.5 checkpoint, each GDN layer's [Q|K|V|Z]
+# in-projection (the loader's BF16 concat) and out_proj are quantized once at
+# load to MLX affine codes (the common --w4-bits and --w4-group, or
+# AVAROK_W4_GDN_GROUP for these projections alone, for example 32), each BF16
+# source freed after its own quantize, and served through W4Linear on the same
+# kernels (weight_loader/qwen35_dense/gdn_affine4_from_bf16.rs). On the 4B the
+# 24 GDN layers keep 0.57 GB where BF16 keeps 2.01 GB. The same declines as
+# the FFN route; gdn_fp8_from_bf16 wins when both are on. A projection error
+# feeds the recurrent state, so it is off until the D7 receipt plus a
+# long-context degeneration check (longctx.py recall at 4K and 8K, no drift
+# the BF16 serve does not share).
+gdn_affine4_from_bf16 = false
+# On a plain-BF16 dense Qwen3.5 checkpoint, each full-attention layer's q
+# (doubled when gated), k, v and o are quantized once at load to MLX affine
+# codes (--w4-bits, --w4-group), each checkpoint tensor freed after its own
+# quantize, and served through W4Linear on the same kernels
+# (weight_loader/qwen35_dense/attn_affine4_from_bf16.rs). On the 4B the 8
+# attention layers keep 0.17 GB where BF16 keeps 0.59 GB. The same declines as
+# the FFN route; attn_fp8_from_bf16 wins when both are on. A numerics change,
+# independent of the FFN and GDN rows; off until the D7 receipt with the FFN
+# and GDN routes on.
+attn_affine4_from_bf16 = false
+# The affine routes' prompt GEMM (more than 16 rows) quantizes the activation
+# rows to int8 per group and runs the W4A8 int8 tensor-core GEMM over the same
+# 4-bit codes (kernels/ada/common/affine_prefill_ada.cu,
+# port::affine::prefill) instead of the BF16-activation prompt GEMM; a chunk
+# with a non-finite or overflowing activation group falls back to BF16 and is
+# counted. Only 4-bit affine weights have it, and it changes nothing unless an
+# affine route row is on. Int8 tensor cores run at twice the FP8 rate on Ada,
+# so the 4B FFN prompt GEMMs are expected faster than the FP8 W8A8 route's.
+# Off until the receipt: prompt-row full-vocabulary KL against BF16 within the
+# D7 bound and a TTFT ABBA gain at a 3,921-token prompt against the same
+# routes with the row off.
+affine4_prefill_int8 = false
+# On a plain-BF16 dense Qwen3.5 checkpoint (Holo 3.1 0.8B and 4B), the dense
 # FFN's gate, up and down are quantized once at load with the existing NVFP4
 # quantizer (E2M1 codes, E4M3 per-16 scales, one F32 tensor scale; 4.5 bits a
 # weight), each BF16 source freed right after its own quantize, and served

@@ -25,6 +25,10 @@ pub struct PortFields {
     pub marlin_w4a16: bool,
     pub gguf_native_iq4: bool,
     pub weights_exl3: bool,
+    pub dense_affine4_from_bf16: bool,
+    pub gdn_affine4_from_bf16: bool,
+    pub attn_affine4_from_bf16: bool,
+    pub affine4_prefill_int8: bool,
     pub dense_nvfp4_from_bf16: bool,
     pub kv_batched_swap: bool,
     pub ssm_store_lru: bool,
@@ -45,6 +49,10 @@ impl Default for PortFields {
             marlin_w4a16: false,
             gguf_native_iq4: false,
             weights_exl3: false,
+            dense_affine4_from_bf16: false,
+            gdn_affine4_from_bf16: false,
+            attn_affine4_from_bf16: false,
+            affine4_prefill_int8: false,
             dense_nvfp4_from_bf16: false,
             kv_batched_swap: false,
             ssm_store_lru: false,
@@ -71,6 +79,22 @@ pub fn parse(out: &mut PortFields, key: &str, value: &toml::Value) -> bool {
         }
         "weights_exl3" => {
             out.weights_exl3 = boolean(key, value);
+            true
+        }
+        "dense_affine4_from_bf16" => {
+            out.dense_affine4_from_bf16 = boolean(key, value);
+            true
+        }
+        "gdn_affine4_from_bf16" => {
+            out.gdn_affine4_from_bf16 = boolean(key, value);
+            true
+        }
+        "attn_affine4_from_bf16" => {
+            out.attn_affine4_from_bf16 = boolean(key, value);
+            true
+        }
+        "affine4_prefill_int8" => {
+            out.affine4_prefill_int8 = boolean(key, value);
             true
         }
         "dense_nvfp4_from_bf16" => {
@@ -111,6 +135,10 @@ pub fn literal(d: &PortFields) -> String {
          \x20   marlin_w4a16: {marlin_w4a16},\n\
          \x20   gguf_native_iq4: {gguf_native_iq4},\n\
          \x20   weights_exl3: {weights_exl3},\n\
+         \x20   dense_affine4_from_bf16: {dense_affine4_from_bf16},\n\
+         \x20   gdn_affine4_from_bf16: {gdn_affine4_from_bf16},\n\
+         \x20   attn_affine4_from_bf16: {attn_affine4_from_bf16},\n\
+         \x20   affine4_prefill_int8: {affine4_prefill_int8},\n\
          \x20   dense_nvfp4_from_bf16: {dense_nvfp4_from_bf16},\n\
          \x20   kv_batched_swap: {kv_batched_swap},\n\
          \x20   ssm_store_lru: {ssm_store_lru},\n\
@@ -121,6 +149,10 @@ pub fn literal(d: &PortFields) -> String {
         marlin_w4a16 = d.marlin_w4a16,
         gguf_native_iq4 = d.gguf_native_iq4,
         weights_exl3 = d.weights_exl3,
+        dense_affine4_from_bf16 = d.dense_affine4_from_bf16,
+        gdn_affine4_from_bf16 = d.gdn_affine4_from_bf16,
+        attn_affine4_from_bf16 = d.attn_affine4_from_bf16,
+        affine4_prefill_int8 = d.affine4_prefill_int8,
         dense_nvfp4_from_bf16 = d.dense_nvfp4_from_bf16,
         kv_batched_swap = d.kv_batched_swap,
         ssm_store_lru = d.ssm_store_lru,
