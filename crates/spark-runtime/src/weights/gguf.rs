@@ -455,6 +455,8 @@ mod expert_arena_tests;
 #[cfg(test)]
 mod expert_stream_tests;
 #[cfg(test)]
+mod qwen35_real_file_test;
+#[cfg(test)]
 mod real_file_test;
 
 #[cfg(all(test, feature = "cuda"))]
