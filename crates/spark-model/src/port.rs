@@ -23,6 +23,7 @@ pub mod exl3;
 /// The keep-packed GGUF IQ4_XS / Q4_K / Q6_K route: the file's raw super-blocks served on the Ada mmvq
 /// and MMQ kernels through `W4Linear` (lane L19, row `gguf_native_iq4`).
 pub mod gguf_q4;
+pub mod logit_dump;
 /// The Marlin W4A16 route: GPTQ/AWQ int4 checkpoints and opt-in round-to-nearest int4 from BF16,
 /// repacked on the host and served on vLLM's Marlin GEMM (lane L18b; kernels by lane L18a).
 pub mod marlin;

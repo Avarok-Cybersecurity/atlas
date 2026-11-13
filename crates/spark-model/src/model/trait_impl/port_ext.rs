@@ -14,6 +14,17 @@ use super::super::types::TransformerModel;
 use crate::traits::port_ext::ModelPortExt;
 
 impl ModelPortExt for TransformerModel {
+    fn timing_event_create(&self) -> anyhow::Result<u64> {
+        self.gpu.create_timing_event()
+    }
+
+    fn timing_event_record(&self, event: u64, stream: u64) -> anyhow::Result<()> {
+        self.gpu.record_event(event, stream)
+    }
+
+    fn timing_event_elapsed_ms(&self, start: u64, end: u64) -> anyhow::Result<Option<f32>> {
+        self.gpu.event_elapsed_ms(start, end)
+    }
 
     fn kv_tier_active(&self) -> bool {
         self.tier_active()

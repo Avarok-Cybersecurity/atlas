@@ -16,6 +16,22 @@
 
 /// The port lanes' model-level entry points. Every method has a default body.
 pub trait ModelPortExt {
+    /// A CUDA event with timing enabled, for `AVAROK_MTP_TIMING=2` (L06).
+    /// Default: unsupported, which disables the device phase timer.
+    fn timing_event_create(&self) -> anyhow::Result<u64> {
+        anyhow::bail!("timing events are not supported by this model")
+    }
+
+    /// Record a timing event on `stream` (L06).
+    fn timing_event_record(&self, _event: u64, _stream: u64) -> anyhow::Result<()> {
+        anyhow::bail!("timing events are not supported by this model")
+    }
+
+    /// Milliseconds from `start` to `end`; `Ok(None)` while `end` has not
+    /// completed (L06). Never blocks.
+    fn timing_event_elapsed_ms(&self, _start: u64, _end: u64) -> anyhow::Result<Option<f32>> {
+        anyhow::bail!("timing events are not supported by this model")
+    }
 
     /// Host KV tier (lane L26b): whether the tier serves this model (the `kv_host_tier` row
     /// on, a `--kv-host-tier-gb` budget, the prefix cache on). Default: no.
