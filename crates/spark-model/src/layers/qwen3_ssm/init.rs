@@ -473,6 +473,7 @@ impl Qwen3SsmLayer {
                 "fp8_scale_transpose",
                 "fp8_act_scale_to_kmajor",
             ),
+            w4_proj: None,
         })
     }
 

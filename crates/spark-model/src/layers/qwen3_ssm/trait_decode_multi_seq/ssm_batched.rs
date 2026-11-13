@@ -87,12 +87,17 @@ impl Qwen3SsmLayer {
         // kernel it actually dispatches so the BF16 build engages the batched
         // fast path instead of silently dropping to the per-seq loop. The FP8
         // sub-case (qkvz_fp8w Some) is byte-identical to the old gate.
-        let qkvz_ok = (self.qkvz_nvfp4.is_none()
-            && ((self.qkvz_fp8w.is_some() && self.w8a16_gemm_k.0 != 0)
-                || (self.qkvz_fp8w.is_none() && self.dense_gemm_k.0 != 0)))
+        // A W4 pair (`w4_proj.rs`, port lane L22a) serves both projections at
+        // any n (decode chunks of its window); `false` without one, so the
+        // rest of the gate is the old gate unchanged.
+        let qkvz_ok = self.w4_proj.is_some()
+            || (self.qkvz_nvfp4.is_none()
+                && ((self.qkvz_fp8w.is_some() && self.w8a16_gemm_k.0 != 0)
+                    || (self.qkvz_fp8w.is_none() && self.dense_gemm_k.0 != 0)))
             || (self.qkvz_nvfp4.is_some()
                 && ((self.w4a16_batchm.has_base() && n <= 16) || tc_wide_ok));
-        let out_ok = self.out_proj_fp8w.is_some()
+        let out_ok = self.w4_proj.is_some()
+            || self.out_proj_fp8w.is_some()
             || self.out_proj_dense.is_some()
             || self.qkvz_nvfp4.is_some();
         // Tier-1c keep-packed Q2_0 has no batched packed GEMM; decline so the

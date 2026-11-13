@@ -316,6 +316,12 @@ pub struct Qwen3SsmLayer {
     pub(super) gdn_wy4_woa_k: KernelHandle,
     pub(super) gdn_wy4_fold_k: KernelHandle,
     pub(super) gdn_wy4_clear_k: KernelHandle,
+    /// K-generic write-on-accept twins (K = 2, 3, 5..16) and their fold, the
+    /// Ada module `gated_delta_rule_wyn_woa` (port lane L10, `woa_wyn.rs`).
+    /// All `KernelHandle(0)` unless the `gdn_woa_mtp` row is on and the target
+    /// carries the module, so the shipped K = 4 path is all a row-off serve
+    /// ever takes.
+    pub(super) woa_wyn: super::woa_wyn::WynWoaKernels,
     /// Device addresses bound by the model on the first request (NULL until
     /// then): the engaged u32 (1 = the twin ran for the last requesting
     /// verify, written inside the graph) and this layer's stash slab of
@@ -450,4 +456,13 @@ pub struct Qwen3SsmLayer {
     /// arm decline (see `prefill_w8a8.rs`); the in-tree kernel reads the
     /// quantizer's own order and needs no adapter.
     pub(super) fp8_act_scale_kmajor_k: KernelHandle,
+    /// Lazily resolved Ada tensor-core chunked GDN prefill handles (port lane
+    /// L16, `gdn_chunk_tc_ada.rs`). Empty until the first prefill asks; no
+    /// lookup is ever issued on a target whose image lacks the module.
+    pub(crate) gdn_tc_ada: crate::layers::qwen3_ssm::gdn_chunk_tc_ada::Handles,
+    /// The packed (`W4Linear`) `in_proj_qkvz` + `out_proj` pair (port lane
+    /// L22a, `w4_proj.rs`), installed by `set_w4_proj` behind a loader route
+    /// row that is off on every target. `None` keeps every projection site on
+    /// its existing dispatch, byte for byte.
+    pub(super) w4_proj: Option<super::w4_proj::GdnW4Proj>,
 }

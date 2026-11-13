@@ -186,7 +186,10 @@ impl Qwen3SsmLayer {
         // verify — 2026-07-02 flagship gate). Mirrors the M<=4 dispatch in
         // trait_decode_multi_seq/ssm_batched.rs: one weight pass via
         // `w8a16_gemv_batch4`, per-token `w8a16_gemv` when it isn't linked.
-        if let Some(ref q2) = self.qkvz_q2 {
+        // W4 pair first (`w4_proj.rs`, port lane L22a); None on a row-off build.
+        if self.w4_proj.is_some() {
+            self.w4_qkvz_rows(ctx, normed, proj_dst, num_tokens, stream)?;
+        } else if let Some(ref q2) = self.qkvz_q2 {
             // Tier-1c keep-packed Q2_0: per-token 2-bit fused-qkvz GEMV. Bonsai
             // (dense qwen35) has no MTP, so this batched path is only reached
             // under multi-token verify — a per-token loop is bit-identical to
@@ -970,7 +973,10 @@ impl Qwen3SsmLayer {
 
         // ── 9. Output projection → [K, H] ──
         let out_proj_buf = ctx.buffers.moe_output(); // [K, H] BF16
-        if let Some(ref dense_out) = self.out_proj_dense {
+        // W4 pair first (`w4_proj.rs`, port lane L22a); None on a row-off build.
+        if self.w4_proj.is_some() {
+            self.w4_out_rows(ctx, normed_out_buf, out_proj_buf, num_tokens, stream)?;
+        } else if let Some(ref dense_out) = self.out_proj_dense {
             if ops::gdn_batched_gemm::out_proj_arm(ops::gdn_batched_gemm::row(), num_tokens)
                 == ops::gdn_batched_gemm::OutProjArm::Cublas
             {

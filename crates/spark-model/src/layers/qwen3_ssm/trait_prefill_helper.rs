@@ -71,6 +71,11 @@ impl Qwen3SsmLayer {
         value_dim: usize,
         stream: u64,
     ) -> Result<()> {
+        // W4 pair (`w4_proj.rs`, port lane L22a): the only live out_proj
+        // weight once installed, so it precedes every arm below.
+        if self.w4_proj.is_some() {
+            return self.w4_out_prefill(ctx, normed_out_buf, out_proj_buf, k as usize, stream);
+        }
         // The in-tree W8A8 arm below: `AVAROK_FP8_W8A8=1` as before, or by
         // default on a layer the load-time BF16 -> FP8 GDN route built
         // (`out_proj_w8a8_prefill`), which `AVAROK_FP8_SINGLE_SCALE` still
