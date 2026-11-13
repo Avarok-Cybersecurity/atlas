@@ -506,4 +506,22 @@ retro_attn = false
 # RULER and NIAH grid deltas plus KL at length against the row off.
 # `AVAROK_PREFILL_SPARSE_ATTN=1` is the A/B.
 prefill_sparse_attn = false
+# Host-resident window desk (`spark-model/src/port/kv_window/`, page API
+# `spark-runtime/src/kv_host_tier/pages.rs`, view kernel
+# `kv_page_fetch_ada.cu`): APPROXIMATE attention for contexts past what VRAM
+# holds. A long sequence keeps on the GPU only its first
+# `--kv-window-head-tokens` positions (2048, the sinks), its last
+# `--kv-window-tokens` positions (32768) and up to 2048 positions of pages a
+# recall scorer brings back; every other full KV block moves to host RAM in
+# batches of 1024 positions, its table entry points at one hole block so every
+# position and RoPE stays, and the full-attention layers read the desk through a
+# compacted block table rebuilt inside the decode graph each step. MTP heads
+# attend their sinks plus the same recent window. It refuses the prefix cache,
+# --high-speed-swap, vision input and KV dtypes other than BF16 and FP8. NEVER
+# default on, on any target: it changes outputs whenever a sequence outgrows the
+# desk. `AVAROK_KV_WINDOW_DESK=1` is the A/B; the receipts (plan Q14, report 77
+# section 12.5 R7 to R9 on the 27B) are KV capacity, needle recall at 128K and
+# 262K, restore at least 10 GB/s and at most 15% decode loss from misses;
+# `atlas_kv_window_*` show residency, fetches and demotions.
+kv_window_desk = false
 # @port:defaults

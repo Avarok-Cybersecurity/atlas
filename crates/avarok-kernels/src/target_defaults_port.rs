@@ -258,6 +258,11 @@ pub struct PortDefaults {
     /// (`kernels/ada/common/prefill_block_sparse_ada.cu`,
     /// `spark-model/src/port/sparse_prefill/`).
     pub prefill_sparse_attn: bool,
+    /// Host-resident window desk (`spark-model/src/port/kv_window/`, page API
+    /// `spark-runtime/src/kv_host_tier/pages.rs`, view kernel
+    /// `kv_page_fetch_ada.cu`): APPROXIMATE attention for contexts past what VRAM
+    /// holds.
+    pub kv_window_desk: bool,
     // @port:fields
 }
 
@@ -298,5 +303,6 @@ pub const PORT_BASELINE: PortDefaults = PortDefaults {
     kv_view_selection: false,
     retro_attn: false,
     prefill_sparse_attn: false,
+    kv_window_desk: false,
     // @port:baseline
 };
