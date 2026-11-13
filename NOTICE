@@ -260,6 +260,22 @@ Changes: design translations only; no code copied. Written in Rust against
   write-through invariants follow the published description of KVMem
   (arXiv:2609.04852); no KVMem source was read or copied.
 
+LMCache (disk KV tier and asynchronous restore)
+  Source: https://github.com/LMCache/LMCache, commit 3aefae1
+  Files: csrc/storage_backends/fs/connector.cpp (O_DIRECT gate, block size
+         query, temp file plus atomic rename),
+         lmcache/v1/distributed/key_codec.py (key to file name and back);
+         design only: lmcache/integration/vllm/lmcache_mp_connector.py
+         (asynchronous load between scheduler steps)
+  Copyright the LMCache contributors. Licensed under the Apache License,
+  Version 2.0 (LICENSES/Apache-2.0.txt). LMCache has no NOTICE file.
+  Atlas files: crates/spark-runtime/src/kv_host_tier/disk.rs,
+         crates/spark-runtime/src/kv_host_tier/disk/record.rs,
+         crates/spark-server/src/scheduler/restore_queue.rs
+  Changes: rewritten in Rust; Atlas record header with fingerprint, key,
+  tokens and checksums; buffered fallback when O_DIRECT is refused. See
+  LMCACHE-KV-TIER-DISK-ATTRIBUTION.md.
+
 LMCache (radix prefix-cache eviction without a full scan; design only)
   Source: https://github.com/LMCache/LMCache, commit 3aefae1
   Files: lmcache/v1/distributed/eviction_policy/isolated_lru.py,
