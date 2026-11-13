@@ -33,6 +33,7 @@ const DECLARING: &[&str] = &["gb10", "hopper", "b200", "b300", "ada"];
 /// Every port row, by name. Each must be declared explicitly by every
 /// DECLARING target, in the port block at the end of its `[defaults]`.
 const PORT_LEVERS: &[&str] = &[
+    "conf_summary",
     "marlin_w4a16",
     "gguf_native_iq4",
     "weights_exl3",
@@ -100,6 +101,7 @@ fn the_baked_port_rows_match_their_own_hardware_tree() {
     let baked = avarok_kernels::TARGET_DEFAULTS;
     let declared = read_defaults(&kernels_root(), baked.hw);
     assert_eq!(baked.hw, declared.hw);
+    assert_eq!(baked.port.conf_summary, declared.port.conf_summary);
     assert_eq!(baked.port.marlin_w4a16, declared.port.marlin_w4a16);
     assert_eq!(baked.port.gguf_native_iq4, declared.port.gguf_native_iq4);
     assert_eq!(baked.port.weights_exl3, declared.port.weights_exl3);
@@ -143,6 +145,7 @@ fn the_baked_port_rows_match_their_own_hardware_tree() {
 fn ada_port_rows_hold_their_write_time_values() {
     let d = declared("ada");
     assert_eq!(d.hw, "ada");
+    assert_eq!(declared("ada").port.conf_summary, false);
     assert_eq!(declared("ada").port.marlin_w4a16, false);
     assert_eq!(declared("ada").port.gguf_native_iq4, false);
     assert_eq!(declared("ada").port.weights_exl3, false);
@@ -167,6 +170,7 @@ fn ada_port_rows_hold_their_write_time_values() {
 fn non_ada_targets_keep_every_port_row_at_its_baseline() {
     for hw in ["gb10", "hopper", "b200", "b300"] {
         assert_eq!(declared(hw).hw, hw);
+        assert!(!declared(hw).port.conf_summary, "{hw}");
         assert!(!declared(hw).port.marlin_w4a16, "{hw}");
         assert!(!declared(hw).port.gguf_native_iq4, "{hw}");
         assert!(!declared(hw).port.weights_exl3, "{hw}");

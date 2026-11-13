@@ -162,6 +162,18 @@ w8a8_prefill_max_m_narrowing = 4294967295
 # is false, or its baseline, on this target: the sprint's receipts are Ada
 # ones, and no row changes here in this sprint. Rows are inserted immediately
 # before the marker line below.
+# Collect the per-request logprob confidence summary (mean top-1 probability,
+# minimum top-1 margin, fraction of tokens with top-1 below 0.5, over the first
+# AVAROK_CONF_SUMMARY_K generated tokens, default 32) for every chat request
+# and feed the atlas_conf_* series on /metrics. It never changes sampling or
+# the token stream; it makes the scheduler extract top-2 logprobs for the first
+# K tokens of each request, which uses the host-logits path for those tokens
+# instead of the GPU argmax, so it stays off until the receipt shows no tok/s
+# change. A request that sets atlas_confidence gets the summary in
+# usage.atlas_confidence whatever this row says, and the field appears only
+# when asked for. The receipt that may flip it: bench5 with the row on versus
+# off within spread, and an equal greedy token SHA.
+conf_summary = false
 # When a 4-bit BF16 load route is on (dense_affine4_from_bf16,
 # gdn_affine4_from_bf16, attn_affine4_from_bf16), every projection the Marlin
 # kernels serve (N a multiple of 64, K of 128, more than one group) is

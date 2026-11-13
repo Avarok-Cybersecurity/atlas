@@ -26,6 +26,11 @@
 /// is the `port` field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PortDefaults {
+    /// Collect the per-request logprob confidence summary (mean top-1
+    /// probability, minimum top-1 margin, fraction of tokens with top-1 below
+    /// 0.5, over the first AVAROK_CONF_SUMMARY_K generated tokens, default 32)
+    /// for every chat request and feed the atlas_conf_* series on /metrics.
+    pub conf_summary: bool,
     /// When a 4-bit BF16 load route is on (dense_affine4_from_bf16,
     /// gdn_affine4_from_bf16, attn_affine4_from_bf16), every projection the
     /// Marlin kernels serve (N a multiple of 64, K of 128, more than one group)
@@ -165,6 +170,7 @@ pub struct PortDefaults {
 /// by the row templates (one baseline per row, written into both files in the
 /// same apply pass).
 pub const PORT_BASELINE: PortDefaults = PortDefaults {
+    conf_summary: false,
     marlin_w4a16: false,
     gguf_native_iq4: false,
     weights_exl3: false,

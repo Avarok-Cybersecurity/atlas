@@ -22,6 +22,7 @@
 /// field, with `String` where the runtime type has `&'static str`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PortFields {
+    pub conf_summary: bool,
     pub marlin_w4a16: bool,
     pub gguf_native_iq4: bool,
     pub weights_exl3: bool,
@@ -50,6 +51,7 @@ pub struct PortFields {
 impl Default for PortFields {
     fn default() -> Self {
         Self {
+            conf_summary: false,
             marlin_w4a16: false,
             gguf_native_iq4: false,
             weights_exl3: false,
@@ -77,6 +79,10 @@ impl Default for PortFields {
 #[allow(unused_variables, clippy::match_single_binding)]
 pub fn parse(out: &mut PortFields, key: &str, value: &toml::Value) -> bool {
     match key {
+        "conf_summary" => {
+            out.conf_summary = boolean(key, value);
+            true
+        }
         "marlin_w4a16" => {
             out.marlin_w4a16 = boolean(key, value);
             true
@@ -156,6 +162,7 @@ pub fn parse(out: &mut PortFields, key: &str, value: &toml::Value) -> bool {
 pub fn literal(d: &PortFields) -> String {
     format!(
         "crate::target_defaults_port::PortDefaults {{\n\
+         \x20   conf_summary: {conf_summary},\n\
          \x20   marlin_w4a16: {marlin_w4a16},\n\
          \x20   gguf_native_iq4: {gguf_native_iq4},\n\
          \x20   weights_exl3: {weights_exl3},\n\
@@ -174,6 +181,7 @@ pub fn literal(d: &PortFields) -> String {
          \x20   prefix_cow_tail: {prefix_cow_tail},\n\
          // @port:literal-fmt\n\
          \x20   }}",
+        conf_summary = d.conf_summary,
         marlin_w4a16 = d.marlin_w4a16,
         gguf_native_iq4 = d.gguf_native_iq4,
         weights_exl3 = d.weights_exl3,
