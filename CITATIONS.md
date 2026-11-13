@@ -270,6 +270,12 @@ copied.
   `crates/spark-runtime/src/cuda_backend/gpu_impl_batch_copy.rs`.
 - See `GPU-BACKEND-EXT-ATTRIBUTION.md`.
 
+- **ReplaySSM record and fold** (Cinference, satellitedown/cinference commit 383e5db, derived from Neroued/ninfer,
+  Apache-2.0), `docs/maintainer/replayssm-gdn.md` sections 3 to 7: verify keeps the GDN state out of DRAM, records
+  the per-row update terms, and folds the accepted prefix once after the verdict. Idea only, no code copied: Atlas's
+  own K=4 pair (`kernels/gb10/common/gated_delta_rule_wy4_woa.cu`) and the Ada K-generic pair
+  (`kernels/ada/common/gated_delta_rule_wyn_woa.cu`, row `gdn_woa_mtp`) reproduce Atlas's wy2/wy3/wyN expressions.
+
 ### Affine 4-bit route: TensorFold and the MLX format (L17a, L17b, L17c)
 
 - TensorFold (https://github.com/ashhart/TensorFold, commit 3885dce), Copyright
