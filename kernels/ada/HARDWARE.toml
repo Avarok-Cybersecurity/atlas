@@ -1001,5 +1001,14 @@ overrides = [
   #                       try_target_kernel; a build without it keeps every
   #                       page on the GPU.
   "kv_page_fetch_ada.cu",
+  # lfm3_shortconv_ada.cu  ADDITION (port lane L38). LFM3's gated short
+  #                        convolution: decode (one token for up to 16
+  #                        sequences, BF16 [dim, 6] windows), token-major
+  #                        prefill with packed sequences and a 6-token halo,
+  #                        and the in-place final-window update. Translated
+  #                        from HF transformers / vLLM (Apache-2.0). Resolved
+  #                        only by an LFM3 model (`port/lfm3_conv/launch.rs`);
+  #                        no other model looks it up, no row gates it.
+  "lfm3_shortconv_ada.cu",
   # @port:overrides
 ]
