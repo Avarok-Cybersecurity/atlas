@@ -35,6 +35,8 @@ pub mod marlin;
 /// The GGUF Q6_K output head served through `W4Linear` where `kquant_moe` is
 /// absent (`--lm-head-packed`). Lane L24.
 pub mod packed_head;
+/// Quest page-sparse decode attention (lane L30, row `attn_page_sparse`, approximate, off).
+pub mod sparse_quest;
 /// Lane L12: device-side speculative acceptance (row `mtp_device_accept`).
 pub mod spec_accept;
 /// Per-model state the port lanes add (`ModelPortState`), one field per lane.

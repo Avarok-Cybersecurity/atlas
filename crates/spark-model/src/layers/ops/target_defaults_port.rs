@@ -87,6 +87,8 @@ pub struct PortLevers {
     pub radix_lru_index: Resolved<bool>,
     /// A prefix-cache hit may end inside a KV block: the chunked prefill copies that block into a private block instead of sharing the donor's writable tail.
     pub prefix_cow_tail: Resolved<bool>,
+    /// Quest page-sparse decode attention (APPROXIMATE): attend only to the sink pages, the best-scoring pages and the recent tokens.
+    pub attn_page_sparse: Resolved<bool>,
     // @port:fields
 }
 
@@ -209,6 +211,10 @@ pub fn resolve(
             d.prefix_cow_tail,
             var(super::port_rows::prefix_cow_tail::ENV).as_deref(),
         ),
+        attn_page_sparse: super::port_rows::attn_page_sparse::resolve(
+            d.attn_page_sparse,
+            var(super::port_rows::attn_page_sparse::ENV).as_deref(),
+        ),
         // @port:resolve
     }
 }
@@ -275,6 +281,7 @@ pub fn format_port(l: &PortLevers) -> String {
     push(&mut s, "kv_tier_disk", &l.kv_tier_disk);
     push(&mut s, "radix_lru_index", &l.radix_lru_index);
     push(&mut s, "prefix_cow_tail", &l.prefix_cow_tail);
+    push(&mut s, "attn_page_sparse", &l.attn_page_sparse);
     // @port:boot
     if s.len() == header {
         s.push_str(" none");

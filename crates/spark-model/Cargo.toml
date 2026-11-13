@@ -470,4 +470,8 @@ required-features = ["cuda", "gpu-examples"]
 name = "kv_host_tier_roundtrip"
 required-features = ["cuda", "gpu-examples"]
 
+[[example]]
+name = "page_sparse_microtest"
+required-features = ["cuda", "gpu-examples"]
+
 # @port:examples

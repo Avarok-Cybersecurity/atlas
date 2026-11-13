@@ -12,6 +12,7 @@
 
 pub mod affine4_prefill_int8;
 pub mod attn_affine4_from_bf16;
+pub mod attn_page_sparse;
 pub mod conf_summary;
 pub mod copy_draft;
 pub mod dense_affine4_from_bf16;

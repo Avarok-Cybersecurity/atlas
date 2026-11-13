@@ -750,6 +750,26 @@ pub fn build_model(
         0
     };
     let kv_budget = kv_budget.saturating_sub(mtp_pool_reserve);
+    // Sparse-attention seam (port L29): the registered selector's device
+    // reservation comes out of the KV-block budget, and a reservation larger
+    // than the whole budget is a startup error; a per-page sidecar is charged
+    // in proportion to the pool (`reserved_bytes_per_kv_block`). No selector:
+    // unchanged.
+    let kv_budget = crate::layers::qwen3_attention::sparse_seam::charge_kv_budget_for_pool(
+        &kv_config, kv_budget,
+    )?;
+    // Quest page-sparse decode (port L30, `attn_page_sparse`): the page
+    // summaries come out of the KV-block budget. Row off: unchanged.
+    let kv_budget = crate::port::sparse_quest::budget::charge_summaries(
+        &kv_config,
+        kv_budget,
+        crate::port::sparse_quest::budget::PoolBound {
+            max_seq_len,
+            max_batch_size,
+            prefix_cache_active: prefix_cache.is_active(),
+            high_speed_swap: hss_cache_blocks_per_seq.is_some(),
+        },
+    )?;
     if mtp_pool_reserve > 0 {
         tracing::info!(
             "KV budget: reserving {:.1} GB for the MTP propose pool (post-sizing alloc in MtpHead::new)",
