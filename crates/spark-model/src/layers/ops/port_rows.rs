@@ -26,6 +26,8 @@ pub mod kv_restore_async;
 pub mod kv_tier_disk;
 pub mod marlin_w4a16;
 pub mod mtp_dcut_cost_model;
+pub mod mtp_propose_graph;
+pub mod mtp_vocab_rank;
 pub mod prefix_cow_tail;
 pub mod radix_lru_index;
 pub mod ssm_store_lru;

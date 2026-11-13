@@ -30,6 +30,8 @@ pub(super) fn setup_lm_heads(
     Option<Fp8DenseWeight>,
     Option<crate::weight_map::QuantizedWeight>,
 )> {
+    // A ranked draft head's row map belongs to the build that made it.
+    crate::layers::mtp_head::vocab_rank::reset_registry();
     // ── Step 3: Quantize LM head to NVFP4 for fast decode ──
     let absmax_k = gpu.kernel("quantize_nvfp4", "nvfp4_global_absmax")?;
     let quantize_k = gpu.kernel("quantize_nvfp4", "quantize_bf16_to_nvfp4")?;
@@ -164,6 +166,21 @@ pub(super) fn setup_lm_heads(
                 .memory_fit_consumer
                 .value,
         );
+        // `mtp_vocab_rank = "freq"` (L11): the most frequent tokens' rows
+        // instead of the first ids; `None` keeps the id-ranked head below.
+        let ranked = crate::layers::mtp_head::vocab_rank::build_ranked_draft_head(
+            lm_head,
+            ranked_draft_rows(config.vocab_size, mtp_vocab),
+            config.vocab_size,
+            config.hidden_size,
+            gpu,
+            absmax_k,
+            quantize_k,
+            stream,
+        )?;
+        if let Some(q) = ranked {
+            return Ok((lm_head_nvfp4, lm_head_fp8, Some(q)));
+        }
         let q = quantize_to_nvfp4_rows(
             lm_head,
             rows,
@@ -198,6 +215,14 @@ pub(super) fn draft_vocab_rows(vocab: usize, mtp_vocab: u32, consumer_fit: bool)
     } else {
         vocab
     }
+}
+
+/// Rows of a frequency-ranked draft head: exactly the rows `MtpHead` reads
+/// (`min(--mtp-vocab, vocab)`, the full vocabulary at 0) on every target. A
+/// ranked head is an explicit opt-in, so it never needs the full-height copy
+/// [`draft_vocab_rows`] keeps on targets without `memory_fit_consumer`.
+pub(super) fn ranked_draft_rows(vocab: usize, mtp_vocab: u32) -> usize {
+    draft_vocab_rows(vocab, mtp_vocab, true)
 }
 
 /// Native FP8 lm_head share for the DFlash drafter tail.
@@ -309,5 +334,13 @@ mod draft_rows_tests {
         // GB10, Hopper, B200, B300: `memory_fit_consumer = false`.
         assert_eq!(draft_vocab_rows(248_070, 100_000, false), 248_070);
         assert_eq!(draft_vocab_rows(248_070, 0, false), 248_070);
+    }
+
+    #[test]
+    fn a_ranked_head_holds_exactly_the_rows_the_proposer_reads() {
+        use super::ranked_draft_rows;
+        assert_eq!(ranked_draft_rows(248_070, 100_000), 100_000);
+        assert_eq!(ranked_draft_rows(248_070, 0), 248_070);
+        assert_eq!(ranked_draft_rows(32_000, 100_000), 32_000);
     }
 }

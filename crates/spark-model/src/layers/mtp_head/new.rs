@@ -348,6 +348,10 @@ impl MtpHead {
             None
         };
 
+        // MTP head v2 (port sprint L11): ranked-vocab map, propose chain, window.
+        let v2 = super::head_v2::HeadV2::new(gpu, lm_head_nvfp4.weight, effective_vocab)?;
+        super::vocab_recorder::init(config.vocab_size);
+
         Ok(Self {
             pre_fc_norm_embedding: weights.pre_fc_norm_embedding,
             pre_fc_norm_hidden: weights.pre_fc_norm_hidden,
@@ -454,6 +458,7 @@ impl MtpHead {
             propose_meta: gpu.alloc(super::batch_caps::PROPOSE_META_SEQS * propose_meta_stride)?,
             propose_meta_stride,
             prefill_scratch,
+            v2,
         })
     }
 }

@@ -34,6 +34,31 @@ impl DraftProposer for MtpHead {
         // Reset chain confidence for this propose (forward_one mins into it).
         self.last_conf_bits
             .store(1.0f32.to_bits(), std::sync::atomic::Ordering::Relaxed);
+        // L11: `last_token` is the newest committed token; account it.
+        let state_key = std::ptr::from_ref::<MtpProposerState>(mtp_state) as usize;
+        self.v2.observe_committed(last_token);
+        super::vocab_recorder::on_propose(state_key, position, last_token);
+        // L11 `mtp_propose_graph`: the device-resident chain, one readback.
+        if super::propose_chain::per_seq_eligible(
+            self.v2.chain.fits(1, num_drafts),
+            num_drafts,
+            grammar_bitmask.is_some(),
+            draft_embed_target.is_some(),
+            ctx.levers,
+        ) {
+            let drafts = self.propose_chain(
+                last_token,
+                target_hidden,
+                position,
+                num_drafts,
+                mtp_state,
+                ctx,
+                stream,
+            )?;
+            mtp_state.last_num_drafted = drafts.len();
+            super::vocab_recorder::on_drafts(state_key, position, &drafts);
+            return Ok(drafts);
+        }
         let mut drafts = Vec::with_capacity(num_drafts);
         let mut current_token = last_token;
         let mut current_hidden = target_hidden;
@@ -80,6 +105,10 @@ impl DraftProposer for MtpHead {
         }
 
         mtp_state.last_num_drafted = drafts.len();
+        // With a deferred embedding target the last draft is a placeholder.
+        if draft_embed_target.is_none() {
+            super::vocab_recorder::on_drafts(state_key, position, &drafts);
+        }
         Ok(drafts)
     }
 
@@ -106,7 +135,18 @@ impl DraftProposer for MtpHead {
                 None => return Ok(None),
             }
         }
-        self.propose_batch_impl(
+        // L11: account each sequence's newest committed token.
+        let keys: Vec<usize> = mtp_states
+            .iter()
+            .map(|s| std::ptr::from_ref::<MtpProposerState>(&**s) as usize)
+            .collect();
+        for (i, &t) in last_tokens.iter().enumerate() {
+            self.v2.observe_committed(t);
+            if let (Some(&k), Some(&p)) = (keys.get(i), positions.get(i)) {
+                super::vocab_recorder::on_propose(k, p, t);
+            }
+        }
+        let drafts = self.propose_batch_impl(
             last_tokens,
             target_hiddens,
             positions,
@@ -115,8 +155,11 @@ impl DraftProposer for MtpHead {
             ctx,
             stream,
             out_conf,
-        )
-        .map(Some)
+        )?;
+        for ((&k, &p), d) in keys.iter().zip(positions).zip(&drafts) {
+            super::vocab_recorder::on_drafts(k, p, d);
+        }
+        Ok(Some(drafts))
     }
 
     fn propose_batch_max(
@@ -158,6 +201,7 @@ impl DraftProposer for MtpHead {
         state: &mut dyn ProposerState,
     ) -> Option<(Vec<u32>, usize, Option<usize>)> {
         let st = state.as_any_mut().downcast_mut::<MtpProposerState>()?;
+        super::vocab_recorder::forget(std::ptr::from_ref::<MtpProposerState>(st) as usize);
         if st.block_table.is_empty() || st.seq_len == 0 {
             return None;
         }
@@ -282,6 +326,7 @@ impl DraftProposer for MtpHead {
             .as_any_mut()
             .downcast_mut::<MtpProposerState>()
             .ok_or_else(|| anyhow::anyhow!("Invalid MTP proposer state"))?;
+        super::vocab_recorder::forget(std::ptr::from_ref::<MtpProposerState>(mtp_state) as usize);
         if !mtp_state.block_table.is_empty() {
             self.kv_cache.lock().free_blocks(&mtp_state.block_table);
             mtp_state.block_table.clear();

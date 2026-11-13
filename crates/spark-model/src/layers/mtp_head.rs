@@ -291,6 +291,8 @@ pub struct MtpHead {
     argmax_batch_lp_k: KernelHandle,
     /// Drafter-prefill scratch; `None` unless AVAROK_MTP_DRAFTER_PREFILL=1.
     prefill_scratch: Option<MtpPrefillScratch>,
+    /// MTP head v2 (port sprint L11): ranked vocab map, propose chain, window.
+    v2: head_v2::HeadV2,
 }
 
 impl MtpHead {
@@ -387,10 +389,16 @@ mod batch_caps;
 mod draft_proposer;
 mod forward;
 mod forward_batch;
+mod head_v2;
 mod moe_forward;
 mod new;
 mod prefill;
+mod propose_chain;
+mod ranked_head;
 pub(crate) mod row_dispatch;
+pub mod vocab_rank;
+mod vocab_recorder;
+pub mod window;
 
 #[cfg(test)]
 mod tests {

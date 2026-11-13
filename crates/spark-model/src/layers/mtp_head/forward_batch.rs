@@ -143,7 +143,7 @@ impl MtpHead {
     /// | ffn expert_gate/up_out [n,inter] -> moe_output [n,h] | logits
     /// [n,vocab].
     #[allow(clippy::too_many_arguments)]
-    fn forward_batch_position(
+    pub(super) fn forward_batch_position(
         &self,
         tokens: &[u32],
         hiddens: &[DevicePtr],
@@ -169,9 +169,15 @@ impl MtpHead {
 
         // 1. Embed the n tokens (row i at embeds + i*h).
         let embeds = ctx.buffers.ssm_qkvz();
-        for (i, &t) in tokens.iter().enumerate() {
-            let src = self.embed_tokens.weight.offset(t as usize * h * bf16);
-            gpu.copy_d2d_async(src, embeds.offset(i * h * bf16), h * bf16, stream)?;
+        // L11 propose chain: past position 0 the n embeddings are gathered on the device.
+        if !self
+            .v2
+            .chain_embed(gpu, self.embed_tokens.weight, embeds, n, h as u32, stream)?
+        {
+            for (i, &t) in tokens.iter().enumerate() {
+                let src = self.embed_tokens.weight.offset(t as usize * h * bf16);
+                gpu.copy_d2d_async(src, embeds.offset(i * h * bf16), h * bf16, stream)?;
+            }
         }
 
         // 2. Pre-fc norms. Embeds are contiguous (one n-row call); target
@@ -352,11 +358,15 @@ impl MtpHead {
             // serve. `pack_mtp_attn_meta` raises "exceeds meta stride", which
             // `mtp_bootstrap_step.rs` matches to demote this to debug — keep
             // those two strings in sync.
+            // L11 KV window: the rows attention reads (the whole table when unbounded).
+            let (view_table, view_len) =
+                self.v2
+                    .window_view(&state.block_table, state.seq_len + 1, bs);
             let meta_buf = pack_mtp_attn_meta(
                 positions[i] as u32,
                 global_slot,
-                (state.seq_len + 1) as i32,
-                &state.block_table,
+                view_len as i32,
+                &view_table,
                 self.propose_meta_stride,
             )?;
             gpu.copy_h2d_async(&meta_buf, meta_base, stream)?;
@@ -404,7 +414,7 @@ impl MtpHead {
                 attn_out.offset(i * q_dim * bf16),
                 meta_base.offset(256),
                 meta_base.offset(16),
-                state.block_table.len() as u32,
+                view_table.len() as u32,
                 1,
                 nq,
                 nkv,
@@ -588,6 +598,20 @@ impl MtpHead {
             }
         }
 
+        // L11: head rows -> token ids (ranked head). Under the propose chain
+        // the ids (and log-probs) stay on the device for the round's readback.
+        if self.v2.after_argmax(gpu, scratch, n, stream)? {
+            if want_lp {
+                self.v2
+                    .collect_lp(gpu, scratch.offset(LP_SCRATCH_OFF), n, stream)?;
+            }
+            for (i, state) in states.iter_mut().enumerate() {
+                state.seq_len += 1;
+                state.last_pair_key = Some(positions[i].saturating_sub(1));
+            }
+            return Ok(());
+        }
+
         // 11. One sync D2H for the n ids (the per-seq path pays n of these).
         // With confidences wanted the ids and the FP32 log-probs are two
         // regions of the same scratch buffer — still ONE D2H, widened.
@@ -706,6 +730,19 @@ impl MtpHead {
         // batched path is gated to draft_conf_tau() == 0).
         self.last_conf_bits
             .store(1.0f32.to_bits(), std::sync::atomic::Ordering::Relaxed);
+        // L11 `mtp_propose_graph`: the same positions, one readback per round.
+        if self.chain_eligible_batch(ctx, n, num_drafts) {
+            return self.propose_batch_chain(
+                last_tokens,
+                target_hiddens,
+                positions,
+                num_drafts,
+                states,
+                ctx,
+                stream,
+                out_conf,
+            );
+        }
 
         let h = ctx.config.hidden_size;
         let mut cur_tokens = last_tokens.to_vec();
