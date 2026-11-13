@@ -39,6 +39,8 @@ pub struct PortLevers {
     pub mtp_dcut_cost_model: Resolved<bool>,
     /// Update a full batched decode or verify CUDA-graph cache's least-recently-used executable in place with `cuGraphExecUpdate` instead of destroying and re-instantiating it.
     pub graph_exec_update: Resolved<bool>,
+    /// GDN write-on-accept for the batched speculative verify: fold the accepted rows into the GDN state once after the verdict.
+    pub gdn_woa_mtp: Resolved<bool>,
     /// Serve every 4-bit BF16 load route's Marlin-servable projection by round-to-nearest int4 at group 128 on vLLM's Marlin W4A16 GEMM.
     pub marlin_w4a16: Resolved<bool>,
     /// A dense Qwen3.5-family GGUF keeps its IQ4_XS, Q4_K and Q6_K projections as the file's raw super-blocks in VRAM for the sm_89 keep-packed GEMVs and MMQ GEMMs.
@@ -96,6 +98,10 @@ pub fn resolve(
         graph_exec_update: super::port_rows::graph_exec_update::resolve(
             d.graph_exec_update,
             var(super::port_rows::graph_exec_update::ENV).as_deref(),
+        ),
+        gdn_woa_mtp: super::port_rows::gdn_woa_mtp::resolve(
+            d.gdn_woa_mtp,
+            var(super::port_rows::gdn_woa_mtp::ENV).as_deref(),
         ),
         marlin_w4a16: super::port_rows::marlin_w4a16::resolve(
             d.marlin_w4a16,
@@ -195,6 +201,7 @@ pub fn format_port(l: &PortLevers) -> String {
     push(&mut s, "conf_summary", &l.conf_summary);
     push(&mut s, "mtp_dcut_cost_model", &l.mtp_dcut_cost_model);
     push(&mut s, "graph_exec_update", &l.graph_exec_update);
+    push(&mut s, "gdn_woa_mtp", &l.gdn_woa_mtp);
     push(&mut s, "marlin_w4a16", &l.marlin_w4a16);
     push(&mut s, "gguf_native_iq4", &l.gguf_native_iq4);
     push(&mut s, "weights_exl3", &l.weights_exl3);

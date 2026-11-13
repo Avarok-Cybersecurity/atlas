@@ -26,6 +26,10 @@ impl ModelPortExt for TransformerModel {
         self.gpu.event_elapsed_ms(start, end)
     }
 
+    fn gdn_woa_release_folded(&self) {
+        self.gdn_woa_release_folded_dispatch()
+    }
+
     fn kv_tier_active(&self) -> bool {
         self.tier_active()
     }

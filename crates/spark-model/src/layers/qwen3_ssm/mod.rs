@@ -65,6 +65,9 @@ mod trait_prefill_proj;
 mod trait_prefill_recur;
 mod w4_proj;
 mod woa;
+#[cfg(test)]
+mod woa_mtp_tests;
+mod woa_wyn;
 
 pub use gdn_flags::{
     GdnFlags, MAX_F16_TWIN_DFLASH_GAMMA, MAX_F16_TWIN_K, default_dflash_gamma,

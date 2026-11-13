@@ -339,6 +339,7 @@ impl Qwen3SsmLayer {
             gdn_wy4_woa_k: woa.woa_k,
             gdn_wy4_fold_k: woa.fold_k,
             gdn_wy4_clear_k: woa.clear_k,
+            woa_wyn: woa.wyn,
             // Bound by the model on the first write-on-accept request.
             woa_flag: std::sync::atomic::AtomicU64::new(0),
             woa_stash: std::sync::atomic::AtomicU64::new(0),

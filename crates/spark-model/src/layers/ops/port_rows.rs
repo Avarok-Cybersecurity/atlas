@@ -17,6 +17,7 @@ pub mod dense_affine4_from_bf16;
 pub mod dense_nvfp4_from_bf16;
 pub mod embed_host_offload;
 pub mod gdn_affine4_from_bf16;
+pub mod gdn_woa_mtp;
 pub mod gguf_native_iq4;
 pub mod graph_exec_update;
 pub mod kv_batched_swap;

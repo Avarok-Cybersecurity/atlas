@@ -33,6 +33,13 @@ pub trait ModelPortExt {
         anyhow::bail!("timing events are not supported by this model")
     }
 
+    /// Drop every slot still recorded as folded by the last GDN
+    /// write-on-accept fold (L10). The MTP batched verify calls this after
+    /// its verdicts: a sequence that finished while emitting returned before
+    /// the commit that consumes its entry, and slot indices are reused.
+    /// Default: nothing to release.
+    fn gdn_woa_release_folded(&self) {}
+
     /// Host KV tier (lane L26b): whether the tier serves this model (the `kv_host_tier` row
     /// on, a `--kv-host-tier-gb` budget, the prefix cache on). Default: no.
     fn kv_tier_active(&self) -> bool {

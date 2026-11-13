@@ -285,14 +285,17 @@ impl Qwen3SsmLayer {
         let gate_ptr = gates_buf;
         let beta_ptr = gates_buf.offset(nv * fp32);
         let hi = |t: usize| wy_tables.offset(t * VERIFY_WY_TABLE_STRIDE_BYTES);
-        // Write-on-accept (2026-09-03): the K=4 twin writes no state; the
-        // model folds the accepted rows after the verdict (`gdn_fold_accepted`).
-        // Engaged ONLY on the caller's request (`ctx.gdn_write_on_accept`,
-        // the DFlash batched step); the decision is `woa::woa_decision`.
+        // Write-on-accept (2026-09-03): the twin writes no state; the model
+        // folds the accepted rows after the verdict (`gdn_fold_accepted`).
+        // Engaged ONLY on the caller's request (`ctx.gdn_write_on_accept`:
+        // the DFlash batched step, and the MTP batched step with the
+        // `gdn_woa_mtp` row on); the decision is `woa::woa_decision`: the K=4
+        // pair at 4, the Ada K-generic twin at 2, 3 and 5..16 with the row on.
         let woa_now = self.woa_now(ctx.gdn_write_on_accept, kk, n);
         if woa_now {
             self.woa_launch(
                 ctx.gpu,
+                kk,
                 wy_tables,
                 q_ptr,
                 k_ptr,
