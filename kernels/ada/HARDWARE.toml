@@ -309,5 +309,19 @@ overrides = [
   #                              int8 quantizer of the dense FFN's down input
   "affine_prefill_ada.cu",
   "affine_swiglu_sums_ada.cu",
+  # Affine widths 2/3/5/6/8 (port lane L17c; TensorFold affine8.cu, Apache-2.0,
+  # see TENSORFOLD-ATTRIBUTION.md). ADDITIONS, no gb10 counterpart. Looked up
+  # only through try_target_kernel when an affine route row is on AND the route
+  # asked for a width other than 4 (--w4-bits); see
+  # crates/spark-model/src/port/affine/widths.rs.
+  #   affine_n_ada.cu      decode/verify GEMV per width, M = 1..16, group 64,
+  #                        unsplit and split-K ticket forms; BF16 -> MLX
+  #                        quantizer (clip search as the 4-bit one), the narrow
+  #                        and 8-bit tile packers, scale transpose, group sums,
+  #                        BF16 dequant
+  #   affine_codes_ada.cuh include-only code extraction (bit-sliced pairs, byte
+  #                        pairs) and the cp.async/ldmatrix/MMA primitives
+  "affine_codes_ada.cuh",
+  "affine_n_ada.cu",
   # @port:overrides
 ]
