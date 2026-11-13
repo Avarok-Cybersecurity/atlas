@@ -109,6 +109,38 @@ hidden_size = 2560
 [kernel]
 moe_gate_shmem_bytes = 4096
 
+# DFlash block-diffusion speculative decoding pairing (Z Lab, arXiv 2602.06036),
+# used only when the operator passes `--dflash` (opt-in; the serve default is
+# unchanged). The drafter `z-lab/Qwen3.5-4B-DFlash` is Apache-2.0 and about
+# 1.27 GB of BF16 weights (not bundled; fetched by the model resolver or given
+# with `--draft-model <dir>`). It is a joint Z Lab and Modal retrain for
+# Qwen/Qwen3.5-4B: 6 Qwen3 layers (5 sliding at 4096, the last full), hidden
+# 2560, GQA 32:8, head_dim 128, ffn 9216, block size 16, tied embeddings (it
+# shares the target's embedding and LM head).
+#
+# Values verified 2026-11-12 against the drafter's config.json
+# (`dflash_loader::parse_dflash_config` reads them from there at runtime; this
+# block is the fallback and is pinned to the config by a loader unit test):
+#   * hidden 2560 and 32 target layers match this target;
+#   * eight target taps (not five as on the Qwen3.6 drafters), so `fc` is
+#     [2560, 8 * 2560];
+#   * mask_token_id is 248077 (the Qwen3.6 drafters use 248070);
+#   * block_size 16 serves at gamma 15 (verify width K = 16) via
+#     `default_dflash_gamma`; `gamma` below records the trained block size.
+#
+# The drafter was trained on Qwen3.5-4B hidden states. The sibling checkpoint
+# Hcompany/Holo-3.1-4B resolves to this same target directory by (model_type,
+# hidden_size); its hidden states may sit away from the drafter's training
+# distribution and lower acceptance (the qwen3.8-27b note on the 27B drafter
+# explains the failure mode). Output stays exact either way, since the target
+# verifies every draft; only speed is at stake. Measure on the model you serve.
+[dflash]
+draft_model = "z-lab/Qwen3.5-4B-DFlash"
+gamma = 16
+window_size = 4096
+mask_token_id = 248077
+target_layer_ids = [1, 5, 9, 13, 17, 21, 25, 29]
+
 # ── Kernel lookups this model may legitimately fail to resolve ──
 # Harvested 2026-08-03 from `spark serve --check-kernels`. This target
 # runs BF16 weights; every entry below is a quantized-family or
