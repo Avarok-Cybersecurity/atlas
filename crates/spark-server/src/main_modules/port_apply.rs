@@ -59,6 +59,12 @@ pub(crate) fn apply(args: &PortArgs) -> anyhow::Result<()> {
         spark_model::layers::ops::port_rows::prefix_cow_tail::row(),
     );
     spark_model::layers::qwen3_attention::sparse_seam::identity::register_from_env()?;
+    spark_model::port::sparse_quest::apply(&spark_model::port::sparse_quest::QuestFlags {
+        topk_pages: args.attn_sparse_topk_pages,
+        min_ctx: args.attn_sparse_min_ctx,
+        sink_pages: args.attn_sparse_sink_pages,
+        recent_tokens: args.attn_sparse_recent_tokens,
+    })?;
     // @port:apply
     Ok(())
 }
@@ -93,6 +99,12 @@ pub(crate) fn validate(args: &PortArgs) -> anyhow::Result<()> {
         args.kv_tier_disk_gb,
         spark_runtime::hermetic_enabled(),
     )?;
+    spark_model::port::sparse_quest::validate(&spark_model::port::sparse_quest::QuestFlags {
+        topk_pages: args.attn_sparse_topk_pages,
+        min_ctx: args.attn_sparse_min_ctx,
+        sink_pages: args.attn_sparse_sink_pages,
+        recent_tokens: args.attn_sparse_recent_tokens,
+    })?;
     // @port:validate
     Ok(())
 }

@@ -104,5 +104,23 @@ pub struct PortArgs {
     /// removed first). Ignored while the `kv_tier_disk` row is off.
     #[arg(long = "kv-tier-disk-gb", value_name = "GIB")]
     pub kv_tier_disk_gb: Option<u64>,
+    /// Quest page-sparse decode (lane L30, row `attn_page_sparse`, approximate,
+    /// off by default): pages of 64 tokens kept by score per sequence, layer
+    /// and step, 0 to 4096 (default 32). Only with `AVAROK_ATTN_PAGE_SPARSE=1`.
+    #[arg(long = "attn-sparse-topk-pages", value_name = "PAGES")]
+    pub attn_sparse_topk_pages: Option<u32>,
+    /// Quest page-sparse decode: the selector attends densely (an identity
+    /// view, bit-identical) at or below this many tokens of context (default
+    /// 32768).
+    #[arg(long = "attn-sparse-min-ctx", value_name = "TOKENS")]
+    pub attn_sparse_min_ctx: Option<u32>,
+    /// Quest page-sparse decode: leading 64-token pages always kept (attention
+    /// sinks), 0 to 1024 (default 1).
+    #[arg(long = "attn-sparse-sink-pages", value_name = "PAGES")]
+    pub attn_sparse_sink_pages: Option<u32>,
+    /// Quest page-sparse decode: trailing tokens always kept (the recent
+    /// window, from a page boundary), 1 to 1048576 (default 2048).
+    #[arg(long = "attn-sparse-recent-tokens", value_name = "TOKENS")]
+    pub attn_sparse_recent_tokens: Option<u32>,
     // @port:fields
 }
