@@ -34,6 +34,13 @@ pub(crate) fn apply(args: &PortArgs) -> anyhow::Result<()> {
         spark_runtime::weights::keep_packed_iq4::set_keep_head(true);
     }
     spark_runtime::pinned_pool::set_default_chunk_mb(args.pinned_pool_chunk_mb);
+    spark_model::model::kv_tier_glue::flags::apply_flags(
+        args.kv_host_tier_gb,
+        args.kv_tier_min_tokens,
+        args.kv_tier_writeback_mb_per_step,
+        args.kv_tier_policy.as_deref(),
+        args.kv_tier_store.as_deref(),
+    )?;
     spark_runtime::radix_tree::set_lru_index_enabled(
         spark_model::layers::ops::port_rows::radix_lru_index::row(),
     );
@@ -55,6 +62,13 @@ pub(crate) fn validate(args: &PortArgs) -> anyhow::Result<()> {
         clip_search: args.w4_clip_search,
     })?;
     spark_runtime::pinned_pool::validate_chunk_mb(args.pinned_pool_chunk_mb)?;
+    spark_model::model::kv_tier_glue::flags::validate_flags(
+        args.kv_host_tier_gb,
+        args.kv_tier_min_tokens,
+        args.kv_tier_writeback_mb_per_step,
+        args.kv_tier_policy.as_deref(),
+        args.kv_tier_store.as_deref(),
+    )?;
     // @port:validate
     Ok(())
 }

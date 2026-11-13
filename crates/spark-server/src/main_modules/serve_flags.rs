@@ -163,6 +163,7 @@ pub(crate) fn publish_kernel_flags(args: &cli::ServeArgs) -> anyhow::Result<()> 
     // model is built (`port_apply.rs`); an invalid value is a startup error.
     super::port_apply::validate(&args.port_sprint)?;
     super::port_apply::apply(&args.port_sprint)?;
+    spark_model::model::kv_tier_glue::flags::check_prefix_cache(args.prefix_caching_enabled())?;
     tracing::info!(
         "{}",
         spark_model::layers::ops::target_defaults::summary_line()

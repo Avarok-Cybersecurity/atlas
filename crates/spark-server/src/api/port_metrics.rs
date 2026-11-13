@@ -26,6 +26,7 @@ pub fn render(out: &mut String) {
     spark_model::port::embed_host::render_prometheus(out);
     spark_runtime::kv_cache::block_io::swap::render_prometheus(out);
     spark_runtime::pinned_pool::render_prometheus(out);
+    spark_runtime::kv_host_tier::render_prometheus(out);
     spark_runtime::radix_tree::render_prometheus(out);
     spark_model::layers::qwen3_attention::sparse_seam::render_prometheus(out);
     // @port:render

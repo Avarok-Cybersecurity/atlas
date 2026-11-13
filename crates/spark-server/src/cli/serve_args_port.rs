@@ -48,5 +48,23 @@ pub struct PortArgs {
     /// staging (two halves) never exceeds one chunk.
     #[arg(long = "pinned-pool-chunk-mb", value_name = "MIB")]
     pub pinned_pool_chunk_mb: Option<u32>,
+    /// Host-RAM KV tier budget in GiB (lane L26b; 0 or absent = off). The tier serves only
+    /// with the `kv_host_tier` row on (`AVAROK_KV_HOST_TIER`) and the prefix cache on; the
+    /// budget must leave 8 GiB of host RAM.
+    #[arg(long = "kv-host-tier-gb", value_name = "GIB")]
+    pub kv_host_tier_gb: Option<u32>,
+    /// Host KV tier: the shortest restore, in tokens (default 256).
+    #[arg(long = "kv-tier-min-tokens", value_name = "N")]
+    pub kv_tier_min_tokens: Option<u32>,
+    /// Host KV tier: D2H write-back bytes one scheduler step may start, in MiB (default 32).
+    #[arg(long = "kv-tier-writeback-mb-per-step", value_name = "MIB")]
+    pub kv_tier_writeback_mb_per_step: Option<u32>,
+    /// Host KV tier eviction policy: `lru` (default), `arc` or `heat`.
+    #[arg(long = "kv-tier-policy", value_name = "POLICY")]
+    pub kv_tier_policy: Option<String>,
+    /// Host KV tier store mode: `eager` (default: copy newly cached blocks at once) or `lazy`
+    /// (copy them only when they approach GPU eviction).
+    #[arg(long = "kv-tier-store", value_name = "MODE")]
+    pub kv_tier_store: Option<String>,
     // @port:fields
 }
