@@ -473,4 +473,26 @@ vLLM (copy-on-write partial-tail prefix hits)
   Changes: the partial-hit and copy-before-forward scheme translated to Rust
   over Atlas's radix tree and paged KV cache; one D2D per attention layer and
   side on the prefill stream. See VLLM-COW-ATTRIBUTION.md.
+
+Quest page-sparse decode attention (algorithm) and arczhi/llama-tierkv
+  Algorithm: Quest, "Query-Aware Sparsity for Efficient Long-Context LLM
+  Inference" (J. Tang, Y. Zhao, K. Zhu, G. Xiao, B. Kasikci, S. Han, ICML
+  2024, arXiv:2406.10774): page min/max key summaries and the upper bound
+  sum_c max(q_c * kmin_c, q_c * kmax_c) used to select pages.
+  Prototype: https://github.com/arczhi/llama-tierkv,
+  scripts-5060ti/proto/proto_page_sparse.cu. The repository's license is the
+  ggml MIT License, Copyright (c) 2023-2026 The ggml authors
+  (LICENSES/llama.cpp-MIT.txt); that file has no header of its own.
+  Atlas files: kernels/ada/common/attn_page_sparse_ada.cu,
+         crates/spark-runtime/src/kv_cache/page_summary.rs,
+         crates/spark-model/src/port/sparse_quest/ (mod.rs, config.rs,
+         budget.rs, arena.rs, launch.rs, selector.rs, metrics.rs,
+         reference.rs and its tests),
+         crates/spark-model/examples/page_sparse_microtest.rs
+  Changes: no prototype source was read or copied; the bound is implemented
+  from its published formula for Atlas's paged KV cache: summaries keyed by
+  the page's leading physical block (CUDA-graph safe), GQA grouping, a warp
+  per page, an exact radix top-k in one CTA, and a compacted block table
+  read by Atlas's unchanged paged decode kernel instead of host staging. See
+  QUEST-PAGE-SPARSE-ATTRIBUTION.md.
 # @port:notice

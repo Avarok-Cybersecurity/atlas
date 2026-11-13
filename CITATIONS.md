@@ -446,4 +446,14 @@ copied.
   Cache", USENIX FAST 2003 (the ARC policy and the naive reference in the tests).
 - Atlas files: `crates/spark-runtime/src/kv_host_tier/`. See
   `KV-HOST-TIER-ATTRIBUTION.md`.
+
+- **Quest** (J. Tang, Y. Zhao, K. Zhu, G. Xiao, B. Kasikci, S. Han, "Quest: Query-Aware Sparsity for Efficient
+  Long-Context LLM Inference", ICML 2024, arXiv:2406.10774): per-page key min/max summaries and the query-aware upper
+  bound `sum_c max(q_c * kmin_c, q_c * kmax_c)` that ranks pages for decode attention. Independent implementation in
+  `kernels/ada/common/attn_page_sparse_ada.cu` and `crates/spark-model/src/port/sparse_quest/` (row
+  `attn_page_sparse`, approximate, off).
+- **arczhi/llama-tierkv** (MIT, the ggml license, `LICENSES/llama.cpp-MIT.txt`),
+  `scripts-5060ti/proto/proto_page_sparse.cu`: the RTX 5060 Ti page-sparse prototype whose correct bound (not the
+  pager's `q * max(kmin, kmax)`) the port follows, as described in the port sprint's report 77 (section 5.2, BR-4);
+  no source read. Attribution: `QUEST-PAGE-SPARSE-ATTRIBUTION.md`.
 <!-- @port:citations -->
