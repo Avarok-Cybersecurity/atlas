@@ -101,6 +101,16 @@ pub struct PortLevers {
     pub lfm3_fp8_all: Resolved<bool>,
     /// Time every hot-swap by phase and keep the last 8 swap durations per model (observability only).
     pub model_swap_timing: Resolved<bool>,
+    /// Multi-sequence decode (2 to 8 streams) serves a native-FP8 dense FFN on the sm_89 batch-M GEMVs instead of the prefill ladder.
+    pub ffn_fp8_decode_gemv: Resolved<bool>,
+    /// The MTP throughput gate keeps its measurements per batch width and paces its re-probes per stream instead of per aggregate token.
+    pub mtp_width_policy: Resolved<bool>,
+    /// The MTP-verify GDN projections of a BF16-kept GDN layer on the batched BF16 GEMV, bit-identical to the decode GEMV, instead of per-row GEMVs or the scalar GEMM.
+    pub gdn_verify_gemv: Resolved<bool>,
+    /// A BF16 LM head's speculative-verify rows above 8 on the batched BF16 GEMV, bit-identical to the decode head, instead of the scalar GEMM.
+    pub lm_head_verify_gemv: Resolved<bool>,
+    /// A greedy decode step under a min_tokens floor stays on the device argmax; only a step whose argmax is an EOS id is redone on the host.
+    pub min_tokens_gpu_argmax: Resolved<bool>,
     // @port:fields
 }
 
@@ -251,6 +261,26 @@ pub fn resolve(
             d.model_swap_timing,
             var(super::port_rows::model_swap_timing::ENV).as_deref(),
         ),
+        ffn_fp8_decode_gemv: super::port_rows::ffn_fp8_decode_gemv::resolve(
+            d.ffn_fp8_decode_gemv,
+            var(super::port_rows::ffn_fp8_decode_gemv::ENV).as_deref(),
+        ),
+        mtp_width_policy: super::port_rows::mtp_width_policy::resolve(
+            d.mtp_width_policy,
+            var(super::port_rows::mtp_width_policy::ENV).as_deref(),
+        ),
+        gdn_verify_gemv: super::port_rows::gdn_verify_gemv::resolve(
+            d.gdn_verify_gemv,
+            var(super::port_rows::gdn_verify_gemv::ENV).as_deref(),
+        ),
+        lm_head_verify_gemv: super::port_rows::lm_head_verify_gemv::resolve(
+            d.lm_head_verify_gemv,
+            var(super::port_rows::lm_head_verify_gemv::ENV).as_deref(),
+        ),
+        min_tokens_gpu_argmax: super::port_rows::min_tokens_gpu_argmax::resolve(
+            d.min_tokens_gpu_argmax,
+            var(super::port_rows::min_tokens_gpu_argmax::ENV).as_deref(),
+        ),
         // @port:resolve
     }
 }
@@ -324,6 +354,11 @@ pub fn format_port(l: &PortLevers) -> String {
     push(&mut s, "kv_window_desk", &l.kv_window_desk);
     push(&mut s, "lfm3_fp8_all", &l.lfm3_fp8_all);
     push(&mut s, "model_swap_timing", &l.model_swap_timing);
+    push(&mut s, "ffn_fp8_decode_gemv", &l.ffn_fp8_decode_gemv);
+    push(&mut s, "mtp_width_policy", &l.mtp_width_policy);
+    push(&mut s, "gdn_verify_gemv", &l.gdn_verify_gemv);
+    push(&mut s, "lm_head_verify_gemv", &l.lm_head_verify_gemv);
+    push(&mut s, "min_tokens_gpu_argmax", &l.min_tokens_gpu_argmax);
     // @port:boot
     if s.len() == header {
         s.push_str(" none");
