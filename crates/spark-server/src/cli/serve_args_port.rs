@@ -66,5 +66,16 @@ pub struct PortArgs {
     /// (copy them only when they approach GPU eviction).
     #[arg(long = "kv-tier-store", value_name = "MODE")]
     pub kv_tier_store: Option<String>,
+    /// Disk KV tier (lane L27, row `kv_tier_disk`, `AVAROK_KV_TIER_DISK`):
+    /// directory where host-tier blocks evicted from host RAM are kept, one
+    /// record file each, and adopted again by the next start of the same
+    /// model. Needs `--kv-tier-disk-gb` and the host KV tier; refused under
+    /// `--hermetic`. One server per directory. Ignored while the row is off.
+    #[arg(long = "kv-tier-dir", value_name = "DIR")]
+    pub kv_tier_dir: Option<std::path::PathBuf>,
+    /// Disk KV tier: byte budget in GiB (least recently used records are
+    /// removed first). Ignored while the `kv_tier_disk` row is off.
+    #[arg(long = "kv-tier-disk-gb", value_name = "GIB")]
+    pub kv_tier_disk_gb: Option<u64>,
     // @port:fields
 }

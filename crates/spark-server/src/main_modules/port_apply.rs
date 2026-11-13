@@ -41,6 +41,15 @@ pub(crate) fn apply(args: &PortArgs) -> anyhow::Result<()> {
         args.kv_tier_policy.as_deref(),
         args.kv_tier_store.as_deref(),
     )?;
+    crate::scheduler::restore_queue::set_enabled(
+        spark_model::layers::ops::port_rows::kv_restore_async::row(),
+    );
+    spark_runtime::kv_host_tier::disk::configure(
+        spark_model::layers::ops::port_rows::kv_tier_disk::row(),
+        args.kv_tier_dir.as_deref(),
+        args.kv_tier_disk_gb,
+        spark_runtime::hermetic_enabled(),
+    )?;
     spark_runtime::radix_tree::set_lru_index_enabled(
         spark_model::layers::ops::port_rows::radix_lru_index::row(),
     );
@@ -68,6 +77,12 @@ pub(crate) fn validate(args: &PortArgs) -> anyhow::Result<()> {
         args.kv_tier_writeback_mb_per_step,
         args.kv_tier_policy.as_deref(),
         args.kv_tier_store.as_deref(),
+    )?;
+    spark_runtime::kv_host_tier::disk::validate(
+        spark_model::layers::ops::port_rows::kv_tier_disk::row(),
+        args.kv_tier_dir.as_deref(),
+        args.kv_tier_disk_gb,
+        spark_runtime::hermetic_enabled(),
     )?;
     // @port:validate
     Ok(())

@@ -53,6 +53,10 @@ pub(crate) mod mtp_timing;
 mod phase_continue_prefills;
 mod phase_promote_prefills;
 mod phase_start_prefills;
+// Asynchronous host-tier KV restore (lane L27, row `kv_restore_async`): parked
+// requests, polled at the top of each tick; `try_park` is called from the
+// admission site in `phase_start_prefills.rs`.
+pub(crate) mod restore_queue;
 // The port sprint's (`port/consumer-opt`) per-sequence state (`ActiveSeq::port`).
 pub(crate) mod port_state;
 mod preempt;
@@ -428,6 +432,23 @@ pub fn run(
 
     let mut snapshot_steps: u64 = 0;
     loop {
+        // ── Async KV restore (lane L27, row `kv_restore_async`, off by default) ──
+        // Requests parked on a host-tier restore whose copy finished go back to the
+        // FRONT of the pending queue, so the drain below admits them normally. With
+        // nothing parked this returns at once. It returns true only on an otherwise
+        // idle tick with restores still parked: it then waited up to 2 ms, and the
+        // loop polls again instead of blocking on the request condvar (nothing would
+        // signal it when a copy completes).
+        if restore_queue::tick(
+            &*model,
+            &pending,
+            active.is_empty()
+                && prefilling.is_empty()
+                && swapped.is_empty()
+                && preempted.is_empty(),
+        ) {
+            continue;
+        }
         // ── Drain pending → start prefill (chunked or full) ──
         // The `t_loop_*` brackets attribute the out-of-step GAP the
         // AVAROK_MTP_TIMING summary reports (see mtp_timing::Phase::Gap): each
