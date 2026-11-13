@@ -513,4 +513,29 @@ RetrievalAttention / RetroInfer (retrieval attention host side)
   host logic; f64 accumulation and fixed reduction order; ties toward the
   lower index; fixed-capacity device buffers instead of growing tensors;
   Atlas paged-KV addressing. See RETROINFER-ATTRIBUTION.md.
+
+RetrievalAttention / RetroInfer (k-means index build and zone selection)
+  Source: https://github.com/microsoft/RetrievalAttention, commit 03f912c
+  Files: cache_hub/kmeans.py (segment_k_means, _triton_assign_kernel,
+         _triton_update_kernel, _triton_k_means_train, triton_index_add,
+         triton_reverse_index), cache_hub/retroinfer_cache.py (the index
+         build at prefill, the decode-time update, the centroid softmax,
+         the GQA group sum and the top-k zone split at lines 765-770)
+  Copyright (c) Microsoft Corporation. Licensed under the MIT License
+  (LICENSES/RetroInfer-MIT.txt).
+  Atlas files: kernels/ada/common/retro_kmeans_ada.cu,
+         kernels/ada/common/retro_select_ada.cu,
+         crates/spark-model/src/port/retro/build.rs,
+         crates/spark-model/src/port/retro/build/{geometry.rs, launch.rs,
+         reference.rs},
+         crates/spark-model/src/port/retro/select.rs,
+         crates/spark-model/src/port/retro/select/reference.rs
+  Changes: translated from Triton and PyTorch to CUDA for Ada (sm_89) and
+  Rust; keys and values read in place from Atlas's paged BF16/FP8 KV at
+  head_dim 256; BF16 mma.sync assignment; the float atomics replaced by a
+  stable CSR and ordered sums, so builds are deterministic; clusters as a
+  CSR of absolute positions at host offsets (updates append); FP32 scores
+  and an exact radix select and sort instead of torch.topk; fixed
+  capacities with device counts (CUDA-graph capturable). No CUTLASS code is
+  used. See RETROINFER-ATTRIBUTION.md.
 # @port:notice
