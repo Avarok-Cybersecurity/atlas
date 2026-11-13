@@ -46,6 +46,7 @@ pub mod limits;
 mod mtp_accept_debug;
 mod mtp_bootstrap_step;
 mod mtp_dcut;
+mod mtp_device_timing;
 mod mtp_gate;
 mod mtp_stats;
 mod mtp_step;
@@ -64,6 +65,9 @@ pub(crate) mod conf_summary;
 // Admission regression vectors and the no-drafts switch (L05).
 #[cfg(test)]
 mod admission_port_tests;
+// Scheduler-side port series (`/metrics`): steady-state gauges and the render
+// entry for the accepted-prefix histogram, device phase timer and D-Cut v2.
+pub mod port_gauges;
 mod preempt;
 #[cfg(test)]
 mod preempt_tests;
@@ -1068,6 +1072,7 @@ pub fn run(
         // on this same iteration. Placed here rather than in a decode step
         // because the MTP/speculative path does not run `process_decode_logits`.
         enforce_request_deadlines(&mut active);
+        port_gauges::observe_round(active.len(), prefilling.len(), active.len());
         retire_finished_sequences(&*model, &mut active, sched.limits.max_seq_len);
         sched.timing.record(mtp_timing::Phase::LoopRetire, t_loop);
 
@@ -1142,6 +1147,7 @@ pub fn run(
             block_size,
         );
         sched.timing.record(mtp_timing::Phase::LoopSwap, t_loop);
+        port_gauges::end_tick(active.len(), prefilling.len());
     }
 
     // Periodic session eviction: free SSM snapshots for expired sessions.

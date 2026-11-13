@@ -140,6 +140,7 @@ pub fn step_verify_k3(
     verify_ctx: &crate::scheduler::logit_processors::LogitsContext,
     dflash_verify_raw_argmax: bool,
 ) {
+    super::mtp_device_timing::step_start(model);
     if let Err(e) = model.sync_secondary() {
         tracing::error!("sync_secondary: {e:#}");
         super::lifecycle::fail_sequence(a, format!("sync_secondary: {e:#}"));

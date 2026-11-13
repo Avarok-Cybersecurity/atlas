@@ -320,3 +320,46 @@ fn ragged_chunks_also_respect_the_width_bound() {
         assert!(hi > lo, "empty range");
     }
 }
+
+// With the cost row off `plan` is D-Cut v1: the retained depths are the fixed
+// ratio selection, and each planned sequence leaves its verified depth for the
+// per-position accounting in `mtp_stats::account_step`.
+#[test]
+fn plan_is_v1_with_the_cost_row_off_and_stashes_the_verified_depth() {
+    if !dcut_enabled() || cost::enabled() {
+        return; // the environment changed the policy under test
+    }
+    let confs: Vec<Vec<f32>> = vec![
+        vec![-0.05, -0.1, -0.3],
+        vec![-3.0, -4.0, -5.0],
+        vec![-0.2, -0.2, -0.2],
+    ];
+    let mut active: Vec<ActiveSeq> = Vec::new();
+    let mut receivers = Vec::new();
+    for (i, c) in confs.iter().enumerate() {
+        let (mut a, rx) = crate::scheduler::test_support::active_seq(i, 3);
+        a.pending_drafts = vec![11, 12, 13];
+        a.pending_draft_conf = c.clone();
+        receivers.push(rx);
+        active.push(a);
+    }
+    let refs: Vec<&[f32]> = confs.iter().map(|v| v.as_slice()).collect();
+    let mut want = select(&refs, 3, VERIFY_ROW_BUDGET, dcut_ratio());
+    want.sort_unstable();
+    let mut batchable = vec![0usize, 1, 2];
+    let ks = plan(&mut active, &mut batchable, 3, 4);
+    let mut got: Vec<usize> = ks.iter().map(|k| k - 1).collect();
+    got.sort_unstable();
+    assert_eq!(got, want);
+    for &i in &batchable {
+        let a = &active[i];
+        assert!(a.port.dcut.planned);
+        assert_eq!(a.port.dcut.verified as usize, a.pending_drafts.len());
+        assert_eq!(a.pending_draft_conf.len(), a.pending_drafts.len());
+        assert!(
+            a.port.dcut.conf.is_empty(),
+            "row off keeps no confidence copy"
+        );
+    }
+    assert_eq!(receivers.len(), 3);
+}

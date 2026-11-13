@@ -256,10 +256,14 @@ pub(super) fn account_step(
     let st = timing.stages.take();
     let wall_us = u64::try_from(wall.as_micros()).unwrap_or(u64::MAX);
     let (mut tot_committed, mut prop, mut acc, mut com, mut passes) = (0usize, 0, 0, 0, 0);
+    // Port sprint: what the D-Cut plan left on each sequence (the depth it
+    // actually verified, and its confidences), read and cleared here.
+    let mut feed = super::mtp_dcut::cost::StepFeed::default();
     for (a, &(len0, proposed)) in active.iter_mut().zip(before.iter()) {
         let committed = a.seq.seq_len.saturating_sub(len0);
         tot_committed += committed;
         a.mtp_acct.record_verify_emitted(committed);
+        let plan = std::mem::take(&mut a.port.dcut);
         let s = &mut a.mtp_acct.spec;
         let acc0 = s.accepted;
         s.record_step(proposed, committed, st, wall_us);
@@ -267,10 +271,20 @@ pub(super) fn account_step(
             passes += 1;
             prop += proposed as u64;
             com += committed as u64;
-            acc += s.accepted - acc0;
+            let accepted = s.accepted - acc0;
+            acc += accepted;
+            // The accepted-prefix histogram and the per-position counters
+            // advance with `passes` above, so the buckets sum to
+            // `atlas_mtp_verify_passes_total`.
+            let verified = feed.verified(plan, proposed, accepted as usize);
+            hist::record_pass(verified, accepted as usize);
+        } else {
+            feed.bootstrap();
         }
     }
     export_step(prop, acc, com, passes, st);
+    super::port_gauges::note_spec_rows(feed.rows());
+    feed.finish(wall_us);
     (wall, tot_committed)
 }
 
@@ -306,6 +320,10 @@ pub(super) fn note_gate_estimates(
         a.mtp_acct.spec.note_gate_estimates(mtp_tps, serial_tps);
     }
 }
+
+// The accepted-prefix histogram and per-position acceptance (`/metrics`).
+#[path = "mtp_stats_hist.rs"]
+pub(super) mod hist;
 
 #[cfg(test)]
 #[path = "mtp_stats_tests.rs"]

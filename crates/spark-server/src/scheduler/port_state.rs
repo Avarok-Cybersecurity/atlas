@@ -16,5 +16,8 @@ pub struct SeqPortState {
     /// enters a speculative step. Set by `SeqPortState::for_request` at the
     /// sequence's creation sites; a round planner (L13) must honor it.
     pub no_drafts: bool,
+    /// D-Cut's stash for the step in flight (L06): written by `mtp_dcut::plan`,
+    /// taken by `mtp_stats::account_step`.
+    pub dcut: crate::scheduler::mtp_dcut::cost::SeqDcut,
     // @port:fields
 }

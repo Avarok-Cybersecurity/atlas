@@ -168,3 +168,29 @@ fn account_step_charges_each_sequence_and_returns_the_batch_total() {
     // The clock was drained.
     assert_eq!(t.stages.take(), StageTimes::default());
 }
+
+#[test]
+fn account_step_reads_and_clears_the_plan_stash_and_feeds_the_histogram() {
+    use crate::scheduler::mtp_dcut::cost::SeqDcut;
+    let (mut a, _ra) = crate::scheduler::test_support::active_seq(0, 3);
+    a.pending_drafts = vec![1, 2, 3];
+    // D-Cut verified only the first two of the three proposed drafts.
+    a.port.dcut = SeqDcut {
+        planned: true,
+        verified: 2,
+        conf: Vec::new(),
+    };
+    let before = hist::snapshot();
+    let mut active = vec![a];
+    let t = crate::scheduler::mtp_timing::RunTiming::new(false);
+    // Two tokens committed: one accepted draft plus the corrected token.
+    account_step(&mut active, &t, |act| act[0].seq.seq_len += 2);
+    assert!(!active[0].port.dcut.planned, "the stash is consumed");
+    assert_eq!(active[0].port.dcut.verified, 0);
+    // The counters are process-wide and other tests advance them, so only a
+    // lower bound is deterministic here.
+    let after = hist::snapshot();
+    assert!(after.prefix[1] > before.prefix[1]);
+    assert!(after.accepted_at[0] > before.accepted_at[0]);
+    assert!(after.rejected_at[1] > before.rejected_at[1]);
+}
