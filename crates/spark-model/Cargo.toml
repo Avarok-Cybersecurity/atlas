@@ -486,4 +486,8 @@ required-features = ["cuda", "gpu-examples"]
 name = "retro_build_microtest"
 required-features = ["cuda", "gpu-examples"]
 
+[[example]]
+name = "retro_attn_microtest"
+required-features = ["cuda", "gpu-examples"]
+
 # @port:examples
