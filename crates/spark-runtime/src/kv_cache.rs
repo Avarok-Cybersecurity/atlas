@@ -426,6 +426,8 @@ pub struct PagedKvCache {
     trace: block_trace::BlockTrace,
 }
 
+/// Block transfer primitives shared by the sequence swap and the host KV tier (port L25).
+pub mod block_io;
 mod block_trace;
 mod catalog;
 mod paged_impl;

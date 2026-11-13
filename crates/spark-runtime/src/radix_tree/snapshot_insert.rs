@@ -2,8 +2,21 @@
 
 //! Snapshot-index insert paths (plain, tail, tail-sibling). Split from
 //! `snapshot.rs` (file-size cap); same `SsmSnapshotIndex` impl.
+//!
+//! Also records the tier keys these paths ORPHAN (port sprint, lane L25): a
+//! re-home of a spilled prefix to HBM, or the tail sweep dropping a spilled
+//! entry, leaves the tier blob under that key unreachable. The index holds no
+//! store handle, so it only remembers the key; spark-model drains the list
+//! through `PrefixCache::take_orphaned_snapshot_tier_keys` and removes the
+//! blobs from its store (row `ssm_store_lru`). Recording changes no decision
+//! the index makes, and it only ever happens with the SSM tier on (the only
+//! way an entry becomes `tiered`).
 
 use super::snapshot::{SnapshotEntry, SsmSnapshotIndex};
+
+/// Orphaned keys kept for the next drain. A model that never drains (row off)
+/// holds at most this many `u64`s; the oldest are dropped first.
+pub(super) const MAX_ORPHANED_TIER_KEYS: usize = 4096;
 
 /// The slot an entry being displaced hands back for the caller to free — or
 /// `None` if it holds no HBM slot.
@@ -25,6 +38,30 @@ fn freeable_slot(entry: &SnapshotEntry) -> Option<usize> {
 }
 
 impl SsmSnapshotIndex {
+    /// Remember that the tier blob under `prefix_hash` lost its index entry
+    /// (re-homed to HBM or dropped while `tiered`).
+    fn note_orphan(&mut self, was_tiered: bool, prefix_hash: u64) {
+        if !was_tiered {
+            return;
+        }
+        if self.orphaned_tier_keys.len() >= MAX_ORPHANED_TIER_KEYS {
+            self.orphaned_tier_keys.remove(0);
+        }
+        self.orphaned_tier_keys.push(prefix_hash);
+    }
+
+    /// Hand the recorded orphan keys to the caller (who removes their blobs)
+    /// and forget them. A key whose prefix is `tiered` AGAIN is kept out: it
+    /// was re-spilled after the orphaning, so its blob is live. Each key is
+    /// returned once.
+    pub(super) fn take_orphaned_tier_keys(&mut self) -> Vec<u64> {
+        let mut keys = std::mem::take(&mut self.orphaned_tier_keys);
+        keys.sort_unstable();
+        keys.dedup();
+        keys.retain(|&k| !self.entries.iter().any(|e| e.prefix_hash == k && e.tiered));
+        keys
+    }
+
     pub(super) fn insert(
         &mut self,
         prefix_hash: u64,
@@ -32,6 +69,11 @@ impl SsmSnapshotIndex {
         session_hash: u64,
         token_count: usize,
     ) -> Option<usize> {
+        let rehomed = self
+            .entries
+            .iter()
+            .any(|e| e.prefix_hash == prefix_hash && e.tiered);
+        self.note_orphan(rehomed, prefix_hash);
         for entry in &mut self.entries {
             if entry.prefix_hash == prefix_hash {
                 let old = freeable_slot(entry);
@@ -56,12 +98,11 @@ impl SsmSnapshotIndex {
                 //     consume arena slots and eventually kill the tier.
                 //
                 // Only `UnifiedSnapshotStore` (default OFF) behaves as claimed.
-                // This index layer holds no store handle, so it is structurally
-                // incapable of removing the blob; the two `store.remove` call
-                // sites are both reap paths in `spark-model`. Tracked as a
-                // follow-up — the leak is PRE-EXISTING, but a wrong bound in a
-                // comment is worse than none, because it stops the next reader
-                // looking.
+                // This index layer holds no store handle, so it cannot remove
+                // the blob itself: `note_orphan` (above, before this loop)
+                // records the key and spark-model removes the blob when it
+                // drains the list (row `ssm_store_lru`; port sprint, L25). With
+                // the row off the leak is as before the sprint.
                 entry.tiered = false;
                 // A plain save re-homing this prefix is by definition NOT a
                 // tail. Without this, an overwrite could re-home another
@@ -106,12 +147,22 @@ impl SsmSnapshotIndex {
                 if (self.entries[i].is_tail || self.entries[i].is_tail_sibling)
                     && self.entries[i].session_hash == session_hash
                 {
-                    displaced.extend(freeable_slot(&self.entries.swap_remove(i)));
+                    let gone = self.entries.swap_remove(i);
+                    // A swept SPILLED entry leaves its blob behind (also when
+                    // this insert saves the same prefix again: that save is
+                    // resident, so the blob is stale either way).
+                    self.note_orphan(gone.tiered, gone.prefix_hash);
+                    displaced.extend(freeable_slot(&gone));
                 } else {
                     i += 1;
                 }
             }
         }
+        let rehomed = self
+            .entries
+            .iter()
+            .any(|e| e.prefix_hash == prefix_hash && e.tiered);
+        self.note_orphan(rehomed, prefix_hash);
         for entry in &mut self.entries {
             if entry.prefix_hash == prefix_hash {
                 displaced.extend(freeable_slot(entry));
@@ -158,6 +209,11 @@ impl SsmSnapshotIndex {
         session_hash: u64,
         token_count: usize,
     ) -> Option<usize> {
+        let rehomed = self
+            .entries
+            .iter()
+            .any(|e| e.prefix_hash == prefix_hash && e.tiered);
+        self.note_orphan(rehomed, prefix_hash);
         for entry in &mut self.entries {
             if entry.prefix_hash == prefix_hash {
                 let old = freeable_slot(entry);
@@ -185,5 +241,78 @@ impl SsmSnapshotIndex {
             is_tail_sibling: true,
         });
         None
+    }
+}
+
+#[cfg(test)]
+mod orphan_tests {
+    use super::*;
+
+    /// An index with one entry for `key`, spilled to the tier.
+    fn spilled(key: u64) -> SsmSnapshotIndex {
+        let mut idx = SsmSnapshotIndex::new();
+        assert_eq!(idx.insert(key, 3, 7, 160), None);
+        idx.entries[0].tiered = true;
+        idx
+    }
+
+    #[test]
+    fn resident_overwrites_orphan_nothing() {
+        let mut idx = SsmSnapshotIndex::new();
+        idx.insert(10, 1, 7, 160);
+        idx.insert(10, 2, 7, 160);
+        idx.insert_tail_sibling(10, 4, 7, 160);
+        idx.insert_tail(10, 5, 7, 160);
+        assert!(idx.take_orphaned_tier_keys().is_empty());
+    }
+
+    #[test]
+    fn every_rehome_path_records_the_stale_blob() {
+        let mut a = spilled(10);
+        a.insert(10, 4, 7, 160);
+        assert_eq!(a.take_orphaned_tier_keys(), vec![10]);
+        assert!(
+            a.take_orphaned_tier_keys().is_empty(),
+            "each key is handed out once"
+        );
+
+        let mut b = spilled(11);
+        b.insert_tail(11, 4, 7, 160);
+        assert_eq!(b.take_orphaned_tier_keys(), vec![11]);
+
+        let mut c = spilled(12);
+        c.insert_tail_sibling(12, 4, 7, 160);
+        assert_eq!(c.take_orphaned_tier_keys(), vec![12]);
+    }
+
+    #[test]
+    fn the_tail_sweep_records_a_dropped_spilled_tail() {
+        let mut idx = SsmSnapshotIndex::new();
+        idx.insert_tail(20, 1, 7, 160);
+        idx.entries[0].tiered = true;
+        // The session's next tail supersedes it: the spilled entry is swept.
+        idx.insert_tail(21, 2, 7, 320);
+        assert_eq!(idx.take_orphaned_tier_keys(), vec![20]);
+        assert_eq!(idx.len(), 1);
+    }
+
+    #[test]
+    fn a_key_spilled_again_before_the_drain_is_kept() {
+        let mut idx = spilled(30);
+        idx.insert(30, 4, 7, 160);
+        // Spilled again: the blob under 30 is the NEW snapshot's and must stay.
+        idx.entries[0].tiered = true;
+        assert!(idx.take_orphaned_tier_keys().is_empty());
+    }
+
+    #[test]
+    fn the_record_is_bounded() {
+        let mut idx = SsmSnapshotIndex::new();
+        for k in 0..(MAX_ORPHANED_TIER_KEYS as u64 + 10) {
+            idx.note_orphan(true, k);
+        }
+        let keys = idx.take_orphaned_tier_keys();
+        assert_eq!(keys.len(), MAX_ORPHANED_TIER_KEYS);
+        assert_eq!(keys[0], 10, "the oldest records went first");
     }
 }
