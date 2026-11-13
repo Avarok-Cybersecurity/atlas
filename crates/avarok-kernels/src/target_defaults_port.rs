@@ -56,6 +56,11 @@ pub struct PortDefaults {
     /// blocking readback per draft (per-sequence propose) or per position
     /// (batched propose).
     pub mtp_propose_graph: bool,
+    /// Pick MTP verify positions on the device
+    /// (kernels/ada/common/spec_accept_sample_ada.cu, lane L12) instead of
+    /// copying the `[K, vocab]` BF16 verify logits to the host and running the
+    /// pre-sample pipeline there.
+    pub mtp_device_accept: bool,
     /// When a 4-bit BF16 load route is on (dense_affine4_from_bf16,
     /// gdn_affine4_from_bf16, attn_affine4_from_bf16), every projection the
     /// Marlin kernels serve (N a multiple of 64, K of 128, more than one group)
@@ -201,6 +206,7 @@ pub const PORT_BASELINE: PortDefaults = PortDefaults {
     gdn_woa_mtp: false,
     mtp_vocab_rank: "id",
     mtp_propose_graph: false,
+    mtp_device_accept: false,
     marlin_w4a16: false,
     gguf_native_iq4: false,
     weights_exl3: false,

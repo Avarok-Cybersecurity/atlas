@@ -39,6 +39,7 @@ const PORT_LEVERS: &[&str] = &[
     "gdn_woa_mtp",
     "mtp_vocab_rank",
     "mtp_propose_graph",
+    "mtp_device_accept",
     "marlin_w4a16",
     "gguf_native_iq4",
     "weights_exl3",
@@ -121,6 +122,10 @@ fn the_baked_port_rows_match_their_own_hardware_tree() {
         baked.port.mtp_propose_graph,
         declared.port.mtp_propose_graph
     );
+    assert_eq!(
+        baked.port.mtp_device_accept,
+        declared.port.mtp_device_accept
+    );
     assert_eq!(baked.port.marlin_w4a16, declared.port.marlin_w4a16);
     assert_eq!(baked.port.gguf_native_iq4, declared.port.gguf_native_iq4);
     assert_eq!(baked.port.weights_exl3, declared.port.weights_exl3);
@@ -170,6 +175,7 @@ fn ada_port_rows_hold_their_write_time_values() {
     assert_eq!(declared("ada").port.gdn_woa_mtp, false);
     assert_eq!(declared("ada").port.mtp_vocab_rank, "id");
     assert_eq!(declared("ada").port.mtp_propose_graph, false);
+    assert_eq!(declared("ada").port.mtp_device_accept, false);
     assert_eq!(declared("ada").port.marlin_w4a16, false);
     assert_eq!(declared("ada").port.gguf_native_iq4, false);
     assert_eq!(declared("ada").port.weights_exl3, false);
@@ -200,6 +206,7 @@ fn non_ada_targets_keep_every_port_row_at_its_baseline() {
         assert!(!declared(hw).port.gdn_woa_mtp, "{hw}");
         assert_eq!(declared(hw).port.mtp_vocab_rank, "id", "{hw}");
         assert!(!declared(hw).port.mtp_propose_graph, "{hw}");
+        assert!(!declared(hw).port.mtp_device_accept, "{hw}");
         assert!(!declared(hw).port.marlin_w4a16, "{hw}");
         assert!(!declared(hw).port.gguf_native_iq4, "{hw}");
         assert!(!declared(hw).port.weights_exl3, "{hw}");

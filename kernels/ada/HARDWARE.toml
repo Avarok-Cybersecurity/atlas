@@ -244,6 +244,22 @@ mtp_vocab_rank = "id"
 # until the receipt: greedy token SHA equal at C=1 and C=8, and the propose
 # phase time (L06 device phases) down beyond the ABBA bound.
 mtp_propose_graph = false
+# Pick MTP verify positions on the device
+# (kernels/ada/common/spec_accept_sample_ada.cu, lane L12) instead of copying
+# the [K, vocab] BF16 verify logits to the host and running the pre-sample
+# pipeline there. It covers rows with no grammar, no logit_bias, no live LZ or
+# DRY penalty and no stateful thinking stage (F2 confidence stop, an armed
+# forced think end, the legacy tool-call pin); the pipeline's masks, penalties
+# and biases travel as a sparse edit list, and every other row keeps the host
+# pipeline, counted by reason in atlas_mtp_device_accept_fallback_total.
+# Greedy picks are bit-identical to the host pipeline; sampled picks are
+# distribution-exact, not bit-identical (decision D10: the RNG is keyed by
+# seed and position, not the host sampler's stream). Only Ada builds the
+# kernel; any other target has no module and keeps the host pipeline with one
+# log line. Off until the receipt: spec_accept_oracle (greedy equal, sampled
+# chi-square), qual.py top-20 KL and a sampled-pick chi-square against the
+# host, and steady C=8 sampled waves no slower.
+mtp_device_accept = false
 # When a 4-bit BF16 load route is on (dense_affine4_from_bf16,
 # gdn_affine4_from_bf16, attn_affine4_from_bf16), every projection the Marlin
 # kernels serve (N a multiple of 64, K of 128, more than one group) is
@@ -561,6 +577,16 @@ overrides = [
   #                       only under that row, through try_target_kernel, so a
   #                       build without it keeps the id-ranked head.
   "draft_vocab_remap.cu",
+  # spec_accept_sample_ada.cu  ADDITION (port sprint L12). Picks MTP verify
+  #                       positions on the device: the host pre-sample
+  #                       pipeline's masks, penalties and biases as a sparse
+  #                       edit list, then the first-index-wins argmax (greedy,
+  #                       bit-identical) or one-hot draft acceptance and
+  #                       residual sampling (distribution-exact). Looked up
+  #                       only under `mtp_device_accept`, through
+  #                       try_target_kernel, so a build without it keeps the
+  #                       host pipeline.
+  "spec_accept_sample_ada.cu",
   # Affine 4-bit route (port lane L17a; TensorFold lane GEMV, Apache-2.0, see
   # TENSORFOLD-ATTRIBUTION.md). ADDITIONS, no gb10 counterpart. Looked up only
   # through try_target_kernel when an affine route row is on
