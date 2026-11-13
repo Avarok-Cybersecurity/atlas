@@ -51,6 +51,9 @@
 //! best-effort, mirrors greedy unroll.
 
 mod argmax;
+mod device_accept;
+#[cfg(test)]
+mod device_accept_tests;
 mod fast_masked;
 mod pick_positions;
 #[cfg(test)]
@@ -480,6 +483,11 @@ pub fn verify_pick_all_with_pipeline(
             return argmax_ids.to_vec(); // no D2H, no CPU pipeline
         }
         // else: some position needs the penalty-aware pipeline — slow path.
+    }
+
+    // L12 `mtp_device_accept` (off by default): pick on the device instead of the slow tail below.
+    if let Some(picks) = device_accept::try_device_picks(model, argmax_ids, a, ctx, row_base) {
+        return picks;
     }
 
     let vocab = model.vocab_size();

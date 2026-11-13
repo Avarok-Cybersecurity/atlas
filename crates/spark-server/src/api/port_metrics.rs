@@ -27,6 +27,7 @@ pub fn render(out: &mut String) {
     spark_model::port::graph_stats::render_prometheus(out);
     spark_model::port::gdn_woa::render_prometheus(out);
     spark_model::layers::mtp_head::vocab_rank::render_prometheus(out);
+    spark_model::port::spec_accept::metrics::render_prometheus(out);
     spark_model::port::w4_stats::render_prometheus(out);
     spark_model::port::embed_host::render_prometheus(out);
     spark_runtime::kv_cache::block_io::swap::render_prometheus(out);
