@@ -663,6 +663,7 @@ impl TransformerModel {
 
     pub(super) fn release_pools(&mut self) -> anyhow::Result<()> {
         use avarok_core::scope::ModelResource;
+        self.tier_teardown();
 
         let gpu: &dyn GpuBackend = self.gpu.as_ref();
         let mut first_error: Option<anyhow::Error> = None;

@@ -14,5 +14,39 @@ use super::super::types::TransformerModel;
 use crate::traits::port_ext::ModelPortExt;
 
 impl ModelPortExt for TransformerModel {
+
+    fn kv_tier_active(&self) -> bool {
+        self.tier_active()
+    }
+
+    fn kv_tier_prefetch(
+        &self,
+        tokens: &[u32],
+        adapter: u32,
+        session_hash: u64,
+    ) -> anyhow::Result<crate::model::kv_tier_glue::TierPrefetch> {
+        self.tier_prefetch(tokens, adapter, session_hash)
+    }
+
+    fn kv_tier_restore_begin(
+        &self,
+        tokens: &[u32],
+        adapter: u32,
+        session_hash: u64,
+    ) -> anyhow::Result<Option<spark_runtime::kv_host_tier::RestoreTicket>> {
+        self.tier_restore_begin(tokens, adapter, session_hash)
+    }
+
+    fn kv_tier_settle(&self, ticket: spark_runtime::kv_host_tier::RestoreTicket) {
+        self.tier_settle(ticket)
+    }
+
+    fn kv_tier_tick(&self) {
+        self.tier_tick()
+    }
+
+    fn kv_tier_observe_prefill(&self, tokens: usize, secs: f64) {
+        self.tier_observe_prefill(tokens, secs)
+    }
     // @port:impls
 }

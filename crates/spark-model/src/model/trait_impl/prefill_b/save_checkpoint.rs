@@ -187,6 +187,7 @@ impl TransformerModel {
             seq.adapter_id,
         );
         super::super::super::block_mgmt::cache_acquires_refs(&acquired, kv_cache);
+        self.kv_tier_store(boundary_tokens, seq, &acquired, kv_cache, stream);
         if let Some(old) = self.prefix_cache.insert_intermediate_snapshot(
             boundary_tokens,
             boundary_blocks,

@@ -321,6 +321,7 @@ impl TransformerModel {
                     seq.adapter_id,
                 );
                 super::super::super::block_mgmt::cache_acquires_refs(&acquired, kv_cache);
+                self.kv_tier_store(cache_tokens, seq, &acquired, kv_cache, stream);
             }
         } else if self.ssm_snapshots.is_enabled()
             && let super::exact_leaf::ExactLeaf::Redundant { tail, replay } =
@@ -350,6 +351,7 @@ impl TransformerModel {
                     seq.adapter_id,
                 );
                 super::super::super::block_mgmt::cache_acquires_refs(&acquired, kv_cache);
+                self.kv_tier_store(tokens, seq, &acquired, kv_cache, stream);
             }
         } else if self.ssm_snapshots.is_enabled() {
             if std::env::var("AVAROK_SSM_SAVE_DUMP").is_ok() {
@@ -439,6 +441,7 @@ impl TransformerModel {
                         seq.adapter_id,
                     );
                     super::super::super::block_mgmt::cache_acquires_refs(&acquired, kv_cache);
+                    self.kv_tier_store(tokens, seq, &acquired, kv_cache, stream);
                     if let Some(old) = displaced {
                         self.ssm_snapshots.free(old);
                     }
@@ -453,6 +456,7 @@ impl TransformerModel {
                     seq.adapter_id,
                 );
                 super::super::super::block_mgmt::cache_acquires_refs(&acquired, kv_cache);
+                self.kv_tier_store(tokens, seq, &acquired, kv_cache, stream);
             }
         } else if !self.tokens_have_vision_pad(tokens) && !self.hss_window_slid(seq) {
             let acquired = self.prefix_cache.insert(
@@ -464,6 +468,7 @@ impl TransformerModel {
                 seq.adapter_id,
             );
             super::super::super::block_mgmt::cache_acquires_refs(&acquired, kv_cache);
+            self.kv_tier_store(tokens, seq, &acquired, kv_cache, stream);
         }
 
         // DFlash: advance ctx_len after the LAST chunk of chunked prefill.

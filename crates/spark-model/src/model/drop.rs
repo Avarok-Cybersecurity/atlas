@@ -29,6 +29,10 @@ use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
 
 impl Drop for TransformerModel {
     fn drop(&mut self) {
+        // Host KV tier (lane L26b): quiesce its copy stream and drop its pinned pool while the
+        // backend is still alive (the fields drop after this body, `gpu` before `port`).
+        // A no-op when the tier never ran or `release_pools` already tore it down.
+        self.tier_teardown();
         self.drop_pinned_staging();
         // The SSM spill tier's reusable staging blob is page-locked host memory
         // owned by the snapshot pool, which holds no `gpu` handle of its own —

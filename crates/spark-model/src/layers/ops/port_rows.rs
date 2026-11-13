@@ -18,6 +18,7 @@ pub mod embed_host_offload;
 pub mod gdn_affine4_from_bf16;
 pub mod gguf_native_iq4;
 pub mod kv_batched_swap;
+pub mod kv_host_tier;
 pub mod marlin_w4a16;
 pub mod prefix_cow_tail;
 pub mod radix_lru_index;

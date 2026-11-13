@@ -15,5 +15,7 @@
 pub struct ModelPortState {
     /// Lane L25: staging of the batched sequence swap (`kv_batched_swap`).
     pub kv_swap: spark_runtime::kv_cache::block_io::swap::SwapStaging,
+    /// Host-RAM KV tier (lane L26b, `model/kv_tier_glue.rs`).
+    pub kv_tier: crate::model::kv_tier_glue::TierState,
     // @port:fields
 }
