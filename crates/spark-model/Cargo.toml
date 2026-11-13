@@ -419,6 +419,10 @@ name = "gdn_wyn_woa_oracle"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]
+name = "spec_accept_oracle"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
 name = "affine_ada_microtest"
 required-features = ["cuda", "gpu-examples"]
 

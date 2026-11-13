@@ -40,6 +40,16 @@ pub trait ModelPortExt {
     /// Default: nothing to release.
     fn gdn_woa_release_folded(&self) {}
 
+    /// Lane L12 (`mtp_device_accept`): pick one sequence's verify positions on the device
+    /// (`crate::port::spec_accept`). Results are one per (regime, position) job, regime-major.
+    /// `Ok(None)`: this model has no device path, so the caller keeps the host pipeline.
+    fn spec_accept(
+        &self,
+        _req: &crate::port::spec_accept::AcceptRequest<'_>,
+    ) -> anyhow::Result<Option<Vec<crate::port::spec_accept::JobResult>>> {
+        Ok(None)
+    }
+
     /// Host KV tier (lane L26b): whether the tier serves this model (the `kv_host_tier` row
     /// on, a `--kv-host-tier-gb` budget, the prefix cache on). Default: no.
     fn kv_tier_active(&self) -> bool {

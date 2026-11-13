@@ -30,6 +30,13 @@ impl ModelPortExt for TransformerModel {
         self.gdn_woa_release_folded_dispatch()
     }
 
+    fn spec_accept(
+        &self,
+        req: &crate::port::spec_accept::AcceptRequest<'_>,
+    ) -> anyhow::Result<Option<Vec<crate::port::spec_accept::JobResult>>> {
+        crate::port::spec_accept::launch::run(&self.port.spec_accept, self.gpu.as_ref(), req)
+    }
+
     fn kv_tier_active(&self) -> bool {
         self.tier_active()
     }
