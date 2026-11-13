@@ -13,6 +13,7 @@
 //! | [`ReasoningFormat::MiniMax`]    | `<think>` / `</think>`      | MiniMax M2 / M2.7 |
 //! | [`ReasoningFormat::Mistral`]    | `[THINK]` / `[/THINK]`      | Mistral Small 4 / Magistral |
 //! | [`ReasoningFormat::Gemma4`]     | `<|channel>` / `<channel|>` | Gemma 4 (channel format) |
+//! | [`ReasoningFormat::Lfm3`]       | `<think>` / `</think>`      | Liquid AI LFM3 (generation prompt ends in `<think>`) |
 //!
 //! The Qwen / DeepSeek-R1 / MiniMax families all use `<think>` tags with
 //! the *same* extraction contract — the chat template injects the opening
@@ -75,6 +76,10 @@ pub enum ReasoningFormat {
     Mistral,
     /// `<|channel>thought ... <channel|> ...` — Gemma 4 channel format.
     Gemma4,
+    /// `<think>...</think>`, Liquid AI LFM3. The checkpoint's chat template
+    /// ends the generation prompt with `<think>`, so output begins inside the
+    /// block (the same contract as the Qwen family, under its own identity).
+    Lfm3,
 }
 
 impl FromStr for ReasoningFormat {
@@ -88,9 +93,10 @@ impl FromStr for ReasoningFormat {
             "minimax" | "minimax_m2" => Ok(Self::MiniMax),
             "mistral" => Ok(Self::Mistral),
             "gemma4" | "gemma" => Ok(Self::Gemma4),
+            "lfm3" | "liquid" => Ok(Self::Lfm3),
             other => Err(format!(
                 "Unknown reasoning parser '{other}'. Supported: qwen, \
-                 deepseek_r1, minimax, mistral, gemma4"
+                 deepseek_r1, minimax, mistral, gemma4, lfm3"
             )),
         }
     }

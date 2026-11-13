@@ -7,6 +7,7 @@
 #   gemma4      — Native: <|tool_call>call:fn{key:val,...}<tool_call|>
 #   mistral     — Native: [TOOL_CALLS]fn[ARGS]{"k":"v",...}
 #   deepseek_v4 — Native DSML: <｜DSML｜tool_calls>...<｜DSML｜invoke ...>
+#   lfm3        - qwen3_coder's XML; the checkpoint template owns the tool prompt
 
 [model_type]
 qwen3_5_moe = "qwen3_coder"    # Qwen3.5-35B, Qwen3.5-122B — native XML format
@@ -37,6 +38,9 @@ glm5_next   = "poolside_v1"     # GLM-5.3-Flash — SAME wire format, quoted ver
                                 # nothing and answers "I have no tools available".
 deepseek_v4 = "deepseek_v4"    # DeepSeek-V4-Flash — checkpoint-native typed DSML
 deepseek_v41 = "deepseek_v4"   # DeepSeek-V4.1-Flash (GGUF model_type deepseek_v41) — same DSML format
+lfm3        = "lfm3"           # Liquid AI LFM3: qwen3_coder's XML (<tool_call><function=f><parameter=k>),
+                               # but the checkpoint's own chat template renders the tool schemas, so the
+                               # parser adds no instruction block of its own.
 
 # Default reasoning parser per model_type.
 # Override at runtime with --reasoning-parser <format>.
@@ -47,6 +51,7 @@ deepseek_v41 = "deepseek_v4"   # DeepSeek-V4.1-Flash (GGUF model_type deepseek_v
 #   minimax     — <think>...</think>, MiniMax M2 / M2.7
 #   mistral     — [THINK]...[/THINK]
 #   gemma4      — <|channel>thought ... <channel|> ... (Gemma 4 channel format)
+#   lfm3        - <think>...</think>, Liquid AI LFM3 (prompt ends in <think>)
 #
 # qwen / deepseek_r1 / minimax share one <think>-tag implementation but
 # keep distinct identities so a model is parsed under its own contract.
@@ -67,3 +72,4 @@ qwen3_vl_moe = "qwen"
 mistral     = "mistral"
 minimax_m2  = "minimax"        # MiniMax M2/M2.7 — <think>...</think>, own identity
 laguna      = "qwen"           # Laguna uses ordinary <think>...</think> tags
+lfm3        = "lfm3"           # LFM3's generation prompt ends in <think>; same extraction contract as qwen
