@@ -230,6 +230,19 @@ pub struct PortDefaults {
     /// the context passes `--attn-sparse-min-ctx` (below it the view is the dense
     /// table, bit-identical).
     pub attn_page_sparse: bool,
+    /// Bounded KV view (APPROXIMATE; `spark-model/src/port/kv_view/`, core
+    /// `spark-runtime/src/kv_select/` and `kv_cache/sketch.rs`, kernels
+    /// `kv_view_table_ada.cu`, `kv_page_sketch_ada.cu`, `kv_page_score_ada.cu`;
+    /// KVMem's idea, arXiv:2609.04852, implemented independently): once per user
+    /// turn, at the end of the final user message's prefill, the context's
+    /// 128-token blocks are scored against that message's last query rows
+    /// (page-softmax over a per-page pre-RoPE mean-key sketch) and the
+    /// full-attention layers' decode and verify attention then reads only the
+    /// view (sink, the recent window, the question and the best blocks within
+    /// `--kv-view-budget-tokens`, plus every token appended after), and so do the
+    /// paged prefill chunks of the conversation's next turn; GDN layers and the
+    /// MTP head stay dense, the first output token comes from the full prefill.
+    pub kv_view_selection: bool,
     // @port:fields
 }
 
@@ -267,5 +280,6 @@ pub const PORT_BASELINE: PortDefaults = PortDefaults {
     radix_lru_index: false,
     prefix_cow_tail: false,
     attn_page_sparse: false,
+    kv_view_selection: false,
     // @port:baseline
 };

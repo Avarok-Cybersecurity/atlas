@@ -684,5 +684,26 @@ prefix_cow_tail = false
 # agent task at 64K+ (queue row Q15).
 attn_page_sparse = false
 
+# Bounded KV view (APPROXIMATE; `spark-model/src/port/kv_view/`, core
+# `spark-runtime/src/kv_select/` and `kv_cache/sketch.rs`, kernels
+# `kv_view_table_ada.cu`, `kv_page_sketch_ada.cu`, `kv_page_score_ada.cu`;
+# KVMem's idea, arXiv:2609.04852, implemented independently): once per user
+# turn, at the end of the final user message's prefill, the context's 128-token
+# blocks are scored against that message's last query rows (page-softmax over a
+# per-page pre-RoPE mean-key sketch) and the full-attention layers' decode and
+# verify attention then reads only the view (sink, the recent window, the
+# question and the best blocks within `--kv-view-budget-tokens`, plus every
+# token appended after), and so do the paged prefill chunks of the
+# conversation's next turn; GDN layers and the MTP head stay dense, the first
+# output token comes from the full prefill. It serves only with this row on AND
+# a budget, and only on Ada (the table kernel is an Ada override). OFF on every
+# target and never flipped in this sprint: changing answers is the price, and
+# the bar for any future default is needle recall at least 95% of dense at 5
+# depths x 16K-128K with a 16K view and multi-needle within 2 points.
+# `AVAROK_KV_VIEW=1` plus `--kv-view-budget-tokens 16384` is the A/B; the
+# `atlas_kv_view_*` series show selections, view tokens, recall mass and skips
+# by reason.
+kv_view_selection = false
+
 # @port:defaults
 
