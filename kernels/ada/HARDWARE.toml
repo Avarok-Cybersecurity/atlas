@@ -56,9 +56,16 @@ lm_head_batchm_max = 8
 # One strided recurrent launch per batch on the GDN decode path. ON for Hopper
 # on a Hopper receipt; no Ada receipt, so off.
 ssm_batched_recurrent = false
-# The tensor-core GDN chunked-PREFILL spine (#928). OFF, and INERT: the kernel
-# is Hopper's (`kernels/hopper/common/gated_delta_rule_chunk_tc.cu`) and is not
-# linked into this tree.
+# The tensor-core GDN chunked PREFILL. LIVE on Ada through
+# `common/gdn_chunk_tc_ada.cu` (prepare, state passing and output all on
+# mma.sync; the FP32 state stays in MMA accumulators), still OFF until a
+# receipt: it changes numerics against the FLA spine (BF16 and TF32 MMA
+# operands). Hopper's own spine (`kernels/hopper/common/gated_delta_rule_chunk_tc.cu`,
+# #928) is not linked here. `AVAROK_GDN_PREFILL_TC=1` is the A/B. The receipt
+# that flips it: `examples/gdn_chunk_tc_ada_microtest.rs` PASS (FP64 oracle
+# bounds, agreement with the scalar spine), then `longctx.py` recall and
+# `qual.py` KL against the FLA spine, then a TTFT ABBA gain at 3.9K, 32K and
+# 128K tokens.
 gdn_prefill_tc = false
 # The Hopper BA-gates twin. OFF and INERT: Hopper-owned source, not linked here.
 ssm_ba_gates_hopper = false
@@ -648,6 +655,7 @@ overrides = [
   "spec_accept_sample_ada.cu",
   "fp8_gemv_ada_batchm.cu",
   "rmsnorm_quant_fp8_ada.cu",
+  "gdn_chunk_tc_ada.cu",
   # Affine 4-bit route (port lane L17a; TensorFold lane GEMV, Apache-2.0, see
   # TENSORFOLD-ATTRIBUTION.md). ADDITIONS, no gb10 counterpart. Looked up only
   # through try_target_kernel when an affine route row is on
