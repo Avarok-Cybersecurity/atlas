@@ -19,6 +19,14 @@
 //! for the win: `gemm_t` costs 3679 us at M=9 and 3837 us at M=36 — 4x the
 //! rows for +4%.
 //!
+//! Width budget (`can_batch_verify`, caller in `mtp_step.rs`): R = n*(γ+1) is
+//! bounded by the 96-row verify budget, so a block-16 drafter at γ=15 (K=16,
+//! the Qwen3.5-4B drafter) batches at most 6 sequences per call; the caller
+//! splits larger groups. The per-sequence ctx commit below needs the unified
+//! ctx commit (`AVAROK_DFLASH_UNIFIED_CTX`, default on): there is no batched
+//! form of the legacy eagle append, so `=0` serves a batched tick without
+//! committing drafter context rows. Leave it at the default.
+//!
 //! PHASE ORDER IS LOAD-BEARING (same hazard as `verify_k4_batch_step`): the
 //! forward leaves per-row logits and per-sequence capture bands live in
 //! SHARED buffers. Every read of them (accept walk, `commit_ctx`, hidden

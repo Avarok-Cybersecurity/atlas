@@ -4,28 +4,48 @@
 
 use super::*;
 
-/// DFlash γ-token verify with accept-prefix.
+/// DFlash γ-token verify with accept-prefix, for one sequence.
 ///
-/// Phase 3 minimal-viable implementation: routes `[last_token, drafts...]`
-/// through the eager `decode_verify_dflash` path (which today defaults to
-/// `decode_verify`) and finds the first index where draft ≠ verified
-/// argmax. Tokens 0..first_mismatch are accepted; the verified token at
-/// the mismatch position becomes the bonus token; subsequent drafts are
-/// dropped.
+/// Routes `[last_token, drafts...]` through `decode_verify_dflash` (one
+/// K = γ+1 target forward) and finds the
+/// first index where draft ≠ verified argmax. Tokens 0..first_mismatch are
+/// accepted; the verified token at the mismatch position becomes the bonus
+/// token; subsequent drafts are dropped. The verifier and the drafter judge on
+/// the same RAW argmax (`dflash_verify_raw_argmax`), so the output is exactly
+/// what plain greedy decode would emit.
 ///
-/// Deferred to Phase 6 (full integration):
-///   * EP=2 broadcast of verify-cmd + drafts (drafter currently runs only
-///     on rank 0; verify on a single-rank target is correct, but EP=2 needs
-///     the broadcast pattern from `step_verify_k2`).
-///   * Per-position logprobs extraction.
-///   * SSM `commit_verify_state_async(num_accepted, k)` loop. Without it,
-///     hybrid models (Qwen3.6-A3B has GDN layers) will see SSM state drift
-///     after γ-verify. Single-token decode unaffected; γ-verify only
-///     correct on pure-attention targets until this is wired.
-///   * `save_hidden_for_mtp` / `save_hidden_for_dflash` hook on the
-///     accepted bonus token (the next propose() needs the latest hidden).
-///   * Sliding-window state rollback for sliding-attention layers
-///     (Gemma-4-style; not used by Qwen3.6 targets).
+/// What this step does after the verdict, in order (all wired; this comment
+/// previously listed the SSM commit and the hidden hand-off as deferred, which
+/// they have not been for a long time):
+///   * rolls `seq_len` / `seq.tokens` back to prefix + accepted + bonus;
+///   * commits the drafter's context rows for the committed positions
+///     (`commit_ctx`, the default; `AVAROK_DFLASH_UNIFIED_CTX=0` restores
+///     `dflash_eagle_kgamma_append`);
+///   * emits the accepted drafts and the bonus token;
+///   * commits the GDN state with `commit_accepted_prefix(num_accepted + 1,
+///     γ + 1)`. The verify kernel writes the canonical `h_state` in place, so a
+///     full accept is a no-op and a partial accept is one index-select from
+///     the per-token intermediates (`async_chkpt.rs`,
+///     `commit_accepted_prefix_dispatch`, which also fixes the argument
+///     contract: the SECOND argument is the verify WIDTH γ+1, never γ). No
+///     checkpoint write is needed here; the next `start_checkpoint_async`
+///     syncs it. Hybrid targets (Qwen3.5/3.6/Holo GDN layers) are therefore
+///     correct after γ-verify;
+///   * the per-layer target hidden states the next propose needs are captured
+///     INSIDE the verify forward (`verify_d.rs`, `try_dflash_capture`, one
+///     slot per tap layer), then `save_hidden_for_mtp` stashes the bonus row
+///     and `trim_proposer_state` trims the drafter's own KV; and
+///   * re-proposes for the next step unless adaptive speculation suspended
+///     this sequence.
+///
+/// Still not done here:
+///   * EP=2 broadcast of the verify command and drafts (the drafter runs on
+///     rank 0 only; a DFlash worker rank is not an exercised combination);
+///   * per-position logprobs for accepted drafts (`emit_token` gets `None`);
+///   * a sliding-window state rollback for the TARGET's attention layers
+///     (Gemma-4-style). The Qwen targets are full-attention plus GDN, so it
+///     does not arise. The DRAFTER's own sliding window (the 4B drafter's five
+///     windowed layers) is bounded by the head's context window, not here.
 pub fn step_verify_dflash(
     model: &dyn Model,
     a: &mut ActiveSeq,
@@ -220,7 +240,8 @@ pub fn step_verify_dflash(
     // (verify_d.rs try_dflash_capture at position k-1), mirroring verify_b.rs.
     // No post-loop save needed; calling save_dflash_hidden_for_propose here
     // would overwrite the correct per-layer intermediates with a repeated
-    // final-layer hidden, collapsing all 5 slots to the same value.
+    // final-layer hidden, collapsing every tap slot (5 on the Qwen3.6
+    // drafters, 8 on the Qwen3.5-4B drafter) to the same value.
     let bonus_token_idx = total_accepted.saturating_sub(1);
     if let Err(e) = model.save_hidden_for_mtp(bonus_token_idx, 0) {
         tracing::error!("save_hidden_for_mtp (dflash): {e:#}");

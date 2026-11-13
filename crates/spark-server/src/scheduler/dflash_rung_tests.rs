@@ -52,6 +52,81 @@ fn no_woa_pins_the_multi_rung_at_the_cap() {
     assert_eq!(k_for(1, false, &r), 5);
 }
 
+/// An env table for `Rungs::from_lookup`: no process environment involved.
+fn env_of<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+    move |k| {
+        pairs
+            .iter()
+            .find(|(n, _)| *n == k)
+            .map(|(_, v)| (*v).to_string())
+    }
+}
+
+/// With nothing set, `from_lookup` is exactly the previous `from_env`: the
+/// no-woa C>=2 rung is the cap, the woa one is K=4.
+#[test]
+fn from_lookup_without_overrides_matches_the_old_defaults() {
+    let none = env_of(&[]);
+    for cap in [2usize, 4, 10, 16] {
+        let off = Rungs::from_lookup(cap, false, &none);
+        assert_eq!(off.multi, cap, "no woa pins the multi rung at cap {cap}");
+        let on = Rungs::from_lookup(cap, true, &none);
+        assert_eq!(on, Rungs::defaults(cap), "woa on is the plain defaults");
+    }
+}
+
+/// The 4B drafter serves at cap K=16 (block 16, gamma 15): the C=1 rungs span
+/// the full block and K=5, and the C>=2 rung needs write-on-accept for K=4.
+#[test]
+fn the_4b_cap_16_ladder_is_the_unmeasured_inheritance() {
+    let r = Rungs::defaults(16);
+    assert_eq!((r.wide, r.narrow, r.multi), (16, 5, 4));
+    assert_eq!(k_for(1, true, &r), 16);
+    assert_eq!(k_for(1, false, &r), 5);
+    assert_eq!(k_for(8, true, &r), 4);
+}
+
+/// The reason for the change: on Ada, write-on-accept is off by default, and
+/// the old code threw `AVAROK_DFLASH_RUNG_MULTI` away in that case, so the
+/// C>=2 rung could not be swept without turning the kernel on.
+#[test]
+fn an_explicit_multi_override_is_honored_without_write_on_accept() {
+    let env = env_of(&[("AVAROK_DFLASH_RUNG_MULTI", "8")]);
+    let off = Rungs::from_lookup(16, false, &env);
+    assert_eq!(off.multi, 8);
+    assert_eq!(k_for(4, true, &off), 8);
+    // With the kernel on, the same variable still wins over the K=4 default.
+    assert_eq!(Rungs::from_lookup(16, true, &env).multi, 8);
+    // Every other rung is untouched by it.
+    assert_eq!(off.narrow, Rungs::defaults(16).narrow);
+    assert_eq!(off.wide, 16);
+}
+
+#[test]
+fn overrides_are_clamped_to_the_head_and_garbage_is_ignored() {
+    let big = env_of(&[
+        ("AVAROK_DFLASH_RUNG_MULTI", "99"),
+        ("AVAROK_DFLASH_RUNG_NARROW", "1"),
+        ("AVAROK_DFLASH_RUNG_WIDE", "99"),
+    ]);
+    let r = Rungs::from_lookup(10, false, &big);
+    assert_eq!((r.multi, r.narrow, r.wide), (10, 2, 10));
+    let junk = env_of(&[
+        ("AVAROK_DFLASH_RUNG_MULTI", "four"),
+        ("AVAROK_DFLASH_RUNG_ENTER", "-1"),
+    ]);
+    let j = Rungs::from_lookup(10, false, &junk);
+    assert_eq!(j.multi, 10, "an unparsable value falls back to the default");
+    assert_eq!(j.enter, Rungs::defaults(10).enter);
+    let thresholds = env_of(&[
+        ("AVAROK_DFLASH_RUNG_ENTER", "58"),
+        ("AVAROK_DFLASH_RUNG_LEAVE", "40"),
+        ("AVAROK_DFLASH_RUNG_DWELL", "32"),
+    ]);
+    let t = Rungs::from_lookup(10, true, &thresholds);
+    assert_eq!((t.enter, t.leave, t.dwell), (58, 40, 32));
+}
+
 #[test]
 fn defaults_below_cap_two_pin_instead_of_panicking() {
     // `clamp(2, cap)` asserts min <= max; a `--dflash-gamma 1` head reaches

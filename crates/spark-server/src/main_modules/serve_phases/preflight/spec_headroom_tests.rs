@@ -87,11 +87,9 @@ fn the_capture_scales_with_the_context_it_must_hold() {
 #[test]
 fn every_drafter_that_is_not_priced_keeps_the_flat_headroom() {
     let c = qwen35_4b();
-    for flags in [
-        &["--dflash"][..],
-        &["--self-speculative"][..],
-        &["--ngram-speculative"][..],
-    ] {
+    // `--dflash` left this list in the port sprint (lane L14): on ada it is
+    // priced and clamped to the flat term, see `spec_headroom_dflash_tests.rs`.
+    for flags in [&["--self-speculative"][..], &["--ngram-speculative"][..]] {
         let a = args(flags);
         assert_eq!(ada(&a, &c).0, FLAT_SPEC_HEADROOM, "{flags:?}");
     }
