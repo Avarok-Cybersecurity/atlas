@@ -24,6 +24,11 @@ pub(crate) fn apply(args: &PortArgs) -> anyhow::Result<()> {
     spark_runtime::weights::keep_packed_iq4::set_enabled(
         spark_model::layers::ops::port_rows::gguf_native_iq4::row(),
     );
+    spark_model::port::affine_opts::apply(spark_model::port::affine_opts::AffineCli {
+        bits: args.w4_bits,
+        group: args.w4_group,
+        clip_search: args.w4_clip_search,
+    });
     spark_runtime::pinned_pool::set_default_chunk_mb(args.pinned_pool_chunk_mb);
     spark_runtime::radix_tree::set_lru_index_enabled(
         spark_model::layers::ops::port_rows::radix_lru_index::row(),
@@ -39,6 +44,11 @@ pub(crate) fn apply(args: &PortArgs) -> anyhow::Result<()> {
 /// row value, a contradictory flag pair). Empty until a lane adds a line.
 #[allow(unused_variables)]
 pub(crate) fn validate(args: &PortArgs) -> anyhow::Result<()> {
+    spark_model::port::affine_opts::validate(spark_model::port::affine_opts::AffineCli {
+        bits: args.w4_bits,
+        group: args.w4_group,
+        clip_search: args.w4_clip_search,
+    })?;
     spark_runtime::pinned_pool::validate_chunk_mb(args.pinned_pool_chunk_mb)?;
     // @port:validate
     Ok(())

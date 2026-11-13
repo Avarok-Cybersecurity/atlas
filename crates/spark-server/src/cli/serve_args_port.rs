@@ -15,6 +15,24 @@
 /// The port lanes' serve flags.
 #[derive(clap::Args, Debug, Clone, Default, PartialEq)]
 pub struct PortArgs {
+    /// Affine W4 routes (lane L23a): code width of the load-time BF16 -> affine
+    /// quantizer, 2, 3, 4, 5, 6 or 8 (default 4, or `AVAROK_W4_BITS`). Widths
+    /// other than 4 need `--w4-group 64`. Changes nothing unless an affine
+    /// route row is on (`AVAROK_DENSE_AFFINE4_FROM_BF16`,
+    /// `AVAROK_GDN_AFFINE4_FROM_BF16`, `AVAROK_ATTN_AFFINE4_FROM_BF16`).
+    #[arg(long = "w4-bits", value_name = "BITS")]
+    pub w4_bits: Option<u8>,
+    /// Affine W4 routes: inputs per scale and bias, 32, 64 or 128 at 4 bits,
+    /// 64 at the other widths (default 64, or `AVAROK_W4_GROUP`;
+    /// `AVAROK_W4_GDN_GROUP` sets the GDN projections' group alone).
+    #[arg(long = "w4-group", value_name = "N")]
+    pub w4_group: Option<u16>,
+    /// Affine W4 routes: shrink candidates the quantizer tries per group,
+    /// keeping the least squared error (0 = plain MLX min-max, the default,
+    /// or `AVAROK_W4_CLIP_SEARCH`; at most 10 at 4 bits, 8 otherwise). Load
+    /// time only.
+    #[arg(long = "w4-clip-search", value_name = "N")]
+    pub w4_clip_search: Option<u8>,
     /// Pinned host pool (lane L25): MiB page-locked per `cuMemHostRegister`
     /// call, 1 to 4096 (default 64). Each pool chunk is pinned by its own call,
     /// on a background thread after the first chunks; a run never spans two
