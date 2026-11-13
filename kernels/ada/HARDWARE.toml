@@ -617,6 +617,22 @@ kv_view_selection = false
 # most 0.03), then the L02 NIAH grid and RULER within 2 points of dense, and
 # decode tok/s above dense at 128K.
 retro_attn = false
+# APPROXIMATE block-sparse prefill attention, XAttention-style
+# (`kernels/ada/common/prefill_block_sparse_ada.cu`,
+# `spark-model/src/port/sparse_prefill/`). A chunk of the paged prefill that
+# attends to at least `--prefill-sparse-min-tokens` keys (default 32768)
+# scores every pair of 128-token query and key blocks by a strided
+# antidiagonal sum (`--prefill-sparse-stride`, default 8), keeps per query
+# block the key blocks that hold `--prefill-sparse-threshold` (default 0.9) of
+# its softmax mass plus the sink block and the diagonal band, and runs flash
+# attention over the kept blocks only. BF16 or FP8 KV, head_dim 128 or 256, no
+# sliding window; everything else, and chunk 0, keeps the dense kernels. It
+# changes outputs, so it is OFF on every target and never defaults on: the
+# receipts it owes are the identity gate (threshold 1.0 serves through the
+# dense kernel, greedy SHA equal), `examples/sparse_prefill_microtest.rs`
+# PASS, TTFT at 32K and 128K, and RULER and NIAH grid deltas plus KL at length
+# against the row off. `AVAROK_PREFILL_SPARSE_ATTN=1` is the A/B.
+prefill_sparse_attn = false
 # @port:defaults
 
 # ── Kernels this target owns ───────────────────────────────────────────────
@@ -679,6 +695,107 @@ retro_attn = false
 #                            (`layers/dense_ffn_swiglu_quant.rs`). gb10's
 #                            `silu_mul_quant_fp8` stops at K = 2048; the Holo
 #                            intermediates are 3,584 and 9,216.
+#
+#   gated_delta_rule_wyn_woa.cu  ADDITION (port lane L10, row `gdn_woa_mtp`,
+#                            OFF). Write-on-accept twins of the batched
+#                            verify's wy2, wy3 and wy5..wy16 table kernels
+#                            plus one K-generic fold: the twin reads H once
+#                            and writes no state, the fold applies the
+#                            accepted rows once after the verdict. Same
+#                            expressions and order as each parent, so the
+#                            outputs and the folded state are bit-identical
+#                            (`examples/gdn_wyn_woa_oracle.rs`). K = 4 keeps
+#                            gb10's `gated_delta_rule_wy4_woa.cu`. Resolved
+#                            only with the row on (`qwen3_ssm/woa_wyn.rs`).
+#
+#   fp8_gemv_ada.cu (again)  The three decode GEMVs also have `_l2ef` twins:
+#                            the same code with evict-first L2 weight loads
+#                            (`createpolicy` + `ld.global.nc.L2::cache_hint`,
+#                            after Cinference, Apache-2.0), taken only when
+#                            `l2_evict_first_weights` resolves on. Same output
+#                            bits; check the SASS on a new CUDA (13.1's ptxas
+#                            faulted on hinted loads).
+#
+#   fp8_gemv_ada_batchm.cu   ADDITION. The batch-M (M = 2..8) twins of the three
+#                            decode GEMVs for the dense FFN's speculative
+#                            verify rows: one weight pass, M accumulators,
+#                            byte-identical per row to M launches of
+#                            fp8_gemv_ada (`layers/dense_ffn_ada_kernels/verify.rs`,
+#                            row `ffn_fp8_verify_gemv`). gb10's
+#                            w8a16_gemv_batch4 is the LUT counterpart at M <= 4.
+#
+#   rmsnorm_quant_fp8_ada.cu ADDITION. residual_add_rms_norm and the W8A8
+#                            FFN input's per_token_group_quant_fp8 in one pass,
+#                            bit for bit, without re-reading the normed rows
+#                            (`layers/dense_ffn_w8a8_prefill/norm_fused.rs`,
+#                            row `rmsnorm_fp8_quant_fused`).
+#
+#   gdn_chunk_tc_ada.cu      ADDITION. The tensor-core chunked GDN prefill
+#                            (prepare_wy_wu, state passing, output: K K^T, Q K^T
+#                            and Q S on BF16 mma.sync, the triangular products
+#                            and the state update on TF32 mma.sync, the state in
+#                            FP32 accumulators), from NInfer's chunked path via
+#                            Cinference (Apache-2.0,
+#                            CINFERENCE-GDN-CHUNK-ATTRIBUTION.md). No gb10
+#                            counterpart. Taken only when `gdn_prefill_tc`
+#                            resolves on and this module is in the image
+#                            (`layers/qwen3_ssm/gdn_chunk_tc_ada.rs`).
+#
+#   attn_page_sparse_ada.cu  ADDITION. Quest page-sparse decode attention
+#                            (attn_ps_summary_update, attn_ps_page_score,
+#                            attn_ps_compact): per-page key min/max, the Quest
+#                            bound per page, an exact top-k and the compacted
+#                            block table the unchanged paged decode reads. No
+#                            gb10 counterpart. Taken only when
+#                            `attn_page_sparse` resolves on (approximate,
+#                            never default on) and this module is in the
+#                            image (`spark-model/src/port/sparse_quest/`).
+#
+#   kv_page_sketch_ada.cu    ADDITION. The bounded KV view's per-page sketch:
+#                            the mean of each KV page's keys after k-norm and
+#                            BEFORE RoPE (re-read from the paged cache, BF16 or
+#                            FP8, RoPE undone with the write's own convention),
+#                            recomputed per page after each K write, plus the
+#                            in-place inverse RoPE of captured query rows. No
+#                            gb10 counterpart. Runs only when
+#                            `kv_view_selection` resolves on (approximate,
+#                            never default on); the idea is KVMem's
+#                            (arXiv:2609.04852), implemented independently
+#                            (`spark-runtime/src/kv_cache/sketch.rs`).
+#
+#   kv_page_score_ada.cu     ADDITION. The page-softmax view-block scorer over
+#                            that sketch (count-weighted block merge, FP32
+#                            logits, softmax stats, GQA mean or max, one
+#                            deterministic accumulate), tiled under the
+#                            caller's 64 MiB scratch for 1M tokens and 512
+#                            query rows (`spark-runtime/src/kv_select/`). Once
+#                            per user turn, same row.
+#
+#   kv_view_table_ada.cu     ADDITION. The bounded KV view's decode and verify
+#                            block tables: per attention row, the selected
+#                            pages before the view's tail page plus every page
+#                            from it on, and the shortened length, rebuilt from
+#                            the step's real tables inside the captured graph.
+#                            Rows find their view by content (the physical
+#                            blocks at three anchor pages), so a replay needs
+#                            no host code; a row with no view keeps its real
+#                            table. No gb10 counterpart. Runs only when
+#                            `kv_view_selection` resolves on with a budget
+#                            (approximate, never default on;
+#                            `spark-model/src/port/kv_view/device.rs`, host
+#                            twin `view.rs::build_row`).
+#
+#   prefill_block_sparse_ada.cu  ADDITION. Block-sparse paged PREFILL
+#                            attention, XAttention-style (clean room from the
+#                            paper): strided antidiagonal scoring of 128-token
+#                            blocks on BF16 mma.sync, per-query-block selection
+#                            by cumulative softmax mass (sink and diagonal band
+#                            always kept), then flash attention over the kept
+#                            KV blocks only (BF16 or FP8 KV, head_dim 128/256,
+#                            dynamic shared memory). No gb10 counterpart. Taken
+#                            only when `prefill_sparse_attn` resolves on
+#                            (approximate, never default on) and this module is
+#                            in the image (`spark-model/src/port/sparse_prefill/`).
 [kernels]
 overrides = [
   "fp8_gemm_ada.cu",
@@ -841,5 +958,6 @@ overrides = [
   #                        groups 1/2/4/6/8, fixed reduction order. Resolved
   #                        only by `port/retro/attn.rs` under `retro_attn`.
   "retro_attn_ada.cu",
+  "prefill_block_sparse_ada.cu",
   # @port:overrides
 ]

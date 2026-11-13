@@ -834,6 +834,22 @@ kv_view_selection = false
 # most 0.03), then the L02 NIAH grid and RULER within 2 points of dense, and
 # decode tok/s above dense at 128K.
 retro_attn = false
+# APPROXIMATE block-sparse prefill attention, XAttention-style
+# (`kernels/ada/common/prefill_block_sparse_ada.cu`,
+# `spark-model/src/port/sparse_prefill/`). A chunk of the paged prefill that
+# attends to at least `--prefill-sparse-min-tokens` keys (default 32768)
+# scores every pair of 128-token query and key blocks by a strided
+# antidiagonal sum (`--prefill-sparse-stride`, default 8), keeps per query
+# block the key blocks that hold `--prefill-sparse-threshold` (default 0.9) of
+# its softmax mass plus the sink block and the diagonal band, and runs flash
+# attention over the kept blocks only. BF16 or FP8 KV, head_dim 128 or 256, no
+# sliding window; everything else, and chunk 0, keeps the dense kernels. It
+# changes outputs, so it is OFF on every target and never defaults on: the
+# receipts it owes are the identity gate (threshold 1.0 serves through the
+# dense kernel, greedy SHA equal), `examples/sparse_prefill_microtest.rs`
+# PASS, TTFT at 32K and 128K, and RULER and NIAH grid deltas plus KL at length
+# against the row off. `AVAROK_PREFILL_SPARSE_ATTN=1` is the A/B.
+prefill_sparse_attn = false
 # @port:defaults
 # ── Kernels this target OVERRIDES or ADDS instead of inheriting ────────────
 #

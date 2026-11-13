@@ -63,6 +63,7 @@ const PORT_LEVERS: &[&str] = &[
     "attn_page_sparse",
     "kv_view_selection",
     "retro_attn",
+    "prefill_sparse_attn",
     // @port:levers
 ];
 
@@ -186,6 +187,10 @@ fn the_baked_port_rows_match_their_own_hardware_tree() {
         declared.port.kv_view_selection
     );
     assert_eq!(baked.port.retro_attn, declared.port.retro_attn);
+    assert_eq!(
+        baked.port.prefill_sparse_attn,
+        declared.port.prefill_sparse_attn
+    );
     // @port:baked-eq
 }
 
@@ -225,6 +230,7 @@ fn ada_port_rows_hold_their_write_time_values() {
     assert_eq!(declared("ada").port.attn_page_sparse, false);
     assert_eq!(declared("ada").port.kv_view_selection, false);
     assert_eq!(declared("ada").port.retro_attn, false);
+    assert_eq!(declared("ada").port.prefill_sparse_attn, false);
     // @port:ada
 }
 
@@ -263,6 +269,7 @@ fn non_ada_targets_keep_every_port_row_at_its_baseline() {
         assert!(!declared(hw).port.attn_page_sparse, "{hw}");
         assert!(!declared(hw).port.kv_view_selection, "{hw}");
         assert!(!declared(hw).port.retro_attn, "{hw}");
+        assert!(!declared(hw).port.prefill_sparse_attn, "{hw}");
         // @port:non-ada
     }
 }

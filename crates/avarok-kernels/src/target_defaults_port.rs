@@ -254,6 +254,10 @@ pub struct PortDefaults {
     /// --retro-update-interval generated tokens and reused by sequences that
     /// share a prefix.
     pub retro_attn: bool,
+    /// APPROXIMATE block-sparse prefill attention, XAttention-style
+    /// (`kernels/ada/common/prefill_block_sparse_ada.cu`,
+    /// `spark-model/src/port/sparse_prefill/`).
+    pub prefill_sparse_attn: bool,
     // @port:fields
 }
 
@@ -293,5 +297,6 @@ pub const PORT_BASELINE: PortDefaults = PortDefaults {
     attn_page_sparse: false,
     kv_view_selection: false,
     retro_attn: false,
+    prefill_sparse_attn: false,
     // @port:baseline
 };
