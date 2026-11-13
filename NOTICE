@@ -495,4 +495,22 @@ Quest page-sparse decode attention (algorithm) and arczhi/llama-tierkv
   per page, an exact radix top-k in one CTA, and a compacted block table
   read by Atlas's unchanged paged decode kernel instead of host staging. See
   QUEST-PAGE-SPARSE-ATTRIBUTION.md.
+
+RetrievalAttention / RetroInfer (retrieval attention host side)
+  Source: https://github.com/microsoft/RetrievalAttention, commit 03f912c
+  Files: cache_hub/kmeans.py (segment_k_means, _triton_k_means_train,
+         triton_reverse_index, triton_index_add),
+         cache_hub/retroinfer_cache.py (index build sizes, mean centering,
+         decode-time update, centroid scoring and zone selection, the
+         estimation-zone merge), config/config.py (generate_config sizes)
+  Copyright (c) Microsoft Corporation. Licensed under the MIT License
+  (LICENSES/RetroInfer-MIT.txt).
+  Atlas files: crates/spark-model/src/port/retro/config.rs,
+         crates/spark-model/src/port/retro/oracle.rs,
+         crates/spark-model/src/port/retro/oracle_eval.rs,
+         crates/spark-model/src/port/retro/update.rs
+  Changes: translated from Python and Triton to a Rust CPU reference and
+  host logic; f64 accumulation and fixed reduction order; ties toward the
+  lower index; fixed-capacity device buffers instead of growing tensors;
+  Atlas paged-KV addressing. See RETROINFER-ATTRIBUTION.md.
 # @port:notice

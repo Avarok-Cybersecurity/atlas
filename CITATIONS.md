@@ -464,4 +464,22 @@ copied.
   score in chronological order. Independent implementation in `crates/spark-runtime/src/kv_cache/sketch.rs`,
   `crates/spark-runtime/src/kv_select/`, `kernels/ada/common/{kv_page_sketch_ada.cu, kv_page_score_ada.cu}` and
   `crates/spark-model/src/port/kv_view/query_capture.rs` (lane L31; wiring and row `kv_view_selection` are L32's).
+
+### RetroInfer retrieval attention (L33 host side; L34a, L34b kernels)
+
+- RetroInfer: "RetroInfer: A Vector Storage Engine for Scalable Long-Context
+  LLM Inference", arXiv 2505.02922 (VLDB 2026), and its code in
+  microsoft/RetrievalAttention (https://github.com/microsoft/RetrievalAttention,
+  commit 03f912c, MIT, Copyright (c) Microsoft Corporation; text in
+  `LICENSES/RetroInfer-MIT.txt`). `cache_hub/kmeans.py`,
+  `cache_hub/retroinfer_cache.py` and `config/config.py` are translated into
+  the Rust host side and CPU oracle in
+  `crates/spark-model/src/port/retro/{config.rs, oracle.rs, oracle_eval.rs,
+  update.rs}`; the selector, lifecycle, shadow mode and verify union are
+  Atlas-native designs on that algorithm. Notes: `RETROINFER-ATTRIBUTION.md`,
+  `docs/porting/retro-attn.md`.
+- RetrievalAttention: "RetrievalAttention: Accelerating Long-Context LLM
+  Inference via Vector Retrieval", arXiv 2409.10516 (NeurIPS 2025): the
+  out-of-distribution query argument and the partial-softmax merge the
+  estimation zone generalizes. No code from it (the repository has none for it).
 <!-- @port:citations -->
