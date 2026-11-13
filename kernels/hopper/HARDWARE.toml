@@ -409,6 +409,30 @@ kv_batched_swap = false
 # shows no tok/s, TTFT or SSM-hit loss against off. Outputs are unchanged
 # either way: a missing blob is a recompute.
 ssm_store_lru = false
+# Radix prefix-cache eviction takes its victim from an ordered (last_access,
+# node id) index of evictable leaves, maintained at every transition of the
+# victim predicate, instead of scanning every node once per evicted block
+# (`spark-runtime/src/radix_tree/inner/lru_index.rs`). Ties break toward the
+# lowest node id exactly as the scan does, so the victim sequence is identical
+# by construction and by a randomized oracle
+# (`radix_tree/tests/lru_index.rs`). OFF until the receipt on this card:
+# greedy SHA equal and `atlas_prefix_evict_seconds_total` per victim down at
+# least 10x on a saturated pool (`AVAROK_PREFIX_EVICT_TIMING=1` times the
+# row-off scan arm). `AVAROK_RADIX_LRU_INDEX=1` is the A/B.
+radix_lru_index = false
+# A prefix-cache hit may end inside a KV block: the chunked prefill copies
+# that block into a private block (every attention layer's K and V, D2D on the
+# prefill stream before the block table is used) instead of sharing the
+# donor's writable tail, which is the issue #1193 aliasing bug
+# (`radix_tree/inner/cow_walk.rs`, `prefill_b/prefix_cow.rs`). Saves up to
+# block_size - 1 prefill tokens per warm hit and lets an exact repeat of a
+# non-aligned prompt reach its leaf snapshot. Never in a multi-rank world or
+# under --high-speed-swap. `AVAROK_PREFIX_SUBBLOCK` (0, 1, cow) still wins
+# when set. OFF until the receipt on this card: the #1193 shape at C=4
+# (identical prompts, MTP on) equal to cache-off at temperature 0 and free of
+# cross-stream identity at 0.7, and prefix-repetition TTFT no worse.
+# `AVAROK_PREFIX_COW_TAIL=1` is the A/B.
+prefix_cow_tail = false
 # @port:defaults
 # ── Kernels this target OVERRIDES or ADDS instead of inheriting ────────────
 #

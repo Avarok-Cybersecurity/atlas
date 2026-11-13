@@ -44,6 +44,17 @@ pub struct PortDefaults {
     /// re-homes a spilled prefix or the tail sweep drops one
     /// (`spark-runtime/src/radix_tree/snapshot_insert.rs`).
     pub ssm_store_lru: bool,
+    /// Radix prefix-cache eviction takes its victim from an ordered (last_access,
+    /// node id) index of evictable leaves, maintained at every transition of the
+    /// victim predicate, instead of scanning every node once per evicted block
+    /// (`spark-runtime/src/radix_tree/inner/lru_index.rs`).
+    pub radix_lru_index: bool,
+    /// A prefix-cache hit may end inside a KV block: the chunked prefill copies
+    /// that block into a private block (every attention layer's K and V, D2D on
+    /// the prefill stream before the block table is used) instead of sharing the
+    /// donor's writable tail, which is the issue #1193 aliasing bug
+    /// (`radix_tree/inner/cow_walk.rs`, `prefill_b/prefix_cow.rs`).
+    pub prefix_cow_tail: bool,
     // @port:fields
 }
 
@@ -55,5 +66,7 @@ pub struct PortDefaults {
 pub const PORT_BASELINE: PortDefaults = PortDefaults {
     kv_batched_swap: false,
     ssm_store_lru: false,
+    radix_lru_index: false,
+    prefix_cow_tail: false,
     // @port:baseline
 };

@@ -24,6 +24,8 @@
 pub struct PortFields {
     pub kv_batched_swap: bool,
     pub ssm_store_lru: bool,
+    pub radix_lru_index: bool,
+    pub prefix_cow_tail: bool,
     // @port:struct
 }
 
@@ -38,6 +40,8 @@ impl Default for PortFields {
         Self {
             kv_batched_swap: false,
             ssm_store_lru: false,
+            radix_lru_index: false,
+            prefix_cow_tail: false,
             // @port:default
         }
     }
@@ -57,6 +61,14 @@ pub fn parse(out: &mut PortFields, key: &str, value: &toml::Value) -> bool {
             out.ssm_store_lru = boolean(key, value);
             true
         }
+        "radix_lru_index" => {
+            out.radix_lru_index = boolean(key, value);
+            true
+        }
+        "prefix_cow_tail" => {
+            out.prefix_cow_tail = boolean(key, value);
+            true
+        }
         // @port:parse
         _ => false,
     }
@@ -74,10 +86,14 @@ pub fn literal(d: &PortFields) -> String {
         "crate::target_defaults_port::PortDefaults {{\n\
          \x20   kv_batched_swap: {kv_batched_swap},\n\
          \x20   ssm_store_lru: {ssm_store_lru},\n\
+         \x20   radix_lru_index: {radix_lru_index},\n\
+         \x20   prefix_cow_tail: {prefix_cow_tail},\n\
          // @port:literal-fmt\n\
          \x20   }}",
         kv_batched_swap = d.kv_batched_swap,
         ssm_store_lru = d.ssm_store_lru,
+        radix_lru_index = d.radix_lru_index,
+        prefix_cow_tail = d.prefix_cow_tail,
         // @port:literal-args
     )
 }
