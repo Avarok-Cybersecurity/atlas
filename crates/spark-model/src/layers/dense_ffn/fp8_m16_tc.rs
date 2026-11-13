@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Responsibility: serve a native-FP8 dense FFN over 5 to 16 DECODE or VERIFY
-//! rows on the sm_89 16-row tensor-core GEMM
-//! (`kernels/ada/common/fp8_gemm_ada_m16.cu`), behind the `ffn_fp8_m16_tc` row
-//! (off by default on every target).
+//! Responsibility: serve a native-FP8 dense FFN over 5 to 32 DECODE or VERIFY
+//! rows on the sm_89 tensor-core GEMM
+//! (`kernels/ada/common/fp8_gemm_ada_m16.cu`: the 16-row tile for 5 to 16
+//! rows, the 32-row tile for 17 to 32), behind the `ffn_fp8_m16_tc` row (off by
+//! default on every target).
 //!
 //! # What it replaces, and why
 //!
@@ -14,7 +15,7 @@
 //! |---|---|---|
 //! | 2..4 | `w8a16_gemv_batch4` | 92 us, the weight-bandwidth floor (91 us at 260 GB/s) |
 //! | 5..8 | the W8A8 arm, or the batch-M GEMV with its rows on | 143 us; 97 to 184 us |
-//! | 9..64 | the W8A8 arm | 143 us at every width |
+//! | 9..64 | the W8A8 arm | 143 us at every width (162 us on down) |
 //!
 //! The W8A8 arm (`fp8_gemm_ada_w8a8`) runs a 64-row padded tensor-core tile,
 //! so it does four times the MMA work a 16-row tile needs and is not bandwidth
@@ -25,7 +26,11 @@
 //! `fp8_gemm_ada_m16` keeps the activations BF16, widens the E4M3 weights in
 //! registers and runs one m16n8k16 MMA per 128 weight bytes, reading each
 //! weight once for up to 16 rows. Its `.cu` header has the geometry and the
-//! measurement behind the operand choice.
+//! measurement behind the operand choice. The 32-row entries
+//! (`fp8_gemm_ada_m32`, `_m32_dual`) put a second A tile on every dequantized
+//! weight fragment, so 17 to 32 rows (a 3-draft verify at 8 streams, a DFlash
+//! verify) also read each weight once; rows 0 to 15 are bit-equal to the
+//! 16-row kernel's.
 //!
 //! # Scope
 //!
@@ -34,7 +39,7 @@
 //!
 //! * `DenseFfnLayer::fp8_verify_arm` (`w4.rs`), the hook `forward_k2`,
 //!   `forward_k3` and `forward_km` try first: 2 to 8 rows from either layer
-//!   kind, of which this arm takes 5 to 8;
+//!   kind, of which this arm takes 5 to 8 (the wide arms below reach 32);
 //! * the wide arms that go straight to `forward_prefill`, through
 //!   [`FfnComponent::try_forward_fp8_m16_tc`]: the SSM multi-sequence decode
 //!   (`qwen3_ssm/trait_decode_multi_seq.rs`), the SSM batched verify
@@ -44,7 +49,7 @@
 //! Rows 2..4 are left to `w8a16_gemv_batch4`: it is bit-identical to the
 //! single-stream decode GEMV and already at the floor, so there is nothing to
 //! buy there and an exactness to lose (`AVAROK_FFN_FP8_M16_TC_MIN_ROWS=2`
-//! lowers the bound for a measurement). Above 16 rows the arm declines and the
+//! lowers the bound for a measurement). Above 32 rows the arm declines and the
 //! caller keeps its path.
 //!
 //! With the row on, this arm is asked BEFORE `ffn_fp8_verify_gemv` and
@@ -58,7 +63,7 @@
 //! contract is the M16 tensor-core one ([`super::m16_tc::oracle`]): at most 2
 //! BF16 ULP from `fp8_gemv_ada` per element, or under the FP32 accumulation
 //! floor for a cancelled output. `examples/fp8_ada_m16_tc_microtest.rs`
-//! measures it at every M in 1..=16 against the GEMV and a host FP64
+//! measures it at every M in 1..=32 against the GEMV and a host FP64
 //! reference. A row's bits do not depend on how many rows share the launch,
 //! so a verify row equals the same token decoded in a batch on this route.
 //!
@@ -84,8 +89,14 @@ pub const MODULE: &str = "fp8_gemm_ada_m16";
 pub const PLAIN: Entry = (MODULE, "fp8_gemm_ada_m16");
 /// Gate and up of the same rows in one launch.
 pub const DUAL: Entry = (MODULE, "fp8_gemm_ada_m16_dual");
-/// Most rows one launch serves: the kernel's M tile.
-pub const MAX_ROWS: usize = 16;
+/// One projection over 17..=32 rows: `(A, B, block_scale, C, M, N, K)`.
+pub const PLAIN32: Entry = (MODULE, "fp8_gemm_ada_m32");
+/// Gate and up of the same 17..=32 rows in one launch.
+pub const DUAL32: Entry = (MODULE, "fp8_gemm_ada_m32_dual");
+/// Most rows the 16-row entries serve: their M tile.
+pub const TILE_ROWS: usize = 16;
+/// Most rows one launch serves: the 32-row entries' M tile.
+pub const MAX_ROWS: usize = 32;
 /// Output columns one CTA covers (4 warps, one n8 MMA tile each).
 pub const N_TILE: u32 = 32;
 /// Threads in a CTA.
@@ -93,13 +104,18 @@ pub const THREADS: u32 = 128;
 /// The kernel folds one block scale per 128 K, so K must be whole blocks.
 pub const K_BLOCK: usize = 128;
 
-/// The two handles the arm launches.
+/// The four handles the arm launches: a pair for 5..=16 rows and a pair for
+/// 17..=32.
 #[derive(Clone, Copy, Debug)]
 pub struct TcKernels {
     /// `fp8_gemm_ada_m16`.
     pub plain: KernelHandle,
     /// `fp8_gemm_ada_m16_dual`.
     pub dual: KernelHandle,
+    /// `fp8_gemm_ada_m32`.
+    pub plain32: KernelHandle,
+    /// `fp8_gemm_ada_m32_dual`.
+    pub dual32: KernelHandle,
 }
 
 impl TcKernels {
@@ -113,11 +129,23 @@ impl TcKernels {
         Some(Self {
             plain: cached_target_kernel(gpu, PLAIN),
             dual: cached_target_kernel(gpu, DUAL),
+            plain32: cached_target_kernel(gpu, PLAIN32),
+            dual32: cached_target_kernel(gpu, DUAL32),
         })
+    }
+
+    /// The (plain, dual) pair that serves `rows`: the 16-row tile up to
+    /// [`TILE_ROWS`], the 32-row tile above.
+    pub fn pair_for(&self, rows: usize) -> (KernelHandle, KernelHandle) {
+        if rows <= TILE_ROWS {
+            (self.plain, self.dual)
+        } else {
+            (self.plain32, self.dual32)
+        }
     }
 }
 
-/// Construction-time lookup of both handles, so the forward never issues a
+/// Construction-time lookup of all four handles, so the forward never issues a
 /// first lookup. Called only with the row on (`ada_kernels::Fp8FfnKernels::resolve`).
 pub(crate) fn prime(gpu: &dyn GpuBackend) {
     let _ = TcKernels::cached(gpu);
@@ -129,8 +157,8 @@ pub(crate) fn prime(gpu: &dyn GpuBackend) {
 /// * `row_on`: the `ffn_fp8_m16_tc` row;
 /// * `native_fp8` and not `packed_q2`: the layer holds the block-scaled FP8
 ///   overlay and no keep-packed Q2_0 weights (those have their own arm);
-/// * `rows` in `min_rows..=MAX_ROWS`, and never fewer than 2: one row is the
-///   M=1 decode forward.
+/// * `rows` in `min_rows..=MAX_ROWS` (32), and never fewer than 2: one row is
+///   the M=1 decode forward.
 pub(crate) fn admits(
     row_on: bool,
     native_fp8: bool,
@@ -147,8 +175,8 @@ fn weight_ok(w: &Fp8Weight, n: usize, k: usize) -> bool {
 }
 
 impl DenseFfnLayer {
-    /// The FFN over `rows` decode or verify rows on the 16-row tensor-core
-    /// GEMM, into `moe_output` (where every small-batch entry point writes),
+    /// The FFN over `rows` decode or verify rows on the 16-row (up to 16) or
+    /// 32-row (17 to 32) tensor-core GEMM, into `moe_output` (where every small-batch entry point writes),
     /// or `Ok(false)` with nothing launched: row off, not a native-FP8 layer,
     /// a row count outside the arm's range, or the kernels absent.
     ///
@@ -211,8 +239,9 @@ impl DenseFfnLayer {
         // whole scale blocks along both reductions, and the three weights at
         // the shapes the FFN reads. Anything else declines rather than launch
         // and be wrong.
-        let ready = k.plain.0 != 0
-            && k.dual.0 != 0
+        let (plain, dual) = k.pair_for(rows);
+        let ready = plain.0 != 0
+            && dual.0 != 0
             && self.act_mul.0 != 0
             && self.lora.is_none()
             && hidden.is_multiple_of(K_BLOCK)
@@ -227,11 +256,11 @@ impl DenseFfnLayer {
         let gpu = ctx.gpu;
         let gate_out = ctx.buffers.expert_gate_out();
         let up_out = ctx.buffers.expert_up_out();
-        gemm_m16_dual(gpu, k.dual, input, g, gate_out, u, up_out, m, i, h, stream)?;
+        gemm_m16_dual(gpu, dual, input, g, gate_out, u, up_out, m, i, h, stream)?;
         ops::silu_mul(gpu, self.act_mul, gate_out, up_out, gate_out, m * i, stream)?;
         gemm_m16(
             gpu,
-            k.plain,
+            plain,
             gate_out,
             d,
             ctx.buffers.moe_output(),
@@ -242,10 +271,12 @@ impl DenseFfnLayer {
         )?;
         if ctx.stats.once("log:ffn_fp8_m16_tc") {
             tracing::info!(
-                "[avarok] dense FFN decode/verify rows: FP8 16-row tensor-core GEMM ({MODULE}, \
-                 {min_rows}..{MAX_ROWS} rows, gate+up in one launch, then down); one weight pass, \
+                "[avarok] dense FFN decode/verify rows: FP8 16/32-row tensor-core GEMM ({MODULE}, \
+                 {min_rows}..{TILE_ROWS} rows on the 16-row tile, {}..{MAX_ROWS} on the 32-row tile, \
+                 gate+up in one launch, then down); one weight pass, \
                  BF16 activations, REASSOCIATED against the decode GEMV (at most 2 BF16 ULP). \
-                 AVAROK_FFN_FP8_M16_TC=0 restores the prefill ladder (the W8A8 arm at these widths)."
+                 AVAROK_FFN_FP8_M16_TC=0 restores the prefill ladder (the W8A8 arm at these widths).",
+                TILE_ROWS + 1
             );
         }
         Ok(true)
@@ -272,7 +303,8 @@ impl crate::layers::FfnComponent {
     }
 }
 
-/// `out[m, n] = a[m, k] x E4M3(w[n, k])^T * scales`, `m` in 1..=16.
+/// `out[m, n] = a[m, k] x E4M3(w[n, k])^T * scales`: `m` in 1..=16 with
+/// [`PLAIN`], 1..=32 with [`PLAIN32`] (same arguments and grid).
 ///
 /// Kernel: `fp8_gemm_ada_m16(A, B, block_scale, C, M, N, K)`
 /// Grid: (ceil(N/32), 1, 1)  Block: (128, 1, 1)
@@ -301,7 +333,8 @@ pub fn gemm_m16(
         .launch(stream)
 }
 
-/// Gate and up of the same `[m, k]` rows in one launch.
+/// Gate and up of the same `[m, k]` rows in one launch ([`DUAL`] up to 16
+/// rows, [`DUAL32`] up to 32).
 ///
 /// Kernel: `fp8_gemm_ada_m16_dual(A, B1, B1_scale, C1, B2, B2_scale, C2, M, N, K)`
 /// Grid: (ceil(N/32), 1, 2)  Block: (128, 1, 1)

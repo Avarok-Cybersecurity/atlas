@@ -1379,8 +1379,8 @@ impl Qwen3SsmLayer {
             // MoE, where grouped-GEMM is a net loss at small batch (per-expert
             // M~1 + sort/permute overhead across the 36-layer SSM stack).
             k4_diag_checkpoint(ctx, "10a:residual_add_rms_norm", stream)?;
-            // Row `ffn_fp8_m16_tc` (off by default): up to 16 verify rows of a
-            // native-FP8 layer on the 16-row tensor-core GEMM; `false`
+            // Row `ffn_fp8_m16_tc` (off by default): up to 32 verify rows of a
+            // native-FP8 layer on the 16- or 32-row tensor-core GEMM; `false`
             // launched nothing (`dense_ffn/fp8_m16_tc.rs`).
             if !self
                 .ffn

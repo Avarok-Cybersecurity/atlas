@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! CPU tests for the 16-row tensor-core arm of a native-FP8 dense FFN
+//! CPU tests for the 16- and 32-row tensor-core arm of a native-FP8 dense FFN
 //! (`fp8_m16_tc.rs`, row `ffn_fp8_m16_tc`): the admission rule, the three
-//! launches a 5 to 16 row call makes and their geometry, and that the row
+//! launches a 5 to 32 row call makes (the 16-row entries up to 16 rows, the
+//! 32-row entries above) and their geometry, and that the row
 //! off, the widths outside the arm, a layer without the FP8 overlay, a shape
 //! that is not whole scale blocks and an absent kernel launch nothing. The
 //! kernel's numerics are the device oracle's
@@ -22,6 +23,8 @@ const H: u32 = 256;
 const INTER: u32 = 512;
 const DUAL_K: KernelHandle = KernelHandle(0x7C2);
 const PLAIN_K: KernelHandle = KernelHandle(0x7C1);
+const DUAL32_K: KernelHandle = KernelHandle(0x7C4);
+const PLAIN32_K: KernelHandle = KernelHandle(0x7C3);
 const ACT_MUL: KernelHandle = KernelHandle(0x7C7);
 const MIN: usize = ops::port_rows::ffn_fp8_m16_tc::DEFAULT_MIN_ROWS;
 
@@ -29,6 +32,8 @@ fn kernels() -> TcKernels {
     TcKernels {
         plain: PLAIN_K,
         dual: DUAL_K,
+        plain32: PLAIN32_K,
+        dual32: DUAL32_K,
     }
 }
 
@@ -137,14 +142,20 @@ fn u32_arg(v: u32) -> MockArg {
 }
 
 #[test]
-fn the_rule_needs_the_row_an_fp8_layer_and_five_to_sixteen_rows() {
+fn the_rule_needs_the_row_an_fp8_layer_and_five_to_thirty_two_rows() {
+    assert_eq!((TILE_ROWS, MAX_ROWS), (16, 32));
     for rows in MIN..=MAX_ROWS {
         assert!(admits(true, true, false, rows, MIN), "rows={rows}");
     }
     assert!(!admits(false, true, false, 8, MIN), "row off");
     assert!(!admits(true, false, false, 8, MIN), "no FP8 overlay");
     assert!(!admits(true, true, true, 8, MIN), "packed Q2_0");
-    for rows in [0, 1, 2, 3, 4, MAX_ROWS + 1, 32] {
+    assert!(!admits(false, true, false, 24, MIN), "row off, 32-row tile");
+    assert!(
+        !admits(true, false, false, 24, MIN),
+        "no overlay, 32-row tile"
+    );
+    for rows in [0, 1, 2, 3, 4, MAX_ROWS + 1, 33, 64] {
         assert!(!admits(true, true, false, rows, MIN), "rows={rows}");
     }
 }
@@ -154,6 +165,8 @@ fn the_lower_bound_moves_down_to_two_rows_and_never_to_one() {
     for rows in 2..=MAX_ROWS {
         assert!(admits(true, true, false, rows, 2), "rows={rows}");
     }
+    // Lowering the bound never raises the ceiling.
+    assert!(!admits(true, true, false, MAX_ROWS + 1, 2));
     // One row is the M=1 decode forward whatever the knob says.
     for min in [0usize, 1, 2] {
         assert!(!admits(true, true, false, 1, min), "min={min}");
@@ -206,7 +219,7 @@ fn sixteen_rows_are_one_pass_per_weight_into_moe_output() {
 }
 
 #[test]
-fn every_width_from_five_to_sixteen_takes_the_arm_and_the_edges_decline() {
+fn every_width_from_five_to_thirty_two_takes_the_arm_and_the_edges_decline() {
     let gpu = MockGpuBackend::new();
     let layer = fp8_layer(&gpu);
     with_ctx(&gpu, true, |ctx, buffers| {
@@ -221,7 +234,7 @@ fn every_width_from_five_to_sixteen_takes_the_arm_and_the_edges_decline() {
             );
             assert_eq!(gpu.launch_count() - start, 3, "rows={rows}");
         }
-        for rows in [1usize, 2, 4, MAX_ROWS + 1, 32] {
+        for rows in [1usize, 2, 4, MAX_ROWS + 1, 33, 64] {
             let start = gpu.launch_count();
             assert!(
                 !layer
@@ -294,6 +307,16 @@ fn a_missing_handle_or_activation_kernel_declines_instead_of_mixing_kernels() {
         plain: KernelHandle(0),
         ..kernels()
     };
+    let no_m32 = [
+        TcKernels {
+            plain32: KernelHandle(0),
+            ..kernels()
+        },
+        TcKernels {
+            dual32: KernelHandle(0),
+            ..kernels()
+        },
+    ];
     let mut no_act = fp8_layer(&gpu);
     no_act.act_mul = KernelHandle(0);
     let layer = fp8_layer(&gpu);
@@ -312,7 +335,32 @@ fn a_missing_handle_or_activation_kernel_declines_instead_of_mixing_kernels() {
                 .fp8_m16_tc_arm_with(true, MIN, &kernels(), x, 8, ctx, 0)
                 .unwrap()
         );
-        assert_eq!(gpu.launch_count(), start);
+        // A missing 32-row handle declines a 17..32 row call and leaves a
+        // 16-row one alone (and the reverse for a missing 16-row handle).
+        for k in no_m32 {
+            assert!(
+                !layer
+                    .fp8_m16_tc_arm_with(true, MIN, &k, x, 24, ctx, 0)
+                    .unwrap()
+            );
+        }
+        for k in [no_dual, no_plain] {
+            assert!(
+                !layer
+                    .fp8_m16_tc_arm_with(true, MIN, &k, x, 16, ctx, 0)
+                    .unwrap()
+            );
+            assert!(
+                layer
+                    .fp8_m16_tc_arm_with(true, MIN, &k, x, 24, ctx, 0)
+                    .unwrap()
+            );
+        }
+        assert_eq!(
+            gpu.launch_count() - start,
+            6,
+            "two 24-row calls launch 3 each"
+        );
     });
 }
 
@@ -388,18 +436,18 @@ fn a_target_without_the_module_has_no_handles_and_issues_no_lookup() {
 }
 
 #[test]
-fn priming_looks_both_entries_up_once_and_the_forward_read_is_a_cache_hit() {
+fn priming_looks_all_four_entries_up_once_and_the_forward_read_is_a_cache_hit() {
     let gpu = MockGpuBackend::new();
     prime(&gpu);
     let seen = gpu.kernel_lookups_snapshot();
-    for (module, entry) in [PLAIN, DUAL] {
+    for (module, entry) in [PLAIN, DUAL, PLAIN32, DUAL32] {
         assert!(
             seen.contains(&(module.to_owned(), entry.to_owned())),
             "{entry}"
         );
     }
     let k = TcKernels::cached(&gpu).expect("the mock carries every module");
-    assert!(k.plain.0 != 0 && k.dual.0 != 0);
+    assert!(k.plain.0 != 0 && k.dual.0 != 0 && k.plain32.0 != 0 && k.dual32.0 != 0);
     assert_eq!(gpu.kernel_lookups_snapshot().len(), seen.len());
 }
 
@@ -410,10 +458,13 @@ fn both_entries_are_declared_by_the_ada_source() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../kernels/ada/common");
     let src = std::fs::read_to_string(root.join(format!("{MODULE}.cu")))
         .unwrap_or_else(|e| panic!("kernels/ada/common/{MODULE}.cu: {e}"));
-    for (_, entry) in [PLAIN, DUAL] {
+    for (_, entry) in [PLAIN, DUAL, PLAIN32, DUAL32] {
         assert!(
             src.contains(&format!(" {entry}(")),
             "kernels/ada/common/{MODULE}.cu declares no `{entry}`"
         );
     }
 }
+
+#[path = "fp8_m16_tc_m32_tests.rs"]
+mod m32;

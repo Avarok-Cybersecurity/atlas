@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Responsibility: the `ffn_fp8_m16_tc` row: a native-FP8 dense FFN over 5 to
-//! 16 decode or verify rows runs on the sm_89 16-row tensor-core GEMM
+//! 32 decode or verify rows runs on the sm_89 16- or 32-row tensor-core GEMM
 //! (`layers/dense_ffn/fp8_m16_tc.rs`) instead of the prefill ladder (the W8A8
 //! arm at those widths). Resolution: there is no CLI flag;
 //! `AVAROK_FFN_FP8_M16_TC` under the toggle grammar (`0`/`false`/`off`/`no` =
