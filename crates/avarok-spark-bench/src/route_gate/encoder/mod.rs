@@ -20,7 +20,7 @@ mod rope;
 
 pub use attn::{AttnWeights, attn_forward, causal_attention};
 pub use gdn::{GdnWeights, delta_rule_head, gdn_forward};
-pub use load::EmbedSource;
+pub use load::{EmbedSource, weights_file};
 pub use ops::{
     Lin, add, dot_f32, l2_normalize, maybe_round, rms_norm_1p, rms_norm_gated, round_bf16, silu,
     softplus,
@@ -182,18 +182,35 @@ pub struct Encoder {
 impl Encoder {
     /// Final-RMSNorm hidden states `[t, hidden]` of the stack for `ids` (batch 1, no padding, no cache).
     pub fn hidden(&self, ids: &[u32]) -> GResult<Vec<f32>> {
+        let (h, _) = self.residual(ids, &[])?;
+        Ok(self.final_normed(&h))
+    }
+
+    /// The final RMSNorm applied to residual rows `[t, hidden]`.
+    pub fn final_normed(&self, h: &[f32]) -> Vec<f32> {
+        rms_norm_1p(h, &self.final_norm, self.cfg.eps, self.opts.bf16)
+    }
+
+    /// The raw residual stream `[t, hidden]` after the last loaded layer (no final norm), plus a copy of it after each
+    /// layer count in `taps` (a count `n` is the output of layer `n - 1`, zero-based; counts outside
+    /// `1..=layers.len()` are refused).
+    pub fn residual(&self, ids: &[u32], taps: &[usize]) -> GResult<(Vec<f32>, Vec<Vec<f32>>)> {
         let c = &self.cfg;
         let (t, bf16) = (ids.len(), self.opts.bf16);
         if t == 0 {
             return value_err("hidden: no tokens");
         }
+        if let Some(bad) = taps.iter().find(|&&n| n == 0 || n > self.layers.len()) {
+            return value_err(format!("tap {bad} is outside 1..={}", self.layers.len()));
+        }
+        let mut snaps: Vec<Vec<f32>> = vec![Vec::new(); taps.len()];
         let mut h = self.embed.rows(ids, c.hidden, c.vocab)?;
         let needs_rope = self
             .layers
             .iter()
             .any(|l| matches!(l.mixer, Mixer::Attn(_)));
         let rope = needs_rope.then(|| RopeTables::for_text(&c.rope, c.head_dim, t, self.opts.rope));
-        for layer in &self.layers {
+        for (li, layer) in self.layers.iter().enumerate() {
             let x = rms_norm_1p(&h, &layer.input_norm, c.eps, bf16);
             let mixed = match &layer.mixer {
                 Mixer::Gdn(w) => gdn_forward(c, w, &x, t, bf16),
@@ -210,7 +227,16 @@ impl Encoder {
             let prod = maybe_round(act.iter().zip(&u).map(|(a, b)| a * b).collect(), bf16);
             let m = layer.down.forward(&prod, t, bf16);
             h = add(&h, &m, bf16);
+            for (snap, _) in snaps.iter_mut().zip(taps).filter(|(_, n)| **n == li + 1) {
+                snap.clone_from(&h);
+            }
         }
-        Ok(rms_norm_1p(&h, &self.final_norm, c.eps, bf16))
+        Ok((h, snaps))
+    }
+
+    /// Tied-head logits `[t, vocab]` of final-normed rows `[t, hidden]`.
+    pub fn logits(&self, normed: &[f32], t: usize) -> GResult<Vec<f32>> {
+        self.embed
+            .logits(normed, t, self.cfg.hidden, self.cfg.vocab)
     }
 }

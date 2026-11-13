@@ -19,6 +19,7 @@
 //! | [`prep`] | `prep.py` | build the prompts, collect replies from an Atlas server, grade, summary |
 //! | [`grading`] | `grading.py` | answer extraction and sandboxed code execution |
 //! | [`encoder`], [`serializer`], [`goldens`], [`rows`] | `arc_rows.py` | CPU readouts, the goldens oracle, token check |
+//! | [`lm_check`], [`lm_texts`] | (new) | full-LM oracle of the encoder on the stock checkpoint (`encoder_check` binary) |
 //!
 //! Attribution: the Stage-1 head is a translation of Apache-2.0 code (Atlas Futures, Inc.) and the readouts follow the
 //! Apache-2.0 ARC-1.0 release documentation; see `RAYLINE-ROUTING-ATTRIBUTION.md` and `NOTICE-rayline.txt`.
@@ -29,6 +30,8 @@ pub mod error;
 pub mod fit_eval;
 pub mod goldens;
 pub mod grading;
+pub mod lm_check;
+pub mod lm_texts;
 pub mod mat;
 pub mod metrics;
 pub mod mt;
@@ -47,6 +50,8 @@ mod tests_encoder_rope;
 mod tests_fit_eval;
 #[cfg(test)]
 mod tests_grading;
+#[cfg(test)]
+mod tests_lm_check;
 #[cfg(test)]
 mod tests_metrics;
 #[cfg(test)]
