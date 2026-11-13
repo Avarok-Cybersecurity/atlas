@@ -65,6 +65,7 @@ pub(crate) fn apply(args: &PortArgs) -> anyhow::Result<()> {
 /// row value, a contradictory flag pair). Empty until a lane adds a line.
 #[allow(unused_variables)]
 pub(crate) fn validate(args: &PortArgs) -> anyhow::Result<()> {
+    crate::scheduler::conf_summary::validate_env()?;
     spark_model::port::affine_opts::validate(spark_model::port::affine_opts::AffineCli {
         bits: args.w4_bits,
         group: args.w4_group,

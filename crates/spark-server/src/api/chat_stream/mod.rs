@@ -40,7 +40,9 @@ use tokio_stream::wrappers::ReceiverStream;
 use crate::AppState;
 use crate::tool_parser;
 
+use super::evidence;
 use super::inference_types::{GrammarSpec, InferenceRequest, StreamEvent};
+use crate::scheduler::conf_summary::{self, ConfAcc};
 
 use ctx::StreamCtx;
 use state::StreamState;
@@ -94,6 +96,8 @@ pub(crate) async fn run_chat_stream(
     req_return_token_ids: bool,
     req_ctx: Option<crate::rate_limiter::RequestContext>,
     dump_seq: Option<u64>,
+    // Atlas request extensions (no-drafts, confidence summary); `Default` is inert.
+    port_opts: evidence::StreamPortOpts,
     active_guard: crate::metrics::ActiveRequestGuard,
 ) -> Result<crate::ir::DeltaStream, (StatusCode, String)> {
     // Channel capacity sized for ~30s of decode at 50 tok/s. The previous
@@ -154,7 +158,8 @@ pub(crate) async fn run_chat_stream(
         require_tool_call: tool_choice_required,
         tools_present: tools_active,
         suppress_tool_call,
-        disable_mtp: false,
+        // `atlas_speculative: false` rides the existing per-sequence MTP switch.
+        disable_mtp: port_opts.no_drafts,
         grammar_spec,
         seed,
         top_logprobs,
@@ -256,13 +261,20 @@ pub(crate) async fn run_chat_stream(
         );
     }
 
+    // Confidence summary accumulator: `Some` only for a request that wants one.
+    let mut conf_acc = port_opts
+        .conf_collect
+        .then(|| ConfAcc::new(conf_summary::conf_k()));
+
     let token_stream = ReceiverStream::new(token_rx).flat_map(move |event| {
         use futures::StreamExt;
         // The handlers emit provider-neutral deltas (`ir::StreamDelta`);
         // they never touch the wire format. Encoding happens in the
         // caller's surface encoder.
         let deltas = match event {
-            StreamEvent::Token(tok) | StreamEvent::TokenWithLogprobs(tok, _) => {
+            StreamEvent::Token(tok) => handle_token::handle_token(&mut stream_state, &ctx, tok),
+            StreamEvent::TokenWithLogprobs(tok, lp) => {
+                conf_summary::observe_stream(conf_acc.as_mut(), tok, &lp);
                 handle_token::handle_token(&mut stream_state, &ctx, tok)
             }
             // Legacy /v1/completions-only event; chat never requests
@@ -293,7 +305,7 @@ pub(crate) async fn run_chat_stream(
                 // flags survived, which is the built-in negative control:
                 // only this field was reset.
                 stream_state.guard_stop = stream_state.guard_stop.or(guard_stop);
-                handle_done::handle_done(
+                let mut deltas = handle_done::handle_done(
                     &mut stream_state,
                     &ctx,
                     finish_reason,
@@ -303,7 +315,9 @@ pub(crate) async fn run_chat_stream(
                     reasoning_tokens,
                     cached_prompt_tokens,
                     accepted_prediction_tokens,
-                )
+                );
+                evidence::finish_conf(&mut deltas, conf_acc.take(), port_opts.conf_report);
+                deltas
             }
             StreamEvent::Error(msg) => handle_error::handle_error(&ctx, msg),
         };

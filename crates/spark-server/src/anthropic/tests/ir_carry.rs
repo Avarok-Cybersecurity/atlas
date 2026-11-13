@@ -338,6 +338,7 @@ fn ir_response(choice: crate::ir::Choice) -> crate::ir::ChatResponse {
             time_to_first_token_ms: 0.0,
             decode_time_ms: 0.0,
             response_tokens_per_second: 0.0,
+            atlas: Default::default(),
         },
     }
 }

@@ -19,8 +19,10 @@ use crate::tool_parser;
 
 use super::chat_blocking_choice::{build_choice_message, build_logprobs};
 use super::compact::openai_error_response;
+use super::evidence::{self, Digest};
 use super::inference_impl::{extract_thinking, strip_stop_sequences};
 use super::inference_types::{GrammarSpec, InferenceRequest};
+use crate::scheduler::conf_summary::{self, ConfSummary};
 
 pub(super) struct BlockingPathArgs {
     pub state: Arc<AppState>,
@@ -110,6 +112,11 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> super::chat::Ch
     } = args;
 
     let n = req.n.max(1);
+    // Atlas request extensions (`api/evidence.rs`, `scheduler/conf_summary.rs`):
+    // a plain request leaves all of this inert.
+    let conf_plan = conf_summary::plan(conf_summary::row_on(), req.confidence, top_logprobs);
+    let mut token_digests: Vec<Digest> = Vec::new();
+    let mut conf: Option<ConfSummary> = None;
     let mut all_choices: Vec<ir::Choice> = Vec::with_capacity(n);
     let mut total_completion_tokens = 0usize;
     let mut first_ttft = 0.0f64;
@@ -161,10 +168,12 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> super::chat::Ch
             require_tool_call: tool_choice_required,
             tools_present: tools_active,
             suppress_tool_call,
-            disable_mtp: false,
+            // `atlas_speculative: false` rides the existing per-sequence MTP
+            // switch (`mtp_gate::spec_dispatch_eligible`).
+            disable_mtp: req.no_drafts,
             grammar_spec: grammar_spec.clone(),
             seed: req.seed.map(|s| s.wrapping_add(choice_idx as u64)),
-            top_logprobs,
+            top_logprobs: conf_plan.sched_top_logprobs,
             prompt_logprobs: None,
             echo: false,
             timeout_at,
@@ -198,6 +207,15 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> super::chat::Ch
             first_ttft = response.time_to_first_token_ms;
         }
         last_decode_time_ms = response.decode_time_ms;
+        if req.evidence {
+            token_digests.push(evidence::token_sha(output_tokens_without_stop(
+                &response.output_tokens,
+                response.finish_reason.as_str(),
+            )));
+        }
+        if choice_idx == 0 && conf_plan.collect {
+            conf = conf_summary::summarize(&response.logprobs, conf_summary::conf_k());
+        }
 
         let num_completion = response.output_tokens.len();
         total_completion_tokens += num_completion;
@@ -227,9 +245,23 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> super::chat::Ch
         choice.finish_reason =
             stop_match_corrected(choice.finish_reason, choice.matched_stop.is_some());
         choice.logprobs = build_logprobs(&state, &response);
+        if conf_plan.collect {
+            // The scheduler extracted logprobs for the summary; the client
+            // gets back exactly what it asked for.
+            evidence::trim_choice_logprobs(&mut choice, conf_plan.client_top_logprobs);
+        }
         all_choices.push(choice);
     }
 
+    if let Some(summary) = conf.as_ref() {
+        conf_summary::record(summary);
+    }
+    let atlas = evidence::blocking_extras(
+        req.evidence,
+        &token_digests,
+        &all_choices,
+        conf.filter(|_| conf_plan.report),
+    );
     finalize_response(
         state,
         req_ctx,
@@ -241,6 +273,7 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> super::chat::Ch
         total_cached_prompt_tokens,
         total_accepted_prediction_tokens,
         prompt_len,
+        atlas,
     )
 }
 
@@ -388,6 +421,7 @@ fn finalize_response(
     total_cached_prompt_tokens: u32,
     total_accepted_prediction_tokens: usize,
     prompt_len: usize,
+    atlas: evidence::UsageExtras,
 ) -> super::chat::ChatOutcome {
     let usage = ir::Usage {
         prompt_tokens: prompt_len,
@@ -403,6 +437,7 @@ fn finalize_response(
             total_completion_tokens,
             last_decode_time_ms,
         ),
+        atlas,
     };
 
     // REQUESTS_ACTIVE released by the caller's ActiveRequestGuard on return.

@@ -613,6 +613,11 @@ pub fn process_decode_logits(
         // Accumulate logprobs data for blocking responses.
         if let Some(lp) = logprobs {
             a.logprobs_data.push(lp);
+            // Confidence summary: twin of the `emit_token` release.
+            super::conf_summary::release_internal_logprobs(
+                &mut a.top_logprobs,
+                a.logprobs_data.len(),
+            );
         }
 
         // </tool_call> handling. Tool-armed requests (grammar active OR

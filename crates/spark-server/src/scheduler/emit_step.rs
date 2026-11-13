@@ -210,6 +210,9 @@ pub fn emit_token(
     // Accumulate logprobs data for blocking responses.
     if let Some(lp) = logprobs {
         a.logprobs_data.push(lp);
+        // Confidence summary: give back the summary-only extraction after K
+        // records (a client's own `top_logprobs` is never touched).
+        super::conf_summary::release_internal_logprobs(&mut a.top_logprobs, a.logprobs_data.len());
     }
 
     a.output_tokens.push(tok);

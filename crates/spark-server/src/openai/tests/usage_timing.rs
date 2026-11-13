@@ -21,6 +21,7 @@ fn ir_usage(completion_tokens: usize, ttft_ms: f64, decode_ms: f64) -> ir::Usage
         time_to_first_token_ms: ttft_ms,
         decode_time_ms: decode_ms,
         response_tokens_per_second: ir::Usage::decode_rate_tok_s(completion_tokens, decode_ms),
+        atlas: Default::default(),
     }
 }
 

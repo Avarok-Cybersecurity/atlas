@@ -170,6 +170,10 @@ pub fn lower_responses_to_chat(
         // Responses API has no token-IDs knob; lowered requests keep
         // the default off (PCND — no implicit behavior change).
         return_token_ids: false,
+        // The Atlas request extensions exist on the chat surface only.
+        atlas_evidence: false,
+        atlas_confidence: false,
+        atlas_speculative: None,
         enable_thinking: None,
         thinking: None,
         thinking_token_budget: None,

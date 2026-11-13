@@ -213,6 +213,21 @@ pub struct ChatCompletionRequest {
     /// ladder as the nested `reasoning.effort` object.
     #[serde(default)]
     pub reasoning_effort: Option<String>,
+    /// Atlas extension: add `usage.atlas_token_sha` and
+    /// `usage.atlas_output_sha256` to the response (see `api/evidence.rs`).
+    /// Default off, so existing responses are byte-unchanged.
+    #[serde(default)]
+    pub atlas_evidence: bool,
+    /// Atlas extension: add `usage.atlas_confidence` (mean top-1 probability,
+    /// minimum top-1 margin and low-confidence fraction over the first K
+    /// generated tokens). Default off.
+    #[serde(default)]
+    pub atlas_confidence: bool,
+    /// Atlas extension: `Some(false)` keeps this request out of every
+    /// speculative step (draft-free decode); `None`/`Some(true)` = server
+    /// default.
+    #[serde(default)]
+    pub atlas_speculative: Option<bool>,
 }
 
 /// Stream options (OpenAI-compatible).
@@ -299,6 +314,10 @@ pub struct ChatTemplateKwargs {
     /// other `chat_template_kwargs` keys in the directive ladder
     /// (vLLM's template gates the effort block on `enable_thinking`).
     pub reasoning_effort: Option<String>,
+    /// Sharp-template `terse` flag, forwarded to the chat template's render
+    /// context only when present (`ir::ChatRequest::template_terse`). A
+    /// template that does not read it ignores it.
+    pub terse: Option<bool>,
 }
 
 impl ChatCompletionRequest {
@@ -576,5 +595,31 @@ mod alias_tests {
         let req: ChatCompletionRequest =
             serde_json::from_str(&base(r#","thinking_token_budget":256"#)).unwrap();
         assert_eq!(req.thinking_token_budget, Some(256));
+    }
+
+    #[test]
+    fn atlas_fields_default_off_and_parse_when_sent() {
+        let req: ChatCompletionRequest = serde_json::from_str(&base("")).unwrap();
+        assert!(!req.atlas_evidence && !req.atlas_confidence);
+        assert_eq!(req.atlas_speculative, None);
+        let req: ChatCompletionRequest = serde_json::from_str(&base(
+            r#","atlas_evidence":true,"atlas_confidence":true,"atlas_speculative":false"#,
+        ))
+        .unwrap();
+        assert!(req.atlas_evidence && req.atlas_confidence);
+        assert_eq!(req.atlas_speculative, Some(false));
+    }
+
+    #[test]
+    fn terse_template_kwarg_parses_and_is_absent_by_default() {
+        let req: ChatCompletionRequest = serde_json::from_str(&base(
+            r#","chat_template_kwargs":{"terse":false,"enable_thinking":true}"#,
+        ))
+        .unwrap();
+        let kw = req.chat_template_kwargs.unwrap();
+        assert_eq!(kw.terse, Some(false));
+        let req: ChatCompletionRequest =
+            serde_json::from_str(&base(r#","chat_template_kwargs":{}"#)).unwrap();
+        assert_eq!(req.chat_template_kwargs.unwrap().terse, None);
     }
 }

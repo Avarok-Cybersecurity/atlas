@@ -470,6 +470,7 @@ pub(super) async fn completions_stream(
                     response_tokens_per_second: tps,
                     decode_time_ms,
                     total_time_ms: time_to_first_token_ms + decode_time_ms,
+                    atlas: Default::default(),
                 };
                 if include_usage {
                     // Chat parity: finish chunk without usage, then a

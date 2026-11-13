@@ -59,6 +59,11 @@ mod phase_start_prefills;
 pub(crate) mod restore_queue;
 // The port sprint's (`port/consumer-opt`) per-sequence state (`ActiveSeq::port`).
 pub(crate) mod port_state;
+// Logprob confidence summary and its `atlas_conf_*` series (L05).
+pub(crate) mod conf_summary;
+// Admission regression vectors and the no-drafts switch (L05).
+#[cfg(test)]
+mod admission_port_tests;
 mod preempt;
 #[cfg(test)]
 mod preempt_tests;
@@ -785,6 +790,9 @@ pub fn run(
                 && active.len() == 1
                 && spec_slots_covered
                 && active[0].grammar_state.is_none()
+                // Port sprint (L05): a request that opted out of drafts
+                // (`atlas_speculative: false`) skips this single-sequence branch too.
+                && !active[0].disable_mtp
             {
                 // N-gram speculative: CPU proposer + CUDA-graphed K=2 verify.
                 if let Some(ref mut proposer) = ngram_proposer {
@@ -794,6 +802,8 @@ pub fn run(
                 && active.len() == 1
                 && spec_slots_covered
                 && active[0].grammar_state.is_none()
+                // Same per-request opt-out as the n-gram branch above (L05).
+                && !active[0].disable_mtp
             {
                 // Self-speculative: draft via layer-skipping, verify with full model.
                 // Clamped to the active slot's tiered verify capacity, like

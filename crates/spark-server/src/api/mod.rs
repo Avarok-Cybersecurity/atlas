@@ -49,6 +49,8 @@ pub mod misc_handlers;
 pub mod models;
 // The port sprint's (`port/consumer-opt`) `/metrics` series.
 pub mod port_metrics;
+// Request fingerprints and the usage extras (L05).
+pub mod evidence;
 pub mod responses;
 pub mod responses_stream;
 pub mod responses_stream_finalize;

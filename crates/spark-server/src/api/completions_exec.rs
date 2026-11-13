@@ -223,6 +223,7 @@ pub(super) async fn run_blocking(
         response_tokens_per_second: last_tps,
         decode_time_ms: last_decode_time_ms,
         total_time_ms: last_ttft + last_decode_time_ms,
+        atlas: Default::default(),
     };
 
     Json(CompletionResponse::from_choices(

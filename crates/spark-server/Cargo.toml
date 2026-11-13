@@ -134,6 +134,8 @@ prometheus = { version = "0.14", default-features = false }
 lazy_static = "1"
 tower-http = { version = "0.7", features = ["catch-panic", "cors"] }
 base64 = "0.22"
+# SHA-256 for the atlas_token_sha / atlas_output_sha256 request fingerprints (L05).
+sha2 = { workspace = true }
 # @port:deps
 
 [dev-dependencies]

@@ -12,5 +12,9 @@
 /// row-off lane's field is its type's `Default` and is never read.
 #[derive(Default)]
 pub struct SeqPortState {
+    /// `atlas_speculative: false` on the request (L05): this sequence never
+    /// enters a speculative step. Set by `SeqPortState::for_request` at the
+    /// sequence's creation sites; a round planner (L13) must honor it.
+    pub no_drafts: bool,
     // @port:fields
 }

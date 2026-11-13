@@ -75,6 +75,7 @@ fn completion_response_carries_system_fingerprint_and_optional_logprobs() {
         response_tokens_per_second: 0.0,
         decode_time_ms: 0.0,
         total_time_ms: 0.0,
+        atlas: Default::default(),
     };
     let resp = CompletionResponse::new("m", "hi".into(), usage, "stop");
     let v = serde_json::to_value(&resp).expect("serialize");

@@ -198,7 +198,7 @@ fn build_active_seq_from_prefill(
         thinking_tokens: 0,
         cached_prompt_tokens: cached_prompt_tok,
         preempt_immune_until_tokens: 0,
-        port: Default::default(),
+        port: super::port_state::SeqPortState::for_request(p.disable_mtp),
         force_end_thinking: false,
         think_force_closed: false,
         sentence_defer_count: 0,

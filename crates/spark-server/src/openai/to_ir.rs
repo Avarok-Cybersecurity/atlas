@@ -85,6 +85,8 @@ impl From<ChatCompletionRequest> for ir::ChatRequest {
             .chat_template_kwargs
             .as_ref()
             .and_then(|kw| kw.preserve_thinking);
+        let template_terse = req.chat_template_kwargs.as_ref().and_then(|kw| kw.terse);
+        let no_drafts = req.atlas_speculative == Some(false);
         let top_logprobs = resolve_top_logprobs(req.logprobs, req.top_logprobs);
         // Logit bias: OpenAI's string-keyed map → typed pairs. Keys that
         // don't parse as token ids are dropped (historical behavior).
@@ -141,6 +143,10 @@ impl From<ChatCompletionRequest> for ir::ChatRequest {
             seed: req.seed,
             timeout_secs: req.timeout,
             return_token_ids: req.return_token_ids,
+            template_terse,
+            no_drafts,
+            evidence: req.atlas_evidence,
+            confidence: req.atlas_confidence,
         }
     }
 }
@@ -431,5 +437,28 @@ mod tests {
         assert_eq!(resolve_top_logprobs(Some(true), Some(99)), Some(20));
         assert_eq!(resolve_top_logprobs(None, None), None);
         assert_eq!(resolve_top_logprobs(Some(false), None), None);
+    }
+
+    #[test]
+    fn atlas_request_fields_lower_into_the_envelope() {
+        let base =
+            serde_json::json!({"model": "m", "messages": [{"role": "user", "content": "hi"}]});
+        let ir = ir::ChatRequest::from(wire(base.clone()));
+        assert!(!ir.no_drafts && !ir.evidence && !ir.confidence);
+        assert_eq!(ir.template_terse, None);
+
+        let mut body = base.clone();
+        body["atlas_speculative"] = serde_json::json!(false);
+        body["atlas_evidence"] = serde_json::json!(true);
+        body["atlas_confidence"] = serde_json::json!(true);
+        body["chat_template_kwargs"] = serde_json::json!({"terse": true});
+        let ir = ir::ChatRequest::from(wire(body));
+        assert!(ir.no_drafts && ir.evidence && ir.confidence);
+        assert_eq!(ir.template_terse, Some(true));
+
+        // Only an explicit `false` turns drafting off.
+        let mut body = base;
+        body["atlas_speculative"] = serde_json::json!(true);
+        assert!(!ir::ChatRequest::from(wire(body)).no_drafts);
     }
 }
