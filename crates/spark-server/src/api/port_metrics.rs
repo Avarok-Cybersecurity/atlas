@@ -24,6 +24,7 @@ use std::fmt::{Display, Write};
 pub fn render(out: &mut String) {
     crate::scheduler::conf_summary::render_prometheus(out);
     crate::scheduler::port_gauges::render_prometheus(out);
+    spark_model::port::graph_stats::render_prometheus(out);
     spark_model::port::w4_stats::render_prometheus(out);
     spark_model::port::embed_host::render_prometheus(out);
     spark_runtime::kv_cache::block_io::swap::render_prometheus(out);
