@@ -17,7 +17,10 @@ pub mod arch_preflight;
 mod fault_probe;
 mod gpu_copy;
 mod gpu_impl;
+mod gpu_impl_batch_copy;
 mod gpu_impl_graph;
+mod gpu_impl_graph_update;
+mod port_ffi;
 pub mod tensormap;
 
 // ── Raw CUDA driver API for memory operations ──

@@ -81,6 +81,10 @@ pub enum KernelArg<'a> {
 
 pub use crate::gpu_args::pack_kernel_args;
 
+// Port sprint backend extensions (contract 3.7.1): types and default bodies.
+pub mod port_ext;
+pub use port_ext::{CopyEntry, GraphTemplate};
+
 /// GPU backend trait — SBIO IORouter for all CUDA operations.
 ///
 /// Implementations: `AvarokCudaBackend` (production), `MockGpuBackend` (tests).
@@ -552,6 +556,85 @@ pub trait GpuBackend: Send + Sync {
     fn free_arena(&self, ptr: DevicePtr) -> Result<()> {
         self.free(ptr)
     }
+
+    // ── Port sprint extensions (contract 3.7.1). Semantics and default bodies:
+    // `gpu/port_ext.rs`. Every one has a default, so mock and Metal compile unchanged.
+
+    /// End capture, instantiate, and KEEP the graph as a template. Caller owns both.
+    fn end_capture_template(&self, _stream: u64) -> Result<(GraphHandle, GraphTemplate)> {
+        port_ext::unsupported("end_capture_template")
+    }
+    /// End capture WITHOUT instantiating (the cheap path when updating an existing exec).
+    fn end_capture_graph(&self, _stream: u64) -> Result<GraphTemplate> {
+        port_ext::unsupported("end_capture_graph")
+    }
+    /// Instantiate a template into a new exec; the template stays the caller's.
+    fn graph_instantiate(&self, _t: &GraphTemplate) -> Result<GraphHandle> {
+        port_ext::unsupported("graph_instantiate")
+    }
+    /// Destroy a template (`cuGraphDestroy`). Default: nothing to free.
+    fn graph_template_destroy(&self, _t: GraphTemplate) -> Result<()> {
+        Ok(())
+    }
+    /// Topology class of a template: [`port_ext::topology_signature`] over its nodes.
+    fn graph_topology_signature(&self, _t: &GraphTemplate) -> Result<u64> {
+        port_ext::unsupported("graph_topology_signature")
+    }
+    /// Update `exec` in place from `t`. `Ok(false)`: not updated (topology mismatch, driver
+    /// refusal or no support); treat `exec` as stale and re-instantiate before its next launch.
+    fn graph_exec_update(&self, _exec: GraphHandle, _t: &GraphTemplate) -> Result<bool> {
+        Ok(false)
+    }
+    /// Upload `exec` ahead of its first launch (`cuGraphUpload`). Default: no-op.
+    fn graph_upload(&self, _exec: GraphHandle, _stream: u64) -> Result<()> {
+        Ok(())
+    }
+    /// Whether `graph_exec_update` and `graph_topology_signature` can succeed here.
+    fn supports_graph_exec_update(&self) -> bool {
+        false
+    }
+    /// Enqueue every D2H entry on `stream`; each host range stays valid and untouched until
+    /// the next sync point on `stream`. Default: one `copy_d2h_async` per entry.
+    fn copy_batch_d2h_async(&self, e: &[CopyEntry], stream: u64) -> Result<()> {
+        port_ext::loop_d2h(self, e, stream)
+    }
+    /// Enqueue every H2D entry; sources stay unchanged until the next sync point. With
+    /// `src_any_order` the engine may read sources out of stream order (tier-owned blocks).
+    fn copy_batch_h2d_async(&self, e: &[CopyEntry], stream: u64, _any_order: bool) -> Result<()> {
+        port_ext::loop_h2d(self, e, stream)
+    }
+    /// True when a batched copy entry point resolved and its probe passed.
+    fn supports_copy_batch(&self) -> bool {
+        false
+    }
+    /// A non-legacy, non-blocking stream for tier DMA. Default: `create_stream`.
+    fn create_copy_stream(&self) -> Result<u64> {
+        self.create_stream()
+    }
+    /// Non-blocking poll of `event`. Default: wait for it, then `true` (correct everywhere).
+    fn event_query(&self, event: u64) -> Result<bool> {
+        self.event_synchronize(event)?;
+        Ok(true)
+    }
+    /// An event WITH timing (`create_event`'s cannot be timed), for `event_elapsed_ms`.
+    /// Default: unsupported (L06's device phase timer then turns itself off).
+    fn create_timing_event(&self) -> Result<u64> {
+        port_ext::unsupported("create_timing_event")
+    }
+    /// Milliseconds from `start` to `end` (two recorded timing events). Never blocks:
+    /// `Ok(None)` while either is incomplete. Default: unsupported.
+    fn event_elapsed_ms(&self, _start: u64, _end: u64) -> Result<Option<f32>> {
+        port_ext::unsupported("event_elapsed_ms")
+    }
+    /// Page-lock `[ptr, ptr + bytes)` and record it in [`crate::pinned_hosts`] as tier-owned.
+    /// Default: record only (nothing to lock).
+    fn host_register(&self, ptr: usize, bytes: usize) -> Result<()> {
+        port_ext::record_host_register(ptr, bytes)
+    }
+    /// Undo `host_register` for the region based at `ptr`.
+    fn host_unregister(&self, ptr: usize) -> Result<()> {
+        port_ext::record_host_unregister(ptr)
+    }
 }
 
 impl fmt::Display for DevicePtr {
@@ -562,6 +645,12 @@ impl fmt::Display for DevicePtr {
 
 #[cfg(any(test, feature = "test-utils"))]
 pub mod mock;
+
+#[cfg(test)]
+mod port_ext_tests;
+
+#[cfg(test)]
+mod port_ext_mock_tests;
 
 #[cfg(test)]
 #[path = "gpu_tests.rs"]

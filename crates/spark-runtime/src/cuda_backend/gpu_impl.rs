@@ -36,11 +36,12 @@ use anyhow::{Result, bail};
 use avarok_core::registry::{RawCudaFunc, cuda_error_text};
 use cudarc::driver::LaunchConfig;
 
+use super::gpu_impl_batch_copy::Dir;
 use super::{
     AvarokCudaBackend, cuMemAlloc_v2, cuMemAllocManaged, cuMemFree_v2, cuMemGetInfo_v2,
     cuMemcpyDtoDAsync_v2, cuMemcpyDtoHAsync_v2, cuMemcpyHtoDAsync_v2, cuStreamSynchronize,
 };
-use crate::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
+use crate::gpu::{CopyEntry, DevicePtr, GpuBackend, GraphHandle, GraphTemplate, KernelHandle};
 
 /// D2H call counter + one-shot caller identification
 /// (`AVAROK_D2H_TRACE=<N>`: log a backtrace on the Nth call, and the running
@@ -403,7 +404,9 @@ impl GpuBackend for AvarokCudaBackend {
         // reaches here with a pinned source (the ones that own pinned staging
         // use `copy_h2d_async_retained`), so `is_pinned` is a lock-free-ish read
         // of a three-entry table that says "no".
-        if crate::pinned_hosts::is_pinned(src) {
+        // A TIER-OWNED region (`host_register`) is excluded: its owner orders every reuse
+        // of the pages behind a completed copy event (`crate::pinned_hosts`).
+        if crate::pinned_hosts::needs_transient_sync(src) {
             warn_pinned_transient_source();
             let sync = unsafe { cuStreamSynchronize(stream) };
             if sync != 0 {
@@ -610,5 +613,57 @@ impl GpuBackend for AvarokCudaBackend {
             tracing::warn!("cuMemFree_v2 (arena) returned status {status}");
         }
         Ok(())
+    }
+
+    // ── Port sprint extensions (contract 3.7.1): bodies in `gpu_impl_graph_update.rs`
+    // and `gpu_impl_batch_copy.rs`. `create_copy_stream` keeps the trait default:
+    // `create_stream` already makes a non-blocking stream.
+    fn end_capture_template(&self, stream: u64) -> Result<(GraphHandle, GraphTemplate)> {
+        self.end_capture_template_cu(stream)
+    }
+    fn end_capture_graph(&self, stream: u64) -> Result<GraphTemplate> {
+        self.end_capture_graph_cu(stream)
+    }
+    fn graph_instantiate(&self, t: &GraphTemplate) -> Result<GraphHandle> {
+        self.graph_instantiate_cu(t)
+    }
+    fn graph_template_destroy(&self, t: GraphTemplate) -> Result<()> {
+        self.graph_template_destroy_cu(t)
+    }
+    fn graph_topology_signature(&self, t: &GraphTemplate) -> Result<u64> {
+        self.graph_topology_signature_cu(t)
+    }
+    fn graph_exec_update(&self, exec: GraphHandle, t: &GraphTemplate) -> Result<bool> {
+        self.graph_exec_update_cu(exec, t)
+    }
+    fn graph_upload(&self, exec: GraphHandle, stream: u64) -> Result<()> {
+        self.graph_upload_cu(exec, stream)
+    }
+    fn supports_graph_exec_update(&self) -> bool {
+        self.supports_graph_exec_update_cu()
+    }
+    fn copy_batch_d2h_async(&self, e: &[CopyEntry], stream: u64) -> Result<()> {
+        self.copy_batch_cu(e, stream, Dir::ToHost, false)
+    }
+    fn copy_batch_h2d_async(&self, e: &[CopyEntry], stream: u64, any: bool) -> Result<()> {
+        self.copy_batch_cu(e, stream, Dir::ToDevice, any)
+    }
+    fn supports_copy_batch(&self) -> bool {
+        self.supports_copy_batch_cu()
+    }
+    fn event_query(&self, event: u64) -> Result<bool> {
+        self.event_query_cu(event)
+    }
+    fn create_timing_event(&self) -> Result<u64> {
+        self.create_timing_event_cu()
+    }
+    fn event_elapsed_ms(&self, start: u64, end: u64) -> Result<Option<f32>> {
+        self.event_elapsed_ms_cu(start, end)
+    }
+    fn host_register(&self, ptr: usize, bytes: usize) -> Result<()> {
+        self.host_register_cu(ptr, bytes)
+    }
+    fn host_unregister(&self, ptr: usize) -> Result<()> {
+        self.host_unregister_cu(ptr)
     }
 }
