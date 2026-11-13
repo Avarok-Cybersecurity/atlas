@@ -121,11 +121,13 @@ pub(crate) struct PostLoadInputs<'a> {
     /// target. Decides whether the loader builds the Q and O FP8 prefill
     /// twins (~1.5 GB on the 27B).
     pub(crate) w8a8_prefill_kernels: bool,
-    /// Bytes the load-time BF16 -> FP8 FFN route will free while the model
-    /// is built (`fp8_from_bf16::predicted_free_bytes`), 0 when it will not
-    /// run. Subtracted from the checkpoint's on-disk size wherever preflight
-    /// prices the weights' residency, so the memory the route hands back is
-    /// not counted as weights.
+    /// Bytes the load-time BF16 -> FP8 FFN route and the 4-bit routes (the
+    /// affine and NVFP4 rows, credited inside the same function by
+    /// `w4_residency.rs`, net of the shared W4 scratch) will free while the
+    /// model is built (`fp8_from_bf16::predicted_free_bytes`), 0 when none
+    /// will run. Subtracted from the checkpoint's on-disk size wherever
+    /// preflight prices the weights' residency, so the memory the routes hand
+    /// back is not counted as weights.
     pub(crate) fp8_ffn_freed: usize,
 }
 
@@ -331,9 +333,13 @@ pub(super) fn checkpoint_bytes(model_dir: &std::path::Path) -> Option<u64> {
 }
 
 /// The checkpoint's resident bytes once the model is built: its on-disk size
-/// minus what the BF16 -> FP8 FFN route frees while the layers are built
-/// (`PostLoadInputs::fp8_ffn_freed`, 0 on every other load, which leaves the
-/// on-disk size exactly as before).
+/// minus what the BF16 -> FP8 FFN route and the 4-bit routes free while the
+/// layers are built (`PostLoadInputs::fp8_ffn_freed`, 0 on every other load,
+/// which leaves the on-disk size exactly as before). The caller (`preflight.rs`)
+/// adds the device embedding table the `embed_host_offload` row frees
+/// (`port::embed_host::predicted_freed_bytes`, lane L24's request R2; 0 with
+/// the row off or a tied head) to the same argument, so the ring, Marconi and
+/// decode-ring budgets all see it.
 ///
 /// WHY. The ring and Marconi budgets are a share of the memory BESIDE the
 /// weights. Pricing the 4B's weights at the 8.68 GiB checkpoint when the route
@@ -343,8 +349,8 @@ pub(super) fn resident_weight_bytes(checkpoint: usize, fp8_ffn_freed: usize) -> 
     let resident = checkpoint.saturating_sub(fp8_ffn_freed);
     if fp8_ffn_freed > 0 && checkpoint > 0 {
         tracing::info!(
-            "Preflight weights: {:.2} GB checkpoint - {:.2} GB the BF16 -> FP8 FFN route frees \
-             = {:.2} GB resident",
+            "Preflight weights: {:.2} GB checkpoint - {:.2} GB the load-time routes (BF16 -> FP8 FFN, \
+             4-bit, embedding host offload) free = {:.2} GB resident",
             checkpoint as f64 / GIB,
             fp8_ffn_freed as f64 / GIB,
             resident as f64 / GIB,

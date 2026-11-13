@@ -22,6 +22,7 @@ use std::fmt::{Display, Write};
 /// panics while rendering that suggestion here.
 #[allow(unused_variables, clippy::ptr_arg)]
 pub fn render(out: &mut String) {
+    spark_model::port::w4_stats::render_prometheus(out);
     spark_runtime::kv_cache::block_io::swap::render_prometheus(out);
     spark_runtime::pinned_pool::render_prometheus(out);
     spark_runtime::radix_tree::render_prometheus(out);
