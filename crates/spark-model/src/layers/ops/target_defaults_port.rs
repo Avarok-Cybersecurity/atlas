@@ -47,6 +47,8 @@ pub struct PortLevers {
     pub mtp_propose_graph: Resolved<bool>,
     /// Pick MTP verify positions on the device instead of copying the verify logits to the host and running the pre-sample pipeline there.
     pub mtp_device_accept: Resolved<bool>,
+    /// Copy drafter for MTP speculative rounds: which copy-drafter plans may be used (`off`, `chain`, `rounds`, `auto`).
+    pub copy_draft: Resolved<&'static str>,
     /// Serve every 4-bit BF16 load route's Marlin-servable projection by round-to-nearest int4 at group 128 on vLLM's Marlin W4A16 GEMM.
     pub marlin_w4a16: Resolved<bool>,
     /// A dense Qwen3.5-family GGUF keeps its IQ4_XS, Q4_K and Q6_K projections as the file's raw super-blocks in VRAM for the sm_89 keep-packed GEMVs and MMQ GEMMs.
@@ -120,6 +122,10 @@ pub fn resolve(
         mtp_device_accept: super::port_rows::mtp_device_accept::resolve(
             d.mtp_device_accept,
             var(super::port_rows::mtp_device_accept::ENV).as_deref(),
+        ),
+        copy_draft: super::port_rows::copy_draft::resolve(
+            d.copy_draft,
+            var(super::port_rows::copy_draft::ENV).as_deref(),
         ),
         marlin_w4a16: super::port_rows::marlin_w4a16::resolve(
             d.marlin_w4a16,
@@ -223,6 +229,7 @@ pub fn format_port(l: &PortLevers) -> String {
     push(&mut s, "mtp_vocab_rank", &l.mtp_vocab_rank);
     push(&mut s, "mtp_propose_graph", &l.mtp_propose_graph);
     push(&mut s, "mtp_device_accept", &l.mtp_device_accept);
+    push(&mut s, "copy_draft", &l.copy_draft);
     push(&mut s, "marlin_w4a16", &l.marlin_w4a16);
     push(&mut s, "gguf_native_iq4", &l.gguf_native_iq4);
     push(&mut s, "weights_exl3", &l.weights_exl3);
