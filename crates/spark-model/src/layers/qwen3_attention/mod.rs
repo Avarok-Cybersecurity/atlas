@@ -47,6 +47,10 @@ mod prefill;
 mod prefill_qkv_w8a8;
 mod prefill_w8a8;
 mod prefill_weights;
+// The sparse-attention seam (port L29): the one place an approximate KV
+// selector plugs into the decode, verify and prefill attention. With no
+// selector registered every call site runs its unchanged dense code.
+pub mod sparse_seam;
 mod trait_impl;
 mod types;
 mod types_weights;

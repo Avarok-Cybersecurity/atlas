@@ -94,7 +94,12 @@ impl Qwen3AttentionLayer {
             self.ms_phase_cache_write(&c, kv_cache, meta)?;
 
             // ── Phase 5: paged decode attention (batched) ──
-            let attn_out = self.ms_phase_paged_decode(&c, kv_cache, meta)?;
+            // The host rows feed the sparse-attention seam (port L29) only.
+            let seam_rows = crate::layers::qwen3_attention::sparse_seam::SeamRows {
+                seq_lens: _seq_lens,
+                block_tables: _block_tables,
+            };
+            let attn_out = self.ms_phase_paged_decode(&c, kv_cache, meta, seam_rows)?;
 
             // ── Phase 6: gate multiply + O projection ──
             self.ms_phase_o_proj(&c, attn_out)?
@@ -227,7 +232,13 @@ impl Qwen3AttentionLayer {
             self.ms_phase_qkv(&c)?;
             self.ms_phase_rope(&c, meta)?;
             self.ms_phase_cache_write(&c, kv_cache, meta)?;
-            let attn_out = self.ms_phase_paged_decode(&c, kv_cache, meta)?;
+            // Hyper-connection layers are outside the sparse-attention seam.
+            let attn_out = self.ms_phase_paged_decode(
+                &c,
+                kv_cache,
+                meta,
+                crate::layers::qwen3_attention::sparse_seam::SeamRows::NONE,
+            )?;
             self.ms_phase_o_proj(&c, attn_out)?
         };
 

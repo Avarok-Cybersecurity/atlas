@@ -311,6 +311,25 @@ impl Qwen3AttentionLayer {
             .map(|m| m.slot_stacked)
             .or(meta_for_single.map(|m| m.slot))
             .unwrap();
+        // Sparse-attention seam (port L29): `None` unless a selector is registered.
+        let seam = super::super::sparse_seam::active().map(|sel| {
+            let site = super::super::sparse_seam::PrefillSite {
+                num_tokens,
+                seq_len_start,
+                kv_write_start: kv_write_floor,
+                host_block_table: block_table.as_slice(),
+                meta: meta_for_single.as_ref(),
+                batched: batched_meta,
+                chunk0: false,
+                q: q_contiguous,
+                dims: super::super::sparse_seam::SeamDims { nq, nkv, hd },
+                stream,
+            };
+            (sel, site)
+        });
+        if let Some((sel, site)) = &seam {
+            self.seam_prefill_query(*sel, ctx, kv_cache, site, true)?;
+        }
         if self.mla.is_some() {
             // MLA: RoPE already applied inside the MLA block to rope portions only.
         } else if !self.yarn_inv_freq.is_null() {
@@ -491,6 +510,9 @@ impl Qwen3AttentionLayer {
                 }
             }
         }
+        if let Some((sel, site)) = &seam {
+            self.seam_prefill_kv_written(*sel, ctx, kv_cache, site)?;
+        }
 
         // ── 8. Paged Flash Attention for chunk 1+ ── (extracted to paged_attn.rs)
         let attn_out = ctx.buffers.attn_output();
@@ -630,6 +652,7 @@ impl Qwen3AttentionLayer {
             // Single-stream path requires meta_for_single (validated above).
             let meta = meta_for_single
                 .expect("single-stream mode: meta_for_single guaranteed by validation above");
+            let seam_meta: crate::layer::AttnMetadataDev;
             let mut args = super::paged_attn::PagedAttnArgs {
                 q_contiguous,
                 k_contiguous,
@@ -651,6 +674,19 @@ impl Qwen3AttentionLayer {
                 disk_last_offloaded_per_layer,
                 stream,
             };
+            // Sparse-attention seam: a selector's prefill View replaces the
+            // table, the extent and the chunk's start inside it.
+            if let Some((sel, site)) = &seam
+                && let Some(v) = self.seam_prefill_route(*sel, ctx, kv_cache, site, kv_len)?
+            {
+                seam_meta = crate::layer::AttnMetadataDev {
+                    block_table: v.block_table,
+                    ..meta
+                };
+                args.meta = &seam_meta;
+                args.kv_len = v.kv_len;
+                args.seq_len_start = v.seq_len_start as usize;
+            }
             match self.prefill_attention_paged_attn(kv_cache, ctx, &mut args)? {
                 super::paged_attn::PagedAttnOutcome::EarlyReturn(out) => return Ok(out),
                 super::paged_attn::PagedAttnOutcome::Continue => {}
@@ -803,6 +839,10 @@ impl Qwen3AttentionLayer {
                 "attn_out_post_gate",
                 stream,
             )?;
+        }
+
+        if let Some((sel, site)) = &seam {
+            self.seam_prefill_done(*sel, ctx, kv_cache, site)?;
         }
 
         // ── 10. O projection GEMM ── (extracted to paged_oproj.rs)

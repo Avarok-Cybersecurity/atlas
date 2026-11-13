@@ -402,6 +402,29 @@ impl Qwen3AttentionLayer {
             None
         };
 
+        // Sparse-attention seam (port L29): `None` unless a selector is
+        // registered. Chunk 0 has no device block table; the host table rides
+        // along. The query hook sees pre-RoPE Q unless the Q RoPE was fused
+        // into the deinterleave above.
+        let seam = super::super::sparse_seam::active().map(|sel| {
+            let site = super::super::sparse_seam::PrefillSite {
+                num_tokens,
+                seq_len_start: 0,
+                kv_write_start,
+                host_block_table: seq_block_table,
+                meta: None,
+                batched: batched_meta,
+                chunk0: true,
+                q: q_contiguous,
+                dims: super::super::sparse_seam::SeamDims { nq, nkv, hd },
+                stream,
+            };
+            (sel, site)
+        });
+        if let Some((sel, site)) = &seam {
+            self.seam_prefill_query(*sel, ctx, kv_cache, site, !q_rope_fused)?;
+        }
+
         // ── 6. RoPE for N tokens ──
         if self.mla.is_some() {
             // MLA: RoPE already applied inside the MLA block to rope portions only.
@@ -536,6 +559,9 @@ impl Qwen3AttentionLayer {
                 stream,
                 ctx.graph_capture,
             )?;
+        }
+        if let Some((sel, site)) = &seam {
+            self.seam_prefill_kv_written(*sel, ctx, kv_cache, site)?;
         }
         aprof!("kv_cache_write", t0);
         t0 = if ctx.profile {
@@ -856,6 +882,10 @@ impl Qwen3AttentionLayer {
                 "attn_out_post_gate",
                 stream,
             )?;
+        }
+
+        if let Some((sel, site)) = &seam {
+            self.seam_prefill_done(*sel, ctx, kv_cache, site)?;
         }
 
         // ── 10. O projection GEMM ── (extracted to paged_oproj.rs)
