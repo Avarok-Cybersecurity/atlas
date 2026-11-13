@@ -56,6 +56,16 @@ pub struct PortDefaults {
     /// BF16 dequant and the caller's GEMM (host port/exl3/, after ExLlamaV3 MIT
     /// via TensorFold Apache-2.0).
     pub weights_exl3: bool,
+    /// On a plain-BF16 dense Qwen3.5 checkpoint (Holo 3.1 0.8B and 4B), the dense
+    /// FFN's gate, up and down are quantized once at load with the existing NVFP4
+    /// quantizer (E2M1 codes, E4M3 per-16 scales, one F32 tensor scale; 4.5 bits
+    /// a weight), each BF16 source freed right after its own quantize, and served
+    /// through W4Linear over the w4a16_gemv family every CUDA target already
+    /// compiles (weight_loader/qwen35_dense/nvfp4_from_bf16.rs,
+    /// port/w4/nvfp4.rs): decode and verify rows 1..16 on w4a16_gemv / _batch2 /
+    /// _batch3 / _batchN (row invariant by construction), prompts on w4a16_gemm
+    /// or a BF16 dequant plus cuBLASLt.
+    pub dense_nvfp4_from_bf16: bool,
     /// Batched sequence swap
     /// (`spark-model/src/model/trait_impl/sequence/state_io.rs`,
     /// `spark-runtime/src/kv_cache/block_io.rs`): a swapped-out sequence's image
@@ -97,6 +107,7 @@ pub const PORT_BASELINE: PortDefaults = PortDefaults {
     marlin_w4a16: false,
     gguf_native_iq4: false,
     weights_exl3: false,
+    dense_nvfp4_from_bf16: false,
     kv_batched_swap: false,
     ssm_store_lru: false,
     radix_lru_index: false,
