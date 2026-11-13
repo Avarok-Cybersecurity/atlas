@@ -101,8 +101,12 @@ pub const HOPPER_MODELS: &[&str] = &[
 ];
 
 /// Ada (sm_89) carries the two dense Holo targets a 16 GB consumer card
-/// serves single-stream.
-pub const ADA_MODELS: &[&str] = &["holo-3.1-0.8b", "holo-3.1-4b"];
+/// serves single-stream, plus the Qwen3.8-27B target (port sprint lane L24),
+/// which owns no quant dir: its MODEL.toml redirects to holo-3.1-4b's mirror
+/// with `kernel_source` (see `tests/ada_27b.rs`), and the LFM3-1.7B target
+/// (port sprint lane L37, `tests/ada_lfm3.rs`), which compiles the
+/// holo-3.1-0.8b set the same way. Keep the list sorted: `model_dirs` sorts.
+pub const ADA_MODELS: &[&str] = &["holo-3.1-0.8b", "holo-3.1-4b", "lfm3-1.7b", "qwen3.8-27b"];
 
 /// Every hardware set whose kernels are gb10's, reached by symlink.
 ///

@@ -54,6 +54,7 @@ pub struct PortFields {
     pub retro_attn: bool,
     pub prefill_sparse_attn: bool,
     pub kv_window_desk: bool,
+    pub lfm3_fp8_all: bool,
     // @port:struct
 }
 
@@ -98,6 +99,7 @@ impl Default for PortFields {
             retro_attn: false,
             prefill_sparse_attn: false,
             kv_window_desk: false,
+            lfm3_fp8_all: false,
             // @port:default
         }
     }
@@ -237,6 +239,10 @@ pub fn parse(out: &mut PortFields, key: &str, value: &toml::Value) -> bool {
             out.kv_window_desk = boolean(key, value);
             true
         }
+        "lfm3_fp8_all" => {
+            out.lfm3_fp8_all = boolean(key, value);
+            true
+        }
         // @port:parse
         _ => false,
     }
@@ -284,6 +290,7 @@ pub fn literal(d: &PortFields) -> String {
          \x20   retro_attn: {retro_attn},\n\
          \x20   prefill_sparse_attn: {prefill_sparse_attn},\n\
          \x20   kv_window_desk: {kv_window_desk},\n\
+         \x20   lfm3_fp8_all: {lfm3_fp8_all},\n\
          // @port:literal-fmt\n\
          \x20   }}",
         conf_summary = d.conf_summary,
@@ -318,6 +325,7 @@ pub fn literal(d: &PortFields) -> String {
         retro_attn = d.retro_attn,
         prefill_sparse_attn = d.prefill_sparse_attn,
         kv_window_desk = d.kv_window_desk,
+        lfm3_fp8_all = d.lfm3_fp8_all,
         // @port:literal-args
     )
 }

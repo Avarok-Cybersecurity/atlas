@@ -263,6 +263,11 @@ pub struct PortDefaults {
     /// `kv_page_fetch_ada.cu`): APPROXIMATE attention for contexts past what VRAM
     /// holds.
     pub kv_window_desk: bool,
+    /// Convert an LFM3 checkpoint's projections to 128x128 block-scaled FP8
+    /// (E4M3) at load: the dense FFN (w1, w3, w2), the attention q/k/v/o (their
+    /// BF16 is freed) and the gated short convolution's in_proj and out_proj
+    /// (E4M3 decode copies; the BF16 stays for prefill, +0.22 GB).
+    pub lfm3_fp8_all: bool,
     // @port:fields
 }
 
@@ -304,5 +309,6 @@ pub const PORT_BASELINE: PortDefaults = PortDefaults {
     retro_attn: false,
     prefill_sparse_attn: false,
     kv_window_desk: false,
+    lfm3_fp8_all: false,
     // @port:baseline
 };

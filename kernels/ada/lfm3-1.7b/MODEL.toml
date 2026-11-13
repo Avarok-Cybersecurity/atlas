@@ -1,0 +1,221 @@
+# Ada target: kernel set inherited from gb10 via symlink, reached through
+# kernel_source = "holo-3.1-0.8b" (no new symlinks; rule S1). expected_absent is
+# NOT yet harvested on Ada hardware (`spark serve --check-kernels`): the tables
+# below are holo-3.1-0.8b's, carried because the compiled kernel set is the same
+# (plus the conv kernels of lane L38, `common/lfm3_shortconv_ada.cu`, which sit
+# in kernels/ada/common and are registered in kernels/ada/HARDWARE.toml
+# [kernels] overrides). Port sprint lane L37 (branch port/consumer-opt). No Ada
+# correctness or performance measurement is claimed for this target.
+#
+# ── LICENSE OF THE WEIGHTS (read before serving this model) ───────────────────
+# LFM3 weights are Liquid AI's, under the LFM Open License v1.0. Commercial use
+# is licensed ONLY below the Threshold: annual revenue of USD 10,000,000 (ten
+# million United States dollars) or more is not licensed under that agreement
+# ("Any Commercial Use of the Work or a Derivative Work by a Legal Entity that
+# exceeds the Threshold is not licensed under this Agreement", section 5(b)); a
+# qualified non-profit's non-commercial or research use is outside the
+# threshold (5(c)). Atlas contains no LFM3 weights and no Liquid code; the
+# license follows the weights to whoever runs them. The boot log names it every
+# time an LFM3 checkpoint loads. Terms and sources: docs/porting/lfm3.md.
+#
+# ── Why this directory looks the way it does ──────────────────────────────────
+# LFM3 is 24 layers: 13 gated short convolutions (width 7, reported to the
+# model as LinearAttention, off the GDN pool), 6 global and 5 sliding-window
+# (256) attention layers, a dense SwiGLU FFN and sandwich norms. Every kernel it
+# needs except the conv pair is an existing Ada kernel (BF16 and FP8 GEMV and
+# GEMM, paged attention at head_dim 128, table RoPE). The holo-3.1-0.8b
+# directory carries the curated Ada quant tree (nvfp4/, which the wildcard
+# build iterates), so this target compiles it instead of vendoring a copy.
+[model]
+name = "lfm3-1.7b"
+hf_id = "LiquidAI/LFM3-1.7B"
+params = "1.7B"
+active_params = "1.7B"
+architecture = "Gated short conv + sliding/global GQA attention + Dense SwiGLU FFN, sandwich norms"
+kernel_source = "holo-3.1-0.8b"
+license = "LFM Open License v1.0 (commercial use not licensed at USD 10M annual revenue or more); weights are not bundled"
+
+layers_total = 24
+layers_linear_attention = 13
+layers_full_attention = 6
+layers_sliding_attention = 5
+layer_pattern = "conv, conv, full, conv, sliding, conv, full, ... (full at 2,6,10,14,18,22; sliding at 4,8,12,16,20)"
+
+intermediate_size = 7680
+
+hidden_dim = 2048
+head_dim = 128
+q_heads = 16
+kv_heads = 4
+sliding_window = 256
+conv_kernel = 7
+
+vocab_size = 128000
+max_position_embeddings = 262144
+# Full-attention layers: theta 1e6, half the pairs rotate (zero-frequency tail);
+# sliding layers: theta 1e4, every pair rotates.
+rope_theta = 1000000
+partial_rotary_factor = 0.5
+tie_word_embeddings = true
+mtp_layers = 0
+vision = false
+
+# UNMEASURED: the default demo footprint. KV is 22.5 KB per token in BF16 (11
+# attention layers x 4 KV heads x 128 x 2 x 2 B), 5.9 GB at 256K, 2.9 GB with
+# FP8 KV; callers pass --max-seq-len up to 262144 after checking memory.
+effective_context = 8192
+
+# Liquid AI's model card (LFM3-1.7B, "Sampling parameters"): chat, tool use,
+# agents and coding use temperature 0.1, top_k 50, repetition_penalty 1.1 (the
+# checkpoint's generation_config.json says the same); there is no top_p, so 1.0.
+# The card's separate math and STEM preset (temperature 1.0, top_p 0.95,
+# top_k 20) has no category here: a request that wants it sets those fields.
+[sampling.thinking_text]
+temperature = 0.1
+top_p = 1.0
+top_k = 50
+presence_penalty = 0.0
+frequency_penalty = 0.0
+repetition_penalty = 1.1
+dry_multiplier = 0.0
+
+[sampling.thinking_coding]
+temperature = 0.1
+top_p = 1.0
+top_k = 50
+presence_penalty = 0.0
+frequency_penalty = 0.0
+repetition_penalty = 1.1
+dry_multiplier = 0.0
+
+[sampling.non_thinking]
+temperature = 0.1
+top_p = 1.0
+top_k = 50
+presence_penalty = 0.0
+frequency_penalty = 0.0
+repetition_penalty = 1.1
+dry_multiplier = 0.0
+
+[sampling.tools]
+temperature = 0.1
+top_p = 1.0
+top_k = 50
+presence_penalty = 0.0
+frequency_penalty = 0.0
+repetition_penalty = 1.1
+dry_multiplier = 0.0
+
+[behavior]
+# The chat template opens `<think>` in the generation prompt (reasoning is on by
+# default; `enable_thinking=false` is "inconsistent" per the card).
+thinking_default = true
+thinking_in_tools = true
+default_num_drafts = 0
+# `<tool_call><function=NAME><parameter=KEY>VALUE</parameter></function></tool_call>`,
+# the same wire format as qwen3_coder; the `lfm3` parser adds only a name and a
+# prompt that leaves the tool schema to the checkpoint's own template.
+tool_call_parser = "lfm3"
+# Tool-call grammar OFF until lfm3_qual.py's 30-case schema-validity gate has
+# been run with it on and off (XGrammar-constrained decoding degenerated the
+# Holo family; LFM3 is unmeasured).
+disable_tool_grammar = true
+
+# The text checkpoints (LFM3-1.7B, -Base, -FP8). `lfm3_vl` (d1, VL) is a
+# different model_type and is not claimed here.
+[[model_types]]
+model_type = "lfm3"
+hidden_size = 2048
+
+[kernel]
+moe_gate_shmem_bytes = 4096
+
+# ── Kernel lookups this model may legitimately fail to resolve ──
+# Harvested 2026-08-03 from `spark serve --check-kernels`. This target
+# runs BF16 weights; every entry below is a quantized-family or
+# shadow-only try_kernel() probe whose fallback resolves. EXCEPT the
+# four [expected_absent.gated_delta_rule] f16 arms -see honesty note.
+[expected_absent.w4a16]
+w4a16_gemm_t_p3 = "Deep-K p3 twin shipped only in qwen3.6-27b's shadow; layers::tgemm_kernel falls back to w4a16_gemm_t (resolves: common). Unmeasured for BF16-serving targets."
+w4a16_gemm_t_k64_p3 = "Same family; k64_kernel falls back to required w4a16_gemm_t_k64 (resolves)."
+w4a16_gemm_t_k64_n64_p3 = "Narrow-N twin; 0-handle gated at dispatch (K64_N64_MAX_WIDE_CTAS)."
+w4a16_gemm_t_m128_bf16 = "BF16-projection prefill twin; dispatch gated on handle != 0, falls back to resolved w4a16 m128 path."
+w4a16_gemm_t_m128_bf16_v2 = "Pipelined v2 of the above; same gating. Unmeasured."
+int8_gemm_faith2 = """
+INT8-prefill twin (faith2). Only materialized when finalize_int8_load
+finds int8 weights AND the resolved handles -this BF16 checkpoint has
+no int8 path; dispatch gated by handle != 0."""
+int8_gemm_i32acc = "Same int8 family -BF16 checkpoint never materializes it."
+requant_w_nvfp4_int8 = "Int8 weight requant from NVFP4 weights; this checkpoint is BF16, no NVFP4 source weights exist."
+requant_a_bf16_int8 = "Same int8 family -activation requant; gated by the same weight-presence condition."
+
+[expected_absent.w4a4]
+w4a4_gemm = "NVFP4 W4A4 GEMM; BF16 checkpoint has no NVFP4 weights. Fallback resolves through w4a16."
+w4a4_gemm_mfast = "mfast twin shipped only in nemotron-labs-3-puzzle's shadow; same NVFP4-weight gating applies here."
+
+[expected_absent.q4k_mmq]
+avarok_q4k_mmq128_nc = """
+Q4_K FFN MMQ family -finalize_q4k_load requires ALL handles non-zero
+AND AVAROK_FFN_MMQ presence, then requantizes NVFP4 weights to Q4_K.
+This BF16-target's KERNEL set does not ship the module; gate fails on
+handle == 0 and stays on the resolved bf16/dense path."""
+avarok_q4k_mmq128_wc = "Same Q4_K family -gated off for this target (see avarok_q4k_mmq128_nc)."
+avarok_q8_1_quantize_ds4_bf16 = "Same Q4_K family -activation quantizer; gated off."
+
+[expected_absent.q4k_quantize]
+q4k_quantize = "Q4_K weight quantizer for the MMQ family; gated off with the family (see q4k_mmq::avarok_q4k_mmq128_nc)."
+
+[expected_absent.nvfp4_mmq]
+avarok_nvfp4_mmq128_nc = """
+NVFP4 MMQ FFN family. finalize_nvfp4_mmq_load requantizes NVFP4 weights;
+this target runs BF16 so the family is never materialized, and the
+KERNEL set ships no nvfp4_mmq module. Probe is gated by handle != 0."""
+avarok_nvfp4_mmq128_wc = "Same NVFP4 MMQ family -gated off for BF16 target."
+avarok_nvfp4_mmq16_nc = "Same NVFP4 MMQ family -gated off for BF16 target."
+avarok_nvfp4_mmq16_wc = "Same NVFP4 MMQ family -gated off for BF16 target."
+avarok_nvfp4_mmq32_nc = "Same NVFP4 MMQ family -gated off for BF16 target."
+avarok_nvfp4_mmq32_wc = "Same NVFP4 MMQ family -gated off for BF16 target."
+avarok_nvfp4_mmq64_nc = "Same NVFP4 MMQ family -gated off for BF16 target."
+avarok_nvfp4_mmq64_wc = "Same NVFP4 MMQ family -gated off for BF16 target."
+avarok_nvfp4_quantize_bf16 = "NVFP4 activation quantizer; gated off with the family."
+avarok_nvfp4_repack = "NVFP4 weight repacker; gated off with the family."
+avarok_nvfp4_silu_mul_scaled = "NVFP4 SiLU epilogue; gated off with the family."
+avarok_nvfp4_silu_mul_quant = "NVFP4 SiLU epilogue (quantized); gated off with the family."
+avarok_nvfp4_scale_bf16 = "NVFP4 scale handler; gated off with the family."
+
+[expected_absent.gated_delta_rule_wy17]
+gated_delta_rule_wy17 = "wy17 fused decode (K=17) exists only in qwen3.6-35b-a3b's module set; decode_batched checks non-NULL before dispatch (per init.rs)."
+[expected_absent.gated_delta_rule_snap]
+gated_delta_rule_decode_f32_norm_snap = "Exact-verify snapshot twin (#435/#438), shipped only in qwen3.6-27b/nvfp4; the exact arm probes handle != 0 and falls back to the parent kernel + copy_d2d snapshots (same bits, more launches)."
+gated_delta_rule_decode_f32_strided_norm_snap = "Batched exact-verify snapshot twin (#435/#438), shipped only in qwen3.6-27b/nvfp4; the batched exact form declines on handle 0 and the per-sequence exact loop serves (still exact)."
+
+[expected_absent.gdn_verify_fused_conv_kn_f32]
+gdn_verify_fused_conv_kn_f32 = "FP32 fused verify conv for the exact-verify chain (#435/#438), shipped only in qwen3.6-27b/nvfp4; probed handle != 0, absent keeps the per-token conv launches (same bits, more launches)."
+
+# ⚠ HONESTY NOTE on the four gated_delta_rule f16 arms: the FP16-h-state
+# decode arms dispatch these handles UN-PROBED once --ssm-h-dtype f16 is
+# active. Preflight refuses f16 for bad env combos but NOT for a target
+# that lacks the twins, so setting the flag on this model is a 0-handle
+# launch, not a fallback. Declared here to unblock the gate; the correct
+# fix is a preflight check on kernel presence. UNMEASURED.
+[expected_absent.gated_delta_rule]
+gated_delta_rule_decode_f16_norm = "FP16 h-state twin; see honesty note above. F32 fused-norm arm resolves."
+gated_delta_rule_decode_f16_strided_norm_half = "FP16 h-state twin; see honesty note above. F32 strided-norm arm resolves."
+gated_delta_rule_decode_f32_strided_norm_half = "Half-register twin; selected only under AVAROK_GDN_HALF_REG presence (off as shipped)."
+gated_delta_rule_decode_f32_strided_norm_smem = "SMEM-staged twin; gated behind AVAROK_GDN_SMEM_STAGE (off as shipped) AND the half-register gate."
+
+# ── Added for this hardware ──
+# Not harvested: derived from the source. The entry points the Ada build
+# drops relative to gb10's for this target are exactly this one and the two
+# W4A4 MoE kernels of moe_w4a16 (AVAROK_NO_WARP_BLOCKSCALE_MMA, see
+# kernels/ada/HARDWARE.toml); a dense model builds no MoE layer, so nothing
+# looks those two up and they are not declared.
+[expected_absent.gated_delta_rule_fla]
+gated_delta_rule_chunk_delta_h_tma = """
+TMA state spine (cp.async.bulk.tensor + mbarrier.arrive.expect_tx), which
+needs sm_90: ptxas rejects it for sm_89 ("Feature 'mbarrier.arrive.expect_tx'
+requires .target sm_90 or higher"), so kernels/ada/common/gated_delta_rule_fla.cu
+compiles it only under __CUDA_ARCH__ >= 900. Resolved with try_kernel
+(qwen3_ssm/init.rs) and launched only when AVAROK_GDN_TMA=1 AND the handle is
+non-zero (ops/ssm_gdn_a3.rs logs "kernel absent from this image"); absent,
+the scalar spine chunk_delta_h_vfused serves. UNMEASURED on Ada silicon."""

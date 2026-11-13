@@ -645,5 +645,20 @@ prefill_sparse_attn = false
 # 128K and 262K, restore at least 10 GB/s and at most 15% decode loss from
 # misses; `atlas_kv_window_*` show residency, fetches and demotions.
 kv_window_desk = false
+# Convert an LFM3 checkpoint's projections to 128x128 block-scaled FP8 (E4M3)
+# at load: the dense FFN (w1, w3, w2), the attention q/k/v/o (their BF16 is
+# freed) and the gated short convolution's in_proj and out_proj (E4M3 decode
+# copies; the BF16 stays for prefill, +0.22 GB). The head gate, norms, conv
+# taps, embedding and head stay BF16. It touches LFM3 checkpoints only. LFM3
+# decode is weight-bandwidth bound (3.46 GB of BF16 per step against 288 GB/s),
+# so E4M3 is the route to the roughly 1.5x decode the plan expects; it stays
+# off because E4M3 keeps 3 mantissa bits against BF16's 7, a numerics change.
+# The existing dense_fp8_from_bf16 and attn_fp8_from_bf16 rows convert only
+# their own class on an LFM3 BF16 checkpoint, and Liquid's own
+# LiquidAI/LFM3-1.7B-FP8 loads its E4M3 projections natively whatever this row
+# says. The receipt that may flip it: mean top-20 KL against the BF16 serve
+# under 0.003 on the lfm3_qual panel, greedy coherence equal on the tool-call
+# suite, and decode and prefill gains in bench5.
+lfm3_fp8_all = false
 # @port:defaults
 
