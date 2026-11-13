@@ -56,6 +56,11 @@ pub struct PortFields {
     pub kv_window_desk: bool,
     pub lfm3_fp8_all: bool,
     pub model_swap_timing: bool,
+    pub ffn_fp8_decode_gemv: bool,
+    pub mtp_width_policy: bool,
+    pub gdn_verify_gemv: bool,
+    pub lm_head_verify_gemv: bool,
+    pub min_tokens_gpu_argmax: bool,
     // @port:struct
 }
 
@@ -102,6 +107,11 @@ impl Default for PortFields {
             kv_window_desk: false,
             lfm3_fp8_all: false,
             model_swap_timing: false,
+            ffn_fp8_decode_gemv: false,
+            mtp_width_policy: false,
+            gdn_verify_gemv: false,
+            lm_head_verify_gemv: false,
+            min_tokens_gpu_argmax: false,
             // @port:default
         }
     }
@@ -249,6 +259,26 @@ pub fn parse(out: &mut PortFields, key: &str, value: &toml::Value) -> bool {
             out.model_swap_timing = boolean(key, value);
             true
         }
+        "ffn_fp8_decode_gemv" => {
+            out.ffn_fp8_decode_gemv = boolean(key, value);
+            true
+        }
+        "mtp_width_policy" => {
+            out.mtp_width_policy = boolean(key, value);
+            true
+        }
+        "gdn_verify_gemv" => {
+            out.gdn_verify_gemv = boolean(key, value);
+            true
+        }
+        "lm_head_verify_gemv" => {
+            out.lm_head_verify_gemv = boolean(key, value);
+            true
+        }
+        "min_tokens_gpu_argmax" => {
+            out.min_tokens_gpu_argmax = boolean(key, value);
+            true
+        }
         // @port:parse
         _ => false,
     }
@@ -298,6 +328,11 @@ pub fn literal(d: &PortFields) -> String {
          \x20   kv_window_desk: {kv_window_desk},\n\
          \x20   lfm3_fp8_all: {lfm3_fp8_all},\n\
          \x20   model_swap_timing: {model_swap_timing},\n\
+         \x20   ffn_fp8_decode_gemv: {ffn_fp8_decode_gemv},\n\
+         \x20   mtp_width_policy: {mtp_width_policy},\n\
+         \x20   gdn_verify_gemv: {gdn_verify_gemv},\n\
+         \x20   lm_head_verify_gemv: {lm_head_verify_gemv},\n\
+         \x20   min_tokens_gpu_argmax: {min_tokens_gpu_argmax},\n\
          // @port:literal-fmt\n\
          \x20   }}",
         conf_summary = d.conf_summary,
@@ -334,6 +369,11 @@ pub fn literal(d: &PortFields) -> String {
         kv_window_desk = d.kv_window_desk,
         lfm3_fp8_all = d.lfm3_fp8_all,
         model_swap_timing = d.model_swap_timing,
+        ffn_fp8_decode_gemv = d.ffn_fp8_decode_gemv,
+        mtp_width_policy = d.mtp_width_policy,
+        gdn_verify_gemv = d.gdn_verify_gemv,
+        lm_head_verify_gemv = d.lm_head_verify_gemv,
+        min_tokens_gpu_argmax = d.min_tokens_gpu_argmax,
         // @port:literal-args
     )
 }

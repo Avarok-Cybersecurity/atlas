@@ -678,6 +678,123 @@ lfm3_fp8_all = false
 # routing policy needs is one run that swaps 4B to 27B and back three times
 # with the row on and logs the seconds.
 model_swap_timing = false
+# Multi-sequence DECODE (2 to 8 streams) serves a native-FP8 dense FFN on the
+# sm_89 batch-M GEMVs (kernels/ada/common/fp8_gemv_ada_batchm.cu, the kernels
+# of ffn_fp8_verify_gemv) in both layer kinds, instead of the prefill ladder:
+# w8a16_gemv_batch4 at 2..4 streams and, at 5..8 streams, the W8A8 arm, which
+# quantizes the activations and runs at about 1.6x the weight-bandwidth floor
+# at every width (L07 sweep, RTX 4060 Ti 16 GB: 141 to 176 us a projection
+# against 90 us for the M=1 GEMV; the measured C=4 to C=8 step grows by 4.9
+# ms more than the C=1 to C=4 slope predicts). It applies to decode steps only
+# (ForwardContext::decode_step), so the speculative verify keeps whatever
+# ffn_fp8_verify_gemv chooses (layers/dense_ffn/fp8_decode_gemv.rs). Each
+# stream's FFN output is then byte-identical to the single-stream decode FFN
+# for the same input at every width: at 2..4 streams that is what the ladder
+# computes today, at 5..8 streams it replaces the lossy W8A8 arithmetic, so
+# greedy output at 5..8 streams changes, toward the single-stream output.
+# What it buys in time is narrower than the W8A8 figure suggests: the batch-M
+# kernel holds the weight-bandwidth floor to 4 rows and is compute bound above
+# them (fp8_ada_batchm_microtest on this card, 4B gate/up shape, warm: 104 us
+# at M=1, 97 at M=4, 184 at M=8), so at 8 streams it costs about what W8A8
+# does and the gain is at 5 and 6 streams. Only targets that compile the
+# module can take it (no lookup elsewhere). Off until the receipt:
+# examples/fp8_ada_batchm_microtest.rs all PASS, greedy token SHA at C=2 and
+# C=4 equal with the row on and off, C=8 text equal to the same prompts served
+# alone, a steady gain at C=5 and C=6 beyond the ABBA bound, and C=8 no
+# slower. AVAROK_FFN_FP8_DECODE_GEMV=1 is the A/B.
+ffn_fp8_decode_gemv = false
+# MTP by live batch width (spark-server scheduler/mtp_width_policy.rs). The
+# throughput gate arbitrates MTP against plain decode on counters of aggregate
+# tokens (re-probe every 256, window 16 steps) and discards both baselines
+# whenever the batch width changes. At 8 streams that re-probes the losing
+# mode every 32 steps for 16 steps: a third of the steps, over half the time
+# (tier-0 on the RTX 4060 Ti 16 GB, 4B FP8, one draft: an MTP step at 8
+# streams costs 99 ms for 13.4 tokens against 39 ms for 8, and the serve
+# delivers 157 tok/s where plain decode delivers 197). With the row on the
+# gate keeps one set of baselines and one standing decision per batch width,
+# so a width seen before resumes without a probe; its re-probe and refresh
+# intervals count tokens per stream, so the probe duty cycle at any width is
+# the single-stream one; and a re-probe that confirms the standing decision
+# doubles the next interval, up to 8x, until a flip resets it. It only chooses
+# between two modes that both emit verified tokens, so outputs are those of
+# whichever mode runs; it is not bit-identical to the row off, because the two
+# modes are interleaved differently. Off until the receipt on this card: conc
+# A/B with --speculative at C=1, 2, 4 and 8 with no loss at any width against
+# the row off, and at C=8 no loss against a serve without --speculative.
+# AVAROK_MTP_WIDTH_POLICY=1 is the A/B; the gate logs every switch.
+mtp_width_policy = false
+# The MTP-verify GDN projections of a BF16-kept GDN layer (the Qwen3.5 dense
+# Bf16Raw load) on dense_gemv_bf16_batchm, 16 rows a weight pass
+# (layers/ops/gdn_verify_gemv.rs): in_proj_qkvz at 3 or more rows, where the
+# verify runs one dense_gemv per row at 3 and 4 rows (3 or 4 passes over a 63
+# MB weight a layer on the 4B) and the scalar dense_gemm above 4, and
+# out_proj_dense at 2 or more rows, where it runs the scalar dense_gemm at
+# every width. Tier-S timing on the RTX 4060 Ti 16 GB (4B, FP8 FFN): the
+# verify forward is 47.9 ms for the 4 rows of one stream and 92.6 ms for the
+# 16 rows of 8 streams, against decode steps of 27 and 40 ms; the scalar
+# kernel turns about 0.6 TFLOP/s, and it is why MTP loses at 8 streams. The
+# batched GEMV reads each weight once for up to 16 rows near the bandwidth
+# floor (L07 sweep: in_proj_qkvz 234 us at 1 row, 310 at 16), and every row is
+# bit-identical to the M=1 decode GEMV (same source, --fmad=false, as
+# attn_gated_bf16_batchm), so a verify row's GDN projections equal the
+# decode's. At 3 and 4 rows in_proj_qkvz keeps today's bits; above 4 rows,
+# and for out_proj_dense at every width, the scalar GEMM's summation order
+# becomes the decode order, so verify logits move toward plain decode. It
+# differs from gdn_batched_gemm, which makes the same launches on cuBLASLt
+# and reassociates: with both on, this row serves up to 16 rows and cuBLASLt
+# the wider batches; alone, it runs one pass per 16 rows. Only a BF16-kept GDN
+# layer takes it (gdn_fp8_from_bf16 and the 4-bit routes have their own
+# arms). Off until the receipt: examples/dense_gemv_bf16_batchm_microtest PASS
+# at the two GDN shapes up to 16 rows, greedy agreement of --speculative
+# against plain decode on the 8 agreement prompts no worse than with the row
+# off, the MTP verify time (AVAROK_MTP_TIMING) down at C=1 and C=8, and a conc
+# gain with --speculative at C=1, 2, 4 and 8. AVAROK_GDN_VERIFY_GEMV=1 is the
+# A/B.
+gdn_verify_gemv = false
+# A BF16 LM head's speculative-verify rows above 8 on dense_gemv_bf16_batchm,
+# 16 rows a weight pass (layers/ops/lm_head_verify_gemv.rs), instead of the
+# scalar dense_gemm, which is the only arm a BF16 head has at 9 or more verify
+# rows (model/impl_a3.rs: the wide arms are NVFP4 only). A batched verify of 8
+# streams with one draft each is 16 rows; on the 4B's tied BF16 head (248,070
+# x 2,560, 1.27 GB) that is 10.2 G scalar multiply-adds a pass. Tier-S timing
+# on the RTX 4060 Ti 16 GB (4B, FP8 FFN): the verify forward is 92.6 ms at 16
+# rows and 148 ms at 32, against a 40 ms decode step of 8 rows; this head and
+# the GDN projections (gdn_verify_gemv) are the two scalar GEMMs in it. The
+# batched GEMV measures 6.8 ms on this head at 16 rows against 5.0 ms at 8
+# (L07 sweep). Every row is bit-identical to the M=1 decode head, as verify
+# rows 2..8 already are; rows above 8 leave the scalar GEMM's summation order
+# for the decode order, so their logits move toward plain decode. Only a BF16
+# head on one rank takes it; the decode head's band (lm_head_batchm_max) is
+# not touched. Off until the receipt: examples/dense_gemv_bf16_batchm_microtest
+# PASS at the head shape up to 16 rows, greedy agreement of --speculative
+# against plain decode at C=8 no worse than with the row off, and the MTP
+# verify time (AVAROK_MTP_TIMING) and conc tok/s with --speculative better at
+# C=8. AVAROK_LM_HEAD_VERIFY_GEMV=1 is the A/B.
+lm_head_verify_gemv = false
+# A greedy decode step whose sequences still have a min_tokens floor to reach
+# stays on the device argmax (spark-server scheduler/min_floor_fast.rs).
+# Today an active floor sends the whole batch through the host sampling
+# pipeline for the floor's EOS mask alone: every step copies the [n, vocab]
+# logits to the host, widens them to FP32 and scans them once per sequence
+# (3.97 MB and eight 248,070-element passes a step at 8 streams on the 4B). A
+# fixed-length benchmark sets min_tokens = max_tokens, so every step of every
+# conc run pays it; AVAROK_DECODE_TIMING=1 prints the copy and the scan. With
+# temperature 0 and neutral penalties the pipeline's token is the argmax of
+# the masked logits, and masking an entry that is not the maximum does not
+# move it, so the device argmax is the same token unless it is one of the
+# sequence's EOS ids; that is checked afterwards and only such a step is
+# redone on the host, as the two-id think mask already is. A request with any
+# penalty set keeps the host pipeline. One thing does change, the tie-break:
+# where the two top logits tie exactly (1.3% of greedy positions in queue-1's
+# quality dumps) the device argmax keeps the id with the lower index mod 1024
+# and the host pipeline the lower index. So a floored greedy run is NOT
+# bit-identical to the row off; it emits what the same request emits without
+# a floor, which already takes the device argmax. Off until the receipt: on
+# fixed-length runs at C=1 and C=8, tokens equal to the same prompts served
+# without min_tokens up to their first EOS, the fallback case exercised (the
+# 8 agreement prompts with min_tokens below their natural length), and steady
+# tok/s no lower. AVAROK_MIN_TOKENS_GPU_ARGMAX=1 is the A/B.
+min_tokens_gpu_argmax = false
 # @port:defaults
 
 # ── Kernels this target owns ───────────────────────────────────────────────

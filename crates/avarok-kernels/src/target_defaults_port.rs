@@ -275,6 +275,36 @@ pub struct PortDefaults {
     /// (resident, resident_bytes, swap_seconds_estimate) to the /v1/models list
     /// and to a retrieved model.
     pub model_swap_timing: bool,
+    /// Multi-sequence DECODE (2 to 8 streams) serves a native-FP8 dense FFN on
+    /// the sm_89 batch-M GEMVs (kernels/ada/common/fp8_gemv_ada_batchm.cu) in
+    /// both layer kinds, instead of the prefill ladder (w8a16_gemv_batch4 at
+    /// 2..4 streams, the W8A8 arm at 5..8), on decode steps only
+    /// (layers/dense_ffn/fp8_decode_gemv.rs).
+    pub ffn_fp8_decode_gemv: bool,
+    /// MTP by live batch width (spark-server scheduler/mtp_width_policy.rs):
+    /// the throughput gate keeps one set of baselines and one standing decision
+    /// per batch width, counts its re-probe and refresh intervals in tokens per
+    /// stream, and backs off re-probes that confirm the standing decision.
+    pub mtp_width_policy: bool,
+    /// The MTP-verify GDN projections of a BF16-kept GDN layer on
+    /// dense_gemv_bf16_batchm, 16 rows a weight pass
+    /// (layers/ops/gdn_verify_gemv.rs): in_proj_qkvz at 3 or more rows and
+    /// out_proj_dense at 2 or more, instead of one dense_gemv per row or the
+    /// scalar dense_gemm. Every row is bit-identical to the M=1 decode GEMV.
+    pub gdn_verify_gemv: bool,
+    /// A BF16 LM head's speculative-verify rows above 8 on
+    /// dense_gemv_bf16_batchm, 16 rows a weight pass
+    /// (layers/ops/lm_head_verify_gemv.rs), instead of the scalar dense_gemm.
+    /// Every row is bit-identical to the M=1 decode head.
+    pub lm_head_verify_gemv: bool,
+    /// A greedy decode step whose sequences still have a min_tokens floor to
+    /// reach stays on the device argmax (spark-server
+    /// scheduler/min_floor_fast.rs): the floor's EOS mask is checked against
+    /// the argmax afterwards, and only a step whose argmax is an EOS id is
+    /// redone on the host. No per-step logits copy; the pick's tie-break
+    /// becomes the device argmax's, as for a request without a floor, so an
+    /// exact top tie can resolve differently from the row off.
+    pub min_tokens_gpu_argmax: bool,
     // @port:fields
 }
 
@@ -318,5 +348,10 @@ pub const PORT_BASELINE: PortDefaults = PortDefaults {
     kv_window_desk: false,
     lfm3_fp8_all: false,
     model_swap_timing: false,
+    ffn_fp8_decode_gemv: false,
+    mtp_width_policy: false,
+    gdn_verify_gemv: false,
+    lm_head_verify_gemv: false,
+    min_tokens_gpu_argmax: false,
     // @port:baseline
 };

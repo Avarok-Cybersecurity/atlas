@@ -67,6 +67,11 @@ const PORT_LEVERS: &[&str] = &[
     "kv_window_desk",
     "lfm3_fp8_all",
     "model_swap_timing",
+    "ffn_fp8_decode_gemv",
+    "mtp_width_policy",
+    "gdn_verify_gemv",
+    "lm_head_verify_gemv",
+    "min_tokens_gpu_argmax",
     // @port:levers
 ];
 
@@ -200,6 +205,20 @@ fn the_baked_port_rows_match_their_own_hardware_tree() {
         baked.port.model_swap_timing,
         declared.port.model_swap_timing
     );
+    assert_eq!(
+        baked.port.ffn_fp8_decode_gemv,
+        declared.port.ffn_fp8_decode_gemv
+    );
+    assert_eq!(baked.port.mtp_width_policy, declared.port.mtp_width_policy);
+    assert_eq!(baked.port.gdn_verify_gemv, declared.port.gdn_verify_gemv);
+    assert_eq!(
+        baked.port.lm_head_verify_gemv,
+        declared.port.lm_head_verify_gemv
+    );
+    assert_eq!(
+        baked.port.min_tokens_gpu_argmax,
+        declared.port.min_tokens_gpu_argmax
+    );
     // @port:baked-eq
 }
 
@@ -243,6 +262,11 @@ fn ada_port_rows_hold_their_write_time_values() {
     assert_eq!(declared("ada").port.kv_window_desk, false);
     assert_eq!(declared("ada").port.lfm3_fp8_all, false);
     assert_eq!(declared("ada").port.model_swap_timing, false);
+    assert_eq!(declared("ada").port.ffn_fp8_decode_gemv, false);
+    assert_eq!(declared("ada").port.mtp_width_policy, false);
+    assert_eq!(declared("ada").port.gdn_verify_gemv, false);
+    assert_eq!(declared("ada").port.lm_head_verify_gemv, false);
+    assert_eq!(declared("ada").port.min_tokens_gpu_argmax, false);
     // @port:ada
 }
 
@@ -285,6 +309,11 @@ fn non_ada_targets_keep_every_port_row_at_its_baseline() {
         assert!(!declared(hw).port.kv_window_desk, "{hw}");
         assert!(!declared(hw).port.lfm3_fp8_all, "{hw}");
         assert!(!declared(hw).port.model_swap_timing, "{hw}");
+        assert!(!declared(hw).port.ffn_fp8_decode_gemv, "{hw}");
+        assert!(!declared(hw).port.mtp_width_policy, "{hw}");
+        assert!(!declared(hw).port.gdn_verify_gemv, "{hw}");
+        assert!(!declared(hw).port.lm_head_verify_gemv, "{hw}");
+        assert!(!declared(hw).port.min_tokens_gpu_argmax, "{hw}");
         // @port:non-ada
     }
 }
