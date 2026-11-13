@@ -23,6 +23,7 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PortFields {
     pub marlin_w4a16: bool,
+    pub gguf_native_iq4: bool,
     pub kv_batched_swap: bool,
     pub ssm_store_lru: bool,
     pub radix_lru_index: bool,
@@ -40,6 +41,7 @@ impl Default for PortFields {
     fn default() -> Self {
         Self {
             marlin_w4a16: false,
+            gguf_native_iq4: false,
             kv_batched_swap: false,
             ssm_store_lru: false,
             radix_lru_index: false,
@@ -57,6 +59,10 @@ pub fn parse(out: &mut PortFields, key: &str, value: &toml::Value) -> bool {
     match key {
         "marlin_w4a16" => {
             out.marlin_w4a16 = boolean(key, value);
+            true
+        }
+        "gguf_native_iq4" => {
+            out.gguf_native_iq4 = boolean(key, value);
             true
         }
         "kv_batched_swap" => {
@@ -91,6 +97,7 @@ pub fn literal(d: &PortFields) -> String {
     format!(
         "crate::target_defaults_port::PortDefaults {{\n\
          \x20   marlin_w4a16: {marlin_w4a16},\n\
+         \x20   gguf_native_iq4: {gguf_native_iq4},\n\
          \x20   kv_batched_swap: {kv_batched_swap},\n\
          \x20   ssm_store_lru: {ssm_store_lru},\n\
          \x20   radix_lru_index: {radix_lru_index},\n\
@@ -98,6 +105,7 @@ pub fn literal(d: &PortFields) -> String {
          // @port:literal-fmt\n\
          \x20   }}",
         marlin_w4a16 = d.marlin_w4a16,
+        gguf_native_iq4 = d.gguf_native_iq4,
         kv_batched_swap = d.kv_batched_swap,
         ssm_store_lru = d.ssm_store_lru,
         radix_lru_index = d.radix_lru_index,

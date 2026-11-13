@@ -180,6 +180,23 @@ w8a8_prefill_max_m_narrowing = 4294967295
 # codes are the checkpoint's, load through the same kernels at the packed
 # install sites.
 marlin_w4a16 = false
+# A dense Qwen3.5-family GGUF (arch qwen35) keeps its IQ4_XS, Q4_K and Q6_K
+# projections as the file's raw super-blocks in VRAM (the dense FFN, the
+# full-attention q/k/v/o, and the two GDN input projections with their
+# value-head row reorder applied to the packed bytes), tagged
+# WeightDtype::Iq4Xs / Q4K / Q6K for the sm_89 keep-packed decode GEMVs (M =
+# 1..8) and MMQ prefill GEMMs (kernels/ada/common/kquant_mmvq_q4_ada.cu,
+# iq4_xs_mmq_ada.cu, kquant_q8_1_ada.cu over the vendored llama.cpp MIT
+# engine; host port/gguf_q4/), instead of expanding them to BF16 at 2 bytes a
+# weight. IQ4_XS, IQ4_NL and Q5_K tensors the route does not keep are expanded
+# on the GPU (dequant_iq4xs_q5k_bf16_ada.cu, bit-exact with the CPU decoder),
+# and the file's MTP head (blk.<L>.nextn.*) is mapped to the mtp.* names. Off:
+# the container refuses IQ4 types as before and the loader is byte-identical.
+# Off until the receipt: examples/iq4xs_gemv_microtest.rs all PASS (dequant
+# bitwise, GEMV and MMQ within the float64 bound, row invariance), the R2 and
+# R3 bars (M = 1 at 85% of 288 GB/s, M = 8 within 25% of M = 1), and a KL
+# check against BF16 on a Qwen3.5-4B or Qwen3.8-27B IQ4_XS GGUF.
+gguf_native_iq4 = false
 # Batched sequence swap
 # (`spark-model/src/model/trait_impl/sequence/state_io.rs`,
 # `spark-runtime/src/kv_cache/block_io.rs`): a swapped-out sequence's image
@@ -364,5 +381,24 @@ overrides = [
   "marlin_mma_ada.cuh",
   "marlin_scalar_type_ada.cuh",
   "marlin_template_ada.cuh",
+  # Keep-packed GGUF 4-bit route (port lane L19; llama.cpp / ggml, MIT, see
+  # GGUF-IQ4-ATTRIBUTION.md and LICENSES/llama.cpp-MIT.txt). ADDITIONS, no
+  # gb10 counterpart. Each includes the vendored headers of
+  # gb10/qwen3.6-27b/nvfp4/q4k_vendor/ by relative path and never edits
+  # them. Looked up only by the `gguf_native_iq4` row's loader and the
+  # port/gguf_q4 W4Linear (has_module first, so an absent module costs no
+  # lookup on any target).
+  #   kquant_q8_1_ada.cu      bf16 -> block_q8_1 rows (decode) and the MMQ
+  #                           D4 / DS4 activation layouts (prefill)
+  #   kquant_mmvq_q4_ada.cu   IQ4_XS / Q4_K / Q6_K decode GEMV, M = 1..8,
+  #                           block-per-row and warp-per-row shapes
+  #   iq4_xs_mmq_ada.cu       IQ4_XS / Q4_K / Q6_K MMQ prefill, 128 x 128
+  #                           tiles, int8 mma.sync (the q4k_mmq.cu copy)
+  #   dequant_iq4xs_q5k_bf16_ada.cu  IQ4_XS / IQ4_NL / Q5_K -> bf16, bit-exact
+  #                           with the CPU decoder
+  "dequant_iq4xs_q5k_bf16_ada.cu",
+  "iq4_xs_mmq_ada.cu",
+  "kquant_mmvq_q4_ada.cu",
+  "kquant_q8_1_ada.cu",
   # @port:overrides
 ]

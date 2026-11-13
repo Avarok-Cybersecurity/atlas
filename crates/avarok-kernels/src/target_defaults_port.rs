@@ -37,6 +37,16 @@ pub struct PortDefaults {
     /// launch on one thread configuration fixed per weight (row invariant),
     /// prompts on vLLM's M split.
     pub marlin_w4a16: bool,
+    /// A dense Qwen3.5-family GGUF (arch qwen35) keeps its IQ4_XS, Q4_K and Q6_K
+    /// projections as the file's raw super-blocks in VRAM (the dense FFN, the
+    /// full-attention q/k/v/o, and the two GDN input projections with their
+    /// value-head row reorder applied to the packed bytes), tagged
+    /// WeightDtype::Iq4Xs / Q4K / Q6K for the sm_89 keep-packed decode GEMVs (M =
+    /// 1..8) and MMQ prefill GEMMs (kernels/ada/common/kquant_mmvq_q4_ada.cu,
+    /// iq4_xs_mmq_ada.cu, kquant_q8_1_ada.cu over the vendored llama.cpp MIT
+    /// engine; host port/gguf_q4/), instead of expanding them to BF16 at 2 bytes
+    /// a weight.
+    pub gguf_native_iq4: bool,
     /// Batched sequence swap
     /// (`spark-model/src/model/trait_impl/sequence/state_io.rs`,
     /// `spark-runtime/src/kv_cache/block_io.rs`): a swapped-out sequence's image
@@ -76,6 +86,7 @@ pub struct PortDefaults {
 /// same apply pass).
 pub const PORT_BASELINE: PortDefaults = PortDefaults {
     marlin_w4a16: false,
+    gguf_native_iq4: false,
     kv_batched_swap: false,
     ssm_store_lru: false,
     radix_lru_index: false,

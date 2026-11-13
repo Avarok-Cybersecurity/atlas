@@ -270,6 +270,24 @@ w8a8_prefill_max_m_narrowing = 384
 # the checkpoint's, load through the same kernels at the packed install sites.
 marlin_w4a16 = false
 
+# A dense Qwen3.5-family GGUF (arch qwen35) keeps its IQ4_XS, Q4_K and Q6_K
+# projections as the file's raw super-blocks in VRAM (the dense FFN, the
+# full-attention q/k/v/o, and the two GDN input projections with their
+# value-head row reorder applied to the packed bytes), tagged
+# WeightDtype::Iq4Xs / Q4K / Q6K for the sm_89 keep-packed decode GEMVs (M =
+# 1..8) and MMQ prefill GEMMs (kernels/ada/common/kquant_mmvq_q4_ada.cu,
+# iq4_xs_mmq_ada.cu, kquant_q8_1_ada.cu over the vendored llama.cpp MIT engine;
+# host port/gguf_q4/), instead of expanding them to BF16 at 2 bytes a weight.
+# IQ4_XS, IQ4_NL and Q5_K tensors the route does not keep are expanded on the
+# GPU (dequant_iq4xs_q5k_bf16_ada.cu, bit-exact with the CPU decoder), and the
+# file's MTP head (blk.<L>.nextn.*) is mapped to the mtp.* names. Off: the
+# container refuses IQ4 types as before and the loader is byte-identical. Off
+# until the receipt: examples/iq4xs_gemv_microtest.rs all PASS (dequant
+# bitwise, GEMV and MMQ within the float64 bound, row invariance), the R2 and
+# R3 bars (M = 1 at 85% of 288 GB/s, M = 8 within 25% of M = 1), and a KL check
+# against BF16 on a Qwen3.5-4B or Qwen3.8-27B IQ4_XS GGUF.
+gguf_native_iq4 = false
+
 # Batched sequence swap (`spark-model/src/model/trait_impl/sequence/state_io.rs`,
 # `spark-runtime/src/kv_cache/block_io.rs`): a swapped-out sequence's image
 # (each block's K and V for every attention layer, then each GDN layer's h and
