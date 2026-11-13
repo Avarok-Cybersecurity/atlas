@@ -82,7 +82,7 @@ pub fn model_type_ships_vanilla_norm_weights(model_type: &str) -> bool {
     // the `(1 + w)` offset and corrupts every token's logits. Nothing about the shapes says so.
     matches!(
         model_type,
-        "deepseek_v4" | "deepseek_v41" | "laguna" | "glm5_next" | "kimi_k3"
+        "deepseek_v4" | "deepseek_v41" | "laguna" | "glm5_next" | "kimi_k3" | "lfm3"
     )
 }
 
@@ -150,6 +150,8 @@ mod norm_convention_tests {
         // GLM-5.3's norms are plain; the final norm is applied outside any layer.
         assert!(vanilla("glm5_next"));
         assert!(vanilla("kimi_k3"));
+        // LFM3 (Lfm3RMSNorm: `weight * normalized`).
+        assert!(vanilla("lfm3"));
         for other in [
             "qwen3_next",
             "qwen3_5_moe",

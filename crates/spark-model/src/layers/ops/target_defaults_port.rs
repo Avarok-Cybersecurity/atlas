@@ -97,6 +97,8 @@ pub struct PortLevers {
     pub prefill_sparse_attn: Resolved<bool>,
     /// Host-resident window desk (APPROXIMATE): keep on the GPU only the head sinks, a recent window and recalled pages of a long sequence.
     pub kv_window_desk: Resolved<bool>,
+    /// Convert an LFM3 checkpoint's projections to 128x128 block-scaled FP8 (E4M3) at load.
+    pub lfm3_fp8_all: Resolved<bool>,
     // @port:fields
 }
 
@@ -239,6 +241,10 @@ pub fn resolve(
             d.kv_window_desk,
             var(super::port_rows::kv_window_desk::ENV).as_deref(),
         ),
+        lfm3_fp8_all: super::port_rows::lfm3_fp8_all::resolve(
+            d.lfm3_fp8_all,
+            var(super::port_rows::lfm3_fp8_all::ENV).as_deref(),
+        ),
         // @port:resolve
     }
 }
@@ -310,6 +316,7 @@ pub fn format_port(l: &PortLevers) -> String {
     push(&mut s, "retro_attn", &l.retro_attn);
     push(&mut s, "prefill_sparse_attn", &l.prefill_sparse_attn);
     push(&mut s, "kv_window_desk", &l.kv_window_desk);
+    push(&mut s, "lfm3_fp8_all", &l.lfm3_fp8_all);
     // @port:boot
     if s.len() == header {
         s.push_str(" none");

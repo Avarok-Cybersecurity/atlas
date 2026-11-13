@@ -30,6 +30,7 @@ pub mod kv_tier_disk;
 pub mod kv_view_selection;
 pub mod kv_window_desk;
 pub mod l2_evict_first_weights;
+pub mod lfm3_fp8_all;
 pub mod marlin_w4a16;
 pub mod mtp_dcut_cost_model;
 pub mod mtp_device_accept;
