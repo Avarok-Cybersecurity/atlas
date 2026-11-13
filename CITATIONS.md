@@ -199,6 +199,17 @@ from or built on as an idea, one entry per source, with its license and the
 Atlas files that carry it. License texts are in `LICENSES/`; notices are in
 `NOTICE`.
 
+### Bench quality and long-context scripts (lane L02)
+
+These are the sources of the measurement scripts kept in `~/atlas-wt/bench/` (outside this repository). None of
+their code is copied; the entries record the task definitions, protocols and datasets they follow.
+
+- **RULER** (NVIDIA, Apache-2.0, https://github.com/NVIDIA/RULER, `benchmark/ruler/synthetic.yaml`, `data/synthetic/*.py`, `eval/synthetic/constants.py`): the task list (single, multikey, multivalue and multiquery needle-in-a-haystack, variable tracking, common and frequent word extraction, SQuAD and HotpotQA question answering), the needle and question templates, and the `string_match_all` / `string_match_part` scoring rules. Independent generators with deterministic seeding; the NVIDIA Apache-2.0 notice stays in `ruler.py`. No RULER data or fixture is copied.
+- **InfiniteBench Retr.KV** (idea only): key-to-value lookup over random UUIDs, the task where approximate attention lost 4 to 11 points in the RetrievalAttention paper. Own generator, no data copied. Atlas: `retr_kv` in `ruler.py`.
+- **TensorFold `tensorfold kl --dump/--against`** (Apache-2.0, ashhart/TensorFold, commit 3885dce, `zig/src/cli/cuda_kl.zig`): teacher-forced full-vocabulary KL, NLL and top-1 at every position from the reference's own greedy reply. Idea and protocol only. Atlas: `tf_kl.py`.
+- **Cinference `docs/perplexity.md`** (Apache-2.0, commit 383e5db): fixed 4,096-token windows with a 2,048 stride, every token scored once, per domain, unrounded report. Idea and protocol only. Atlas: `ppl.py`.
+- **KVMem** (arXiv:2609.04852, no license on the reference repository): the identity canary (an approximating feature with a budget at least the context must reproduce the feature-off greedy tokens), the flat-VRAM canary, and judging a needle test by whether the needle's block was in the selected window. Independent implementation from the published description; nothing read from `kvmem` or `kvmem-llama.cpp`. Atlas: `canaries.py`, `niah_grid.py`.
+- **Datasets read at run time, never committed**: PG-19 (DeepMind, Apache-2.0), SQuAD v2 and HotpotQA (CC BY-SA 4.0, local evaluation only), MMLU (MIT), GSM8K (MIT). Commands and the license of each are in `bench/data/README.md`.
 
 ### GPU backend extensions (L08)
 
