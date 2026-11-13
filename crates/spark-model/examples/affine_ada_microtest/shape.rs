@@ -47,11 +47,12 @@ pub fn weight(
     Ok((b, host))
 }
 
-/// The slice partials a split launch left in `work`, re-added in `order` (a permutation of the slices)
-/// and rounded to bf16: what the split kernel would store if it added the slices in that order.
-fn recombine(part: &[f32], w: &AffineWeight, rows: usize, order: &[usize]) -> Vec<u16> {
+/// The slice partials a split launch left in `work`, re-added in `order` (a permutation of the slices):
+/// the fp32 sums as raw bits, before any bf16 rounding. The planted controls compare these, because
+/// the bf16 rounding of `recombine` hides a last-bit fp32 difference between two slice orders.
+fn recombine_f32(part: &[f32], w: &AffineWeight, rows: usize, order: &[usize]) -> Vec<u32> {
     let (n, sk) = (w.n, w.sk());
-    let mut out = vec![0u16; rows * n];
+    let mut out = vec![0u32; rows * n];
     for r in 0..rows {
         for c in 0..n {
             let (tile, col) = (c / 64, c % 64);
@@ -60,10 +61,18 @@ fn recombine(part: &[f32], w: &AffineWeight, rows: usize, order: &[usize]) -> Ve
             for &s in &order[1..] {
                 t += at(s);
             }
-            out[r * n + c] = bf16_of(t);
+            out[r * n + c] = t.to_bits();
         }
     }
     out
+}
+
+/// The same sums rounded to bf16: what the split kernel would store if it added the slices in that order.
+fn recombine(part: &[f32], w: &AffineWeight, rows: usize, order: &[usize]) -> Vec<u16> {
+    recombine_f32(part, w, rows, order)
+        .into_iter()
+        .map(|b| bf16_of(f32::from_bits(b)))
+        .collect()
 }
 
 pub fn run(
@@ -158,16 +167,23 @@ pub fn run(
         inv,
         &format!("(M in {ROWS:?})"),
     );
-    if sk > 1 {
+    let fwd: Vec<usize> = (0..sk).collect();
+    if sk > 2 {
         // PLANTED CONTROL: the same partials added in reverse slice order (bits that would depend on
-        // how a launch splits its work) must differ from the kernel's.
+        // how a launch splits its work) must differ from the forward order. Needs sk > 2: two fp32
+        // partials added in either order are the same sum. Compared as fp32 bits, because the bf16
+        // rounding of the stored result hides a last-bit difference.
         let rev: Vec<usize> = (0..sk).rev().collect();
         t.control(
             "reverse slice order",
-            unequal(&recombine(&part, &w, 16, &rev), &full),
-            "",
+            unequal(
+                &recombine_f32(&part, &w, 16, &rev),
+                &recombine_f32(&part, &w, 16, &fwd),
+            ),
+            "(fp32 sums)",
         );
-        let fwd: Vec<usize> = (0..sk).collect();
+    }
+    if sk > 1 {
         t.gate(
             "partials in slice order == stored",
             unequal(&recombine(&part, &w, 16, &fwd), &full),
@@ -200,25 +216,28 @@ pub fn run(
         repeat += unequal(&out16.read(gpu)?, &full);
     }
     t.gate("five-run byte repeat", repeat, "");
-    if sk > 1 {
+    if sk > 2 {
         // PLANTED CONTROL: an atomics-style sum, whose slice order is whatever order CTAs finish in.
+        // Needs sk > 2 (two fp32 partials sum the same in either order) and compares fp32 bits (the
+        // bf16 rounding of the stored result hides a last-bit difference).
+        let base = recombine_f32(&part, &w, 16, &fwd);
         let mut runs = Vec::new();
         for _ in 0..5 {
             let mut order: Vec<usize> = (0..sk).collect();
             for i in (1..sk).rev() {
                 order.swap(i, r.below(i + 1));
             }
-            runs.push(recombine(&part, &w, 16, &order));
+            runs.push(recombine_f32(&part, &w, 16, &order));
         }
         let differ = runs
             .iter()
-            .map(|v| unequal(v, &full))
+            .map(|v| unequal(v, &base))
             .filter(|d| *d > 0)
             .count();
         t.control(
             "arrival-order split sum",
             differ,
-            "(runs differing from the kernel)",
+            "(runs whose fp32 sums differ from slice order)",
         );
     }
 
