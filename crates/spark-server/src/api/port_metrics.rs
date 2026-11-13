@@ -42,6 +42,7 @@ pub fn render(out: &mut String) {
     crate::scheduler::kv_view::render_prometheus(out);
     spark_model::port::retro::metrics::render_prometheus(out);
     spark_model::port::sparse_prefill::metrics::render_prometheus(out);
+    spark_model::port::kv_window::render_prometheus(out);
     // @port:render
 }
 

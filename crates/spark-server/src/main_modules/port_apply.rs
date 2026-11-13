@@ -84,6 +84,7 @@ pub(crate) fn apply(args: &PortArgs) -> anyhow::Result<()> {
         args.prefill_sparse_threshold,
         args.prefill_sparse_stride,
     );
+    spark_model::port::kv_window::apply_flags(args.kv_window_tokens, args.kv_window_head_tokens)?;
     // @port:apply
     Ok(())
 }

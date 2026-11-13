@@ -202,5 +202,14 @@ pub struct PortArgs {
     /// `AVAROK_PREFILL_SPARSE_STRIDE`, else 8.
     #[arg(long = "prefill-sparse-stride", value_name = "S")]
     pub prefill_sparse_stride: Option<u32>,
+    /// Window desk (lane L36, row `kv_window_desk`): positions of the recent window each long
+    /// sequence keeps on the GPU (default 32768; at least 1024). Serves only with the row on
+    /// (`AVAROK_KV_WINDOW_DESK`); approximate attention.
+    #[arg(long = "kv-window-tokens", value_name = "N")]
+    pub kv_window_tokens: Option<u32>,
+    /// Window desk: head positions that never leave the GPU (default 2048: system prompt and
+    /// attention sinks).
+    #[arg(long = "kv-window-head-tokens", value_name = "N")]
+    pub kv_window_head_tokens: Option<u32>,
     // @port:fields
 }
