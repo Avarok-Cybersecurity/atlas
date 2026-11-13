@@ -211,6 +211,11 @@ their code is copied; the entries record the task definitions, protocols and dat
 - **KVMem** (arXiv:2609.04852, no license on the reference repository): the identity canary (an approximating feature with a budget at least the context must reproduce the feature-off greedy tokens), the flat-VRAM canary, and judging a needle test by whether the needle's block was in the selected window. Independent implementation from the published description; nothing read from `kvmem` or `kvmem-llama.cpp`. Atlas: `canaries.py`, `niah_grid.py`.
 - **Datasets read at run time, never committed**: PG-19 (DeepMind, Apache-2.0), SQuAD v2 and HotpotQA (CC BY-SA 4.0, local evaluation only), MMLU (MIT), GSM8K (MIT). Commands and the license of each are in `bench/data/README.md`.
 
+### Request evidence and confidence summary
+
+- **TensorFold** (Apache-2.0), `docs/cache-benchmarks.md` and `tools/bench_evidence.py`, commit 3885dce: the definition of the per-request fingerprints `token_sha` (token-id hash) and `output_sha256` (hash of the content and reasoning digests, independent of chunk boundaries), the cold/reused `cached_tokens` rule, and the practice of comparing a drafted run, a concurrent run and a resumed run by fingerprint. Idea and definition only; no code copied. Atlas: `crates/spark-server/src/api/evidence.rs`, `crates/spark-server/src/api/evidence/`.
+- **Cascade routing on a cheap confidence signal** (idea only, as in RouteLLM-style threshold calibration): escalate a request to a larger model when the small model's own confidence is low. The summary is a measurement; whether it is a useful trigger is decided by an offline AUROC study, not assumed. Atlas: `crates/spark-server/src/scheduler/conf_summary.rs`.
+
 ### GPU backend extensions (L08)
 
 - Cinference (https://github.com/satellitedown/cinference, commit `383e5db`,
