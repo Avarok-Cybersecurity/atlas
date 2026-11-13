@@ -49,6 +49,7 @@ pub struct PortFields {
     pub kv_tier_disk: bool,
     pub radix_lru_index: bool,
     pub prefix_cow_tail: bool,
+    pub attn_page_sparse: bool,
     // @port:struct
 }
 
@@ -88,6 +89,7 @@ impl Default for PortFields {
             kv_tier_disk: false,
             radix_lru_index: false,
             prefix_cow_tail: false,
+            attn_page_sparse: false,
             // @port:default
         }
     }
@@ -207,6 +209,10 @@ pub fn parse(out: &mut PortFields, key: &str, value: &toml::Value) -> bool {
             out.prefix_cow_tail = boolean(key, value);
             true
         }
+        "attn_page_sparse" => {
+            out.attn_page_sparse = boolean(key, value);
+            true
+        }
         // @port:parse
         _ => false,
     }
@@ -249,6 +255,7 @@ pub fn literal(d: &PortFields) -> String {
          \x20   kv_tier_disk: {kv_tier_disk},\n\
          \x20   radix_lru_index: {radix_lru_index},\n\
          \x20   prefix_cow_tail: {prefix_cow_tail},\n\
+         \x20   attn_page_sparse: {attn_page_sparse},\n\
          // @port:literal-fmt\n\
          \x20   }}",
         conf_summary = d.conf_summary,
@@ -278,6 +285,7 @@ pub fn literal(d: &PortFields) -> String {
         kv_tier_disk = d.kv_tier_disk,
         radix_lru_index = d.radix_lru_index,
         prefix_cow_tail = d.prefix_cow_tail,
+        attn_page_sparse = d.attn_page_sparse,
         // @port:literal-args
     )
 }

@@ -60,6 +60,7 @@ const PORT_LEVERS: &[&str] = &[
     "kv_tier_disk",
     "radix_lru_index",
     "prefix_cow_tail",
+    "attn_page_sparse",
     // @port:levers
 ];
 
@@ -177,6 +178,7 @@ fn the_baked_port_rows_match_their_own_hardware_tree() {
     assert_eq!(baked.port.kv_tier_disk, declared.port.kv_tier_disk);
     assert_eq!(baked.port.radix_lru_index, declared.port.radix_lru_index);
     assert_eq!(baked.port.prefix_cow_tail, declared.port.prefix_cow_tail);
+    assert_eq!(baked.port.attn_page_sparse, declared.port.attn_page_sparse);
     // @port:baked-eq
 }
 
@@ -213,6 +215,7 @@ fn ada_port_rows_hold_their_write_time_values() {
     assert_eq!(declared("ada").port.kv_tier_disk, false);
     assert_eq!(declared("ada").port.radix_lru_index, false);
     assert_eq!(declared("ada").port.prefix_cow_tail, false);
+    assert_eq!(declared("ada").port.attn_page_sparse, false);
     // @port:ada
 }
 
@@ -248,6 +251,7 @@ fn non_ada_targets_keep_every_port_row_at_its_baseline() {
         assert!(!declared(hw).port.kv_tier_disk, "{hw}");
         assert!(!declared(hw).port.radix_lru_index, "{hw}");
         assert!(!declared(hw).port.prefix_cow_tail, "{hw}");
+        assert!(!declared(hw).port.attn_page_sparse, "{hw}");
         // @port:non-ada
     }
 }

@@ -218,6 +218,18 @@ pub struct PortDefaults {
     /// donor's writable tail, which is the issue #1193 aliasing bug
     /// (`radix_tree/inner/cow_walk.rs`, `prefill_b/prefix_cow.rs`).
     pub prefix_cow_tail: bool,
+    /// Quest page-sparse decode attention (`spark-model/src/port/sparse_quest/`,
+    /// `kernels/ada/common/attn_page_sparse_ada.cu`), plugged into the
+    /// sparse-attention seam: per attention layer, 64-token page and KV head the
+    /// channel min and max of the keys (f16, kept in the slot of the page's first
+    /// physical block, charged to the KV budget at model build), and per decode
+    /// or verify step the Quest bound `sum_c max(q_c*kmin_c, q_c*kmax_c)` of
+    /// every page; the step attends only to the first `--attn-sparse-sink-pages`
+    /// pages, the `--attn-sparse-topk-pages` best pages and the last
+    /// `--attn-sparse-recent-tokens` tokens through a compacted block table, once
+    /// the context passes `--attn-sparse-min-ctx` (below it the view is the dense
+    /// table, bit-identical).
+    pub attn_page_sparse: bool,
     // @port:fields
 }
 
@@ -254,5 +266,6 @@ pub const PORT_BASELINE: PortDefaults = PortDefaults {
     kv_tier_disk: false,
     radix_lru_index: false,
     prefix_cow_tail: false,
+    attn_page_sparse: false,
     // @port:baseline
 };

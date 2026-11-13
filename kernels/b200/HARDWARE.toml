@@ -556,5 +556,23 @@ radix_lru_index = false
 # identity at 0.7, and prefix-repetition TTFT no worse.
 # `AVAROK_PREFIX_COW_TAIL=1` is the A/B.
 prefix_cow_tail = false
+# Quest page-sparse decode attention (`spark-model/src/port/sparse_quest/`,
+# `kernels/ada/common/attn_page_sparse_ada.cu`), plugged into the
+# sparse-attention seam: per attention layer, 64-token page and KV head the
+# channel min and max of the keys (f16, kept in the slot of the page's first
+# physical block, charged to the KV budget at model build), and per decode or
+# verify step the Quest bound `sum_c max(q_c*kmin_c, q_c*kmax_c)` of every
+# page; the step attends only to the first `--attn-sparse-sink-pages` pages,
+# the `--attn-sparse-topk-pages` best pages and the last
+# `--attn-sparse-recent-tokens` tokens through a compacted block table, once
+# the context passes `--attn-sparse-min-ctx` (below it the view is the dense
+# table, bit-identical). APPROXIMATE, so OFF on every target and never default
+# on; the module exists only in the Ada image (elsewhere the row logs once and
+# attention stays dense). The receipts that only ever record it (never flip
+# it): `examples/page_sparse_microtest.rs` PASS (summary bytes, scores, exact
+# top-k sets, the identity gate bit-identical), then the L02 NIAH grid at
+# 32K/64K/128K/262K, decode ms/step against context, perplexity drift and one
+# agent task at 64K+ (queue row Q15).
+attn_page_sparse = false
 # @port:defaults
 
