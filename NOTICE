@@ -538,4 +538,26 @@ RetrievalAttention / RetroInfer (k-means index build and zone selection)
   and an exact radix select and sort instead of torch.topk; fixed
   capacities with device counts (CUDA-graph capturable). No CUTLASS code is
   used. See RETROINFER-ATTRIBUTION.md.
+
+RetrievalAttention / RetroInfer (exact-zone gather and estimation attention)
+  Source: https://github.com/microsoft/RetrievalAttention, commit 03f912c
+  Files: cache_hub/retroinfer_cache.py (sparse_attention: the execution
+         buffer of steady zone plus retrieval clusters, the estimation-zone
+         weighted attention and its merge with the exact zone),
+         library/retroinfer/retroinfer_kernels/src/gather_copy.cu
+         (gather_copy_and_concat, access pattern only)
+  Copyright (c) Microsoft Corporation. Licensed under the MIT License
+  (LICENSES/RetroInfer-MIT.txt).
+  Atlas files: kernels/ada/common/retro_gather_ada.cu,
+         kernels/ada/common/retro_attn_ada.cu,
+         crates/spark-model/src/port/retro/gather.rs,
+         crates/spark-model/src/port/retro/gather_reference.rs,
+         crates/spark-model/src/port/retro/attn.rs,
+         crates/spark-model/src/port/retro/attn_reference.rs
+  Changes: rewritten for Atlas's paged BF16/FP8 KV at head_dim 256 (the
+  upstream is head_dim 128 with pinned-host cluster pages); one single-pass
+  union softmax instead of two attention calls and an LSE merge; the index
+  read in place; fixed-capacity buffers with device counts (CUDA-graph
+  capturable); fixed reduction order. No CUTLASS code is used. See
+  RETROINFER-ATTRIBUTION.md.
 # @port:notice
