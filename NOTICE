@@ -181,6 +181,26 @@ From the Cinference NOTICE file:
     LICENSE is retained unchanged in this distribution.
 
 ------------------------------------------------------------------------------
+Cinference and NInfer: tensor-core chunked GDN prefill for Ada
+
+Upstream: Cinference, https://github.com/satellitedown/cinference, commit
+383e5db, derived from NInfer, https://github.com/Neroued/ninfer.
+Copyright: Neroued and the NInfer contributors; modifications by satellitedown
+for Cinference. The upstream LICENSE carries no further copyright line.
+License: Apache License, Version 2.0; see LICENSES/Apache-2.0.txt.
+Atlas files: kernels/ada/common/gdn_chunk_tc_ada.cu (copied and changed),
+crates/spark-model/src/layers/qwen3_ssm/gdn_chunk_tc_ada.rs (launch geometry,
+translated). Changes and line ranges: CINFERENCE-GDN-CHUNK-ATTRIBUTION.md.
+
+From the Cinference NOTICE file:
+
+    Cinference
+    https://github.com/satellitedown/cinference
+
+    Cinference is derived from NInfer by Neroued and its contributors:
+    https://github.com/Neroued/ninfer
+    NInfer is distributed under the Apache License, Version 2.0. The original
+    LICENSE is retained unchanged in this distribution.
 
 == TensorFold (affine 4-bit route) ==
 
