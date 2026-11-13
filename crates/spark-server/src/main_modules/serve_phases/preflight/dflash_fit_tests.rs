@@ -242,6 +242,32 @@ fn eight_streams_fit_a_16_gib_card_with_the_row_on() {
 }
 
 #[test]
+fn the_other_two_levers_are_needed_at_8_streams() {
+    // Gamma alone is not enough: with the 16,384-token ctx cap and the
+    // 8,192-token prefill arena (2,327 MiB, 258 MiB of GDN prefill) even the
+    // floor gamma needs more than the card has, so the fit chooses nothing
+    // and says so rather than pinning a width that still cannot boot.
+    let (a, c) = (args(&[]), qwen35_4b());
+    let t = Terms {
+        fixed: gdn_two_phase(&c, 8192),
+        arena: arena(&a, &c, 8192),
+        ..terms_at_8_streams(&a, &c)
+    };
+    let d = pick(
+        15,
+        &t,
+        |g| pools(&a, &c, g),
+        |g| {
+            let mut ag = a.clone();
+            ag.dflash_gamma = Some(g);
+            dflash_headroom_with_cap(&ag, &c, DFLASH_CTX_CAP).0
+        },
+    );
+    assert_eq!(d.gamma, None, "{d:?}");
+    assert!(d.need_chosen > t.beside_weights + 3 * 1024 * MIB, "{d:?}");
+}
+
+#[test]
 fn a_one_stream_serve_keeps_the_default_gamma() {
     // At one stream the default (gamma 15) fits with the row on, so the fit
     // leaves it alone and pins nothing.
