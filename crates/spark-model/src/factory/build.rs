@@ -146,6 +146,29 @@ pub fn build_model(
         && let Some(ref sub) = args.drafter_config.dflash_config
     {
         config.dflash_capture_layers = sub.target_layer_ids.clone();
+        // Port sprint (L14): refuse a drafter built for another target before
+        // anything is allocated. A wrong pairing is not a loud failure later:
+        // the drafter shares the target's embedding and LM head and reads the
+        // target's hidden states through `fc`, so it yields garbage drafts or
+        // a GEMM over the wrong width. The refusal is keyed on the existing
+        // `memory_fit_consumer` row (true on Ada only): every other target
+        // builds the pair as it did before the sprint and only logs the
+        // finding. `AVAROK_DFLASH_SKIP_PAIR_CHECK` (presence) downgrades the
+        // refusal to a warning on Ada too.
+        if let Err(e) = args.drafter_config.validate_for_target(
+            config.hidden_size,
+            config.num_hidden_layers,
+            config.vocab_size,
+        ) {
+            let refuse = crate::layers::ops::target_defaults::resolved()
+                .memory_fit_consumer
+                .value
+                && std::env::var_os("AVAROK_DFLASH_SKIP_PAIR_CHECK").is_none();
+            if refuse {
+                return Err(e.context("DFlash drafter does not match the target model"));
+            }
+            tracing::warn!("DFlash drafter/target pairing check failed, continuing: {e:#}");
+        }
         // gamma for the pool sizing below, resolved from the drafter itself:
         // a DFlash2 checkpoint states its trained block size inside
         // `dflash_config`, and the top-level field's default of 16 must not

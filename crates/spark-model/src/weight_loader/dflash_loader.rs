@@ -33,6 +33,8 @@ use crate::weight_map::{DenseWeight, dense};
 
 mod config;
 pub use config::*;
+mod shape_check;
+pub use shape_check::bf16_weight_bytes;
 
 /// Load a drafter GEMM weight that may be NVFP4-packed.
 ///
@@ -163,7 +165,7 @@ pub fn store_has_dflash_weights(store: &WeightStore) -> bool {
 /// `BlockDiffusionDraftHead` (layer count, head_dim, vocab_size, the
 /// `target_layer_ids` capture indices).
 pub fn parse_dflash_config(json: &str) -> Result<DflashConfig> {
-    serde_json::from_str(json).context("Parsing DFlash drafter config.json")
+    config::parse_normalized(json).context("Parsing DFlash drafter config.json")
 }
 
 /// Load DFlash drafter weights from a separate [`WeightStore`] pointing at
@@ -220,6 +222,9 @@ pub fn load_dflash_weights(
     } else {
         ""
     };
+    // Loud, early shape check (names the tensor) instead of a GEMM over the
+    // wrong width later. See `dflash_loader/shape_check.rs`.
+    shape_check::check_store(drafter_store, drafter_config, prefix)?;
 
     let fc = dense_bf16_or_nvfp4(drafter_store, &format!("{prefix}fc.weight"), _gpu)
         .context("DFlash drafter: load fc.weight")?;
