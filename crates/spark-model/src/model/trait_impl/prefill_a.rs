@@ -424,6 +424,14 @@ impl TransformerModel {
             kv_write_start
         };
         let diag_prefill = self.profile && proc_count > 1; // Only with --profile
+        // AVAROK_DUMP_HIDDEN (off by default): see `model::hidden_dump`.
+        let hidden_dump = crate::model::hidden_dump::HiddenDumpPlan::from_env();
+        let dump_site = crate::model::hidden_dump::DumpSite {
+            prefill_path: "prefill",
+            token_count: n,
+            proc_count,
+            seq_len_start,
+        };
         for (i, layer) in self.layers.iter().enumerate() {
             layer
                 .prefill(
@@ -452,6 +460,7 @@ impl TransformerModel {
             // `prefill_b::forward_layers` for the full failure). No-op when
             // DFlash is disabled.
             self.try_dflash_prefill_capture_layer(seq, i, seq_len_start, proc_count, stream)?;
+            self.dump_layer_hidden(hidden_dump.as_ref(), i, hidden, dump_site, stream);
 
             // MLA diagnostic: dump per-layer hidden state norm (once per model).
             // Per-model latch (see `ModelStats::dumped`) rather than a static: an
@@ -517,7 +526,9 @@ impl TransformerModel {
         self.final_norm_apply(last_hidden, normed, 1, h as u32, eps, stream)?;
 
         // ── 6. LM head on last token → logits ──
+        self.dump_final_norm(hidden_dump.as_ref(), normed, dump_site, stream);
         self.lm_head(normed, stream)?;
+        self.dump_logits(hidden_dump.as_ref(), dump_site, stream);
 
         // ── 7. Update sequence state ──
         seq.tokens.extend_from_slice(tokens);
