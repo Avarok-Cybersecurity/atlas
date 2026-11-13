@@ -31,6 +31,15 @@ pub struct PortDefaults {
     /// 0.5, over the first AVAROK_CONF_SUMMARY_K generated tokens, default 32)
     /// for every chat request and feed the atlas_conf_* series on /metrics.
     pub conf_summary: bool,
+    /// D-Cut v2 for the batched MTP verify (`scheduler/mtp_dcut_cost.rs`):
+    /// instead of keeping a fixed 0.75 of the optional draft rows, keep the
+    /// number that maximizes expected tokens per second, B* = argmax_B (n + sum
+    /// of survivals) / cost(2n + B), with cost(R) an online EWMA of the measured
+    /// round wall per verify row count and survival taken from a logistic
+    /// acceptance model of the drafter's top-1 confidence fitted while serving by
+    /// damped Newton-IRLS (`scheduler/mtp_accept_estimator.rs`, after vLLM
+    /// adaptive verification).
+    pub mtp_dcut_cost_model: bool,
     /// When a 4-bit BF16 load route is on (dense_affine4_from_bf16,
     /// gdn_affine4_from_bf16, attn_affine4_from_bf16), every projection the
     /// Marlin kernels serve (N a multiple of 64, K of 128, more than one group)
@@ -171,6 +180,7 @@ pub struct PortDefaults {
 /// same apply pass).
 pub const PORT_BASELINE: PortDefaults = PortDefaults {
     conf_summary: false,
+    mtp_dcut_cost_model: false,
     marlin_w4a16: false,
     gguf_native_iq4: false,
     weights_exl3: false,

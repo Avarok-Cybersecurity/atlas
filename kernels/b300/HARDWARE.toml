@@ -58,6 +58,21 @@ w8a8_prefill_max_m_narrowing = 4294967295
 # asked for. The receipt that may flip it: bench5 with the row on versus off
 # within spread, and an equal greedy token SHA.
 conf_summary = false
+# D-Cut v2 for the batched MTP verify (`scheduler/mtp_dcut_cost.rs`): instead of
+# keeping a fixed 0.75 of the optional draft rows, keep the number that
+# maximizes expected tokens per second, B* = argmax_B (n + sum of survivals) /
+# cost(2n + B), with cost(R) an online EWMA of the measured round wall per
+# verify row count and survival taken from a logistic acceptance model of the
+# drafter's top-1 confidence fitted while serving by damped Newton-IRLS
+# (`scheduler/mtp_accept_estimator.rs`, after vLLM adaptive verification). It
+# only chooses how many drafts to verify, so accept and reject stay exact; every
+# sequence keeps at least one draft, the width cap (8 sequences) and the row
+# budget stay, and until the table is calibrated D-Cut v1's fixed ratio runs
+# (with a periodic full-width probe). OFF until the receipt on this card: conc
+# A/B at C=1,2,4,8,16 with no loss at any width and a gain of at least 2% at
+# C=8. `AVAROK_MTP_DCUT_COST=1` is the A/B; `atlas_mtp_dcut_plans_total{source}`
+# shows how many plans the model decided.
+mtp_dcut_cost_model = false
 # When a 4-bit BF16 load route is on (dense_affine4_from_bf16,
 # gdn_affine4_from_bf16, attn_affine4_from_bf16), every projection the Marlin
 # kernels serve (N a multiple of 64, K of 128, more than one group) is quantized
