@@ -2,11 +2,12 @@
 // Portions derived from the ARC-1.0 release documentation and rayline-ai/vllm-arc (examples/readouts.py), Copyright
 // 2026 Atlas Futures, Inc., licensed under the Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0). By
 // Atlas contributors. See RAYLINE-ROUTING-ATTRIBUTION.md.
-//! Responsibility: the serializer length check (`tokens`) and the signal-head oracle against the release goldens
-//! (`goldens`): the CPU encoder runs the golden requests, the signal heads turn the readouts into probabilities, and
-//! the probabilities must match `goldens.signals.jsonl` within [`GOLDEN_TOLERANCE`]. The choices the release does not
-//! document (activation, scale mode, platt column order, which block row and token feed the heads, the serializer
-//! shell, the RoPE variant, the rounding mode) are searched and the best variant is reported.
+//! Responsibility: the signal-head oracle against the release goldens (`goldens`): the CPU encoder runs the golden
+//! requests (serialized by the reconstructed `canonical_v2` unless the stand-in is asked for), the readout is the last
+//! token of the last block, the signal heads turn it into probabilities, and the probabilities must match
+//! `goldens.signals.jsonl` within [`GOLDEN_TOLERANCE`]. The choices the release does not document (activation, scale
+//! mode, platt column order, the RoPE variant, the rounding mode) are searched and the best variant is reported; the
+//! readout position is searched only with `--search-readout`. The token-count check is in `token_report`.
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -14,13 +15,13 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 
+use super::canonical::Serializer;
 use super::encoder::{Encoder, EncoderOptions, RopeVariant};
 use super::mat::Mat;
-use super::serializer::{
-    BLOCK_ENDS, HfTokenizer, Selection, TextTokenizer, encode_blocks, render_blocks, select_row,
-};
+use super::serializer::{BLOCK_ENDS, HfTokenizer, IM_START, Selection, encode_blocks, select_row};
 use super::signals::{self, HEADS, Variant};
 use super::stage_one::check_release;
+use super::token_report::{request_of, token_report_for};
 
 /// Master plan L04 oracle: signal probabilities within 5e-3.
 pub const GOLDEN_TOLERANCE: f64 = 5e-3;
@@ -35,116 +36,6 @@ pub fn load_jsonl(path: &Path) -> Result<Vec<Value>> {
         .collect()
 }
 
-/// One golden request: the release's token count against this stand-in serializer's.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TokenCase {
-    pub case_id: String,
-    pub golden: i64,
-    pub ours: i64,
-    pub delta: i64,
-    pub turns: usize,
-}
-
-/// [`token_report`] result.
-#[derive(Clone, Debug)]
-pub struct TokenReport {
-    pub cases: Vec<TokenCase>,
-    pub distinct_deltas: Vec<i64>,
-    pub distinct_deltas_single_message: Vec<i64>,
-    pub constant_offset: bool,
-}
-
-impl TokenReport {
-    fn to_json(&self) -> Value {
-        json!({
-            "cases": self.cases.iter().map(|c| json!({
-                "case_id": c.case_id, "golden": c.golden, "ours": c.ours, "delta": c.delta, "turns": c.turns,
-            })).collect::<Vec<_>>(),
-            "distinct_deltas": self.distinct_deltas,
-            "distinct_deltas_single_message": self.distinct_deltas_single_message,
-            "constant_offset": self.constant_offset,
-        })
-    }
-}
-
-fn messages_of(g: &Value) -> Vec<Value> {
-    g["request"]["request"]["messages"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default()
-}
-
-/// Our token count for every golden request against the release's `expected.token_count`.
-pub fn token_report<T: TextTokenizer>(
-    tok: &T,
-    goldens: &[Value],
-    shell: Option<&str>,
-) -> super::error::GResult<TokenReport> {
-    let mut cases = Vec::new();
-    for g in goldens {
-        let msgs = messages_of(g);
-        let ours = encode_blocks(tok, &render_blocks(&msgs), shell)?.ids.len() as i64;
-        let golden = g["expected"]["token_count"].as_i64().unwrap_or(0);
-        cases.push(TokenCase {
-            case_id: g["case_id"].as_str().unwrap_or_default().to_string(),
-            golden,
-            ours,
-            delta: golden - ours,
-            turns: msgs.len(),
-        });
-    }
-    let sorted = |it: Vec<i64>| {
-        let mut v = it;
-        v.sort_unstable();
-        v.dedup();
-        v
-    };
-    let distinct = sorted(cases.iter().map(|c| c.delta).collect());
-    let single = sorted(
-        cases
-            .iter()
-            .filter(|c| c.turns == 1)
-            .map(|c| c.delta)
-            .collect(),
-    );
-    let constant_offset = single.len() == 1 && distinct.len() == 1;
-    Ok(TokenReport {
-        cases,
-        distinct_deltas: distinct,
-        distinct_deltas_single_message: single,
-        constant_offset,
-    })
-}
-
-fn read_shell(path: &Option<PathBuf>) -> Result<Option<String>> {
-    path.as_ref()
-        .map(|p| std::fs::read_to_string(p).with_context(|| format!("read {}", p.display())))
-        .transpose()
-}
-
-/// `tokens`: prints the token-count difference per golden request.
-pub fn cmd_tokens(
-    release: &Path,
-    shell_file: &Option<PathBuf>,
-    out: &Option<PathBuf>,
-) -> Result<i32> {
-    let tok = HfTokenizer::from_release(release)?;
-    let goldens = load_jsonl(&release.join("goldens.jsonl"))?;
-    let shell = read_shell(shell_file)?;
-    let rep = token_report(&tok, &goldens, shell.as_deref())?;
-    println!(
-        "route_gate tokens: {} golden requests; delta (release minus stand-in): all {:?}, single-message {:?}; constant offset: {}",
-        rep.cases.len(),
-        rep.distinct_deltas,
-        rep.distinct_deltas_single_message,
-        rep.constant_offset
-    );
-    if let Some(p) = out {
-        std::fs::write(p, serde_json::to_string_pretty(&rep.to_json())?)?;
-    }
-    Ok(0)
-}
-
 /// Arguments of `goldens`.
 pub struct GoldensArgs {
     pub release: PathBuf,
@@ -153,6 +44,10 @@ pub struct GoldensArgs {
     pub no_verify: bool,
     /// Try the bf16-rounding encoder as well as plain f32.
     pub try_bf16: bool,
+    /// The request serializer (the reconstructed `canonical_v2` unless the stand-in is asked for).
+    pub serializer: Serializer,
+    /// Also search the readout position (block end and row selection); by default the readout is the last token.
+    pub search_readout: bool,
 }
 
 struct VariantResult {
@@ -198,13 +93,24 @@ pub fn cmd_goldens(a: &GoldensArgs) -> Result<i32> {
     let gold_tokens = load_jsonl(&a.release.join("goldens.jsonl"))?;
     let mut token_deltas = serde_json::Map::new();
     for (name, text) in &shells {
+        let rep = token_report_for(a.serializer, &tok, &gold_tokens, text.as_deref())?;
         token_deltas.insert(
             name.clone(),
-            json!(
-                token_report(&tok, &gold_tokens, text.as_deref())?.distinct_deltas_single_message
-            ),
+            json!({"exact": rep.matched(), "total": rep.cases.len(),
+                   "single_message_deltas": rep.distinct_deltas_single_message}),
         );
     }
+    // The readout of the release is the last token of the last block; the search is opt-in.
+    let ends: Vec<&str> = if a.search_readout {
+        BLOCK_ENDS.to_vec()
+    } else {
+        vec!["nl"]
+    };
+    let selections: Vec<Selection> = if a.search_readout {
+        Selection::ALL.to_vec()
+    } else {
+        vec![Selection::Last]
+    };
     let mut enc_variants: Vec<EncoderOptions> = Vec::new();
     for bf16 in if a.try_bf16 {
         vec![false, true]
@@ -219,19 +125,26 @@ pub fn cmd_goldens(a: &GoldensArgs) -> Result<i32> {
     for opts in &enc_variants {
         enc.opts = *opts;
         for (sname, stext) in &shells {
-            let mut per_end: Vec<Vec<Vec<Vec<f64>>>> = vec![Vec::new(); BLOCK_ENDS.len()];
+            let mut per_end: Vec<Vec<Vec<Vec<f64>>>> = vec![Vec::new(); ends.len()];
             let mut roles_all: Vec<Vec<String>> = Vec::new();
             for (ci, c) in sig_cases.iter().enumerate() {
-                let msgs = messages_of(c);
-                let e = encode_blocks(&tok, &render_blocks(&msgs), stext.as_deref())?;
+                let blocks = a.serializer.render(request_of(c));
+                let e = encode_blocks(&tok, &blocks, stext.as_deref())?;
                 let h = enc.hidden(&e.ids)?;
                 let d = enc.cfg.hidden;
                 roles_all.push(
-                    msgs.iter()
-                        .map(|m| m["role"].as_str().unwrap_or_default().to_string())
+                    blocks
+                        .iter()
+                        .map(|b| {
+                            b[IM_START.len()..]
+                                .split('\n')
+                                .next()
+                                .unwrap_or_default()
+                                .to_string()
+                        })
                         .collect(),
                 );
-                for (bi, be) in BLOCK_ENDS.iter().enumerate() {
+                for (bi, be) in ends.iter().enumerate() {
                     let rows: Vec<Vec<f64>> = e
                         .pick_offsets(be)?
                         .iter()
@@ -254,8 +167,8 @@ pub fn cmd_goldens(a: &GoldensArgs) -> Result<i32> {
                     e.ids.len()
                 );
             }
-            for (bi, be) in BLOCK_ENDS.iter().enumerate() {
-                for sel in Selection::ALL {
+            for (bi, be) in ends.iter().enumerate() {
+                for &sel in &selections {
                     let rows: Vec<Vec<f64>> = per_end[bi]
                         .iter()
                         .zip(&roles_all)
@@ -291,6 +204,7 @@ pub fn cmd_goldens(a: &GoldensArgs) -> Result<i32> {
     let report = json!({
         "n_cases": sig_cases.len(), "tolerance": GOLDEN_TOLERANCE,
         "encoder": {"implementation": "route_gate rust cpu f32", "layers": enc.layers.len(), "weights": "BF16"},
+        "serializer": a.serializer.name(), "readout_search": a.search_readout,
         "variants": results.iter().map(|r| r.json.clone()).collect::<Vec<_>>(),
         "tokens": Value::Object(token_deltas),
         "best": results.first().map(|r| r.json.clone()), "oracle_pass": oracle_pass,
@@ -316,6 +230,20 @@ pub fn cmd_goldens(a: &GoldensArgs) -> Result<i32> {
             v["scale_mode"],
             v["platt_order"]
         );
+    }
+    if let Some(best) = results.first() {
+        println!("  best variant, max abs error per case:");
+        for c in best.json["per_case_max_err"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            println!(
+                "    {:<28} {:.5}",
+                c["case_id"].as_str().unwrap_or_default(),
+                c["max_abs_err"].as_f64().unwrap_or(f64::NAN)
+            );
+        }
     }
     println!(
         "route_gate goldens: oracle {} (tolerance {GOLDEN_TOLERANCE}); {} cases, {:.1}s; AUROC results must not be believed until it passes",
@@ -368,6 +296,8 @@ fn score_variant(
             "bf16": opts.bf16, "rope": opts.rope.name(), "shell": shell, "block_end": block_end, "selection": sel.name(),
             "activation": v.activation.name(), "scale_mode": v.scale_mode.name(), "platt_order": v.platt_order.name(),
             "max_abs_err": worst, "mean_abs_err": mean, "pass": pass,
+            "per_case_max_err": cases.iter().zip(&per_case)
+                .map(|(c, e)| json!({"case_id": c["case_id"], "max_abs_err": e})).collect::<Vec<_>>(),
         }),
         max: worst,
         mean,

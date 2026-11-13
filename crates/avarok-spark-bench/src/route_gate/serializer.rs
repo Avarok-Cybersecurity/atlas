@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Portions derived from the ARC-1.0 release documentation and from rayline-ai/vllm-arc (examples/readouts.py), Copyright
 // 2026 Atlas Futures, Inc., licensed under the Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0).
-// Changes: the request serializer is a stand-in (see `render_blocks`). By Atlas contributors. See
-// RAYLINE-ROUTING-ATTRIBUTION.md.
-//! Responsibility: the request serializer stand-in and tokenization (no model needed).
+// Changes: the stand-in serializer here is kept as an option; the reconstructed one is in `canonical.rs`. By Atlas
+// contributors. See RAYLINE-ROUTING-ATTRIBUTION.md.
+//! Responsibility: the stand-in request serializer, block tokenization with readout offsets, and the Python-style JSON
+//! dump (no model needed).
 //!
-//! The request serializer of the release (`arc-role-blocks-v2`, `canonical_v2`) is closed. [`render_blocks`] is a
-//! stand-in: `<|im_start|>{role}\n{content}<|im_end|>\n` per message. The release's own token counts differ from this
-//! rendering by a roughly constant amount (a harness shell); `route_gate tokens` prints the difference so it is
-//! visible, and the `goldens` oracle says how much it matters (it tries the shell files given with `--shell-file`).
+//! The request serializer of the release (`arc-role-blocks-v2`, `canonical_v2`) is closed; the reconstruction that
+//! matches the release's token counts is `super::canonical`. [`render_blocks`] is the old stand-in,
+//! `<|im_start|>{role}\n{content}<|im_end|>\n` per message, kept as `--serializer standin`: it undercounts the release
+//! by 12 tokens per message (see `canonical.rs` for why).
 
 use std::path::Path;
 
@@ -31,7 +32,7 @@ fn py_str(v: &Value) -> String {
     }
 }
 
-fn dump_string(s: &str, out: &mut String) {
+pub(super) fn dump_string(s: &str, out: &mut String) {
     out.push('"');
     for c in s.chars() {
         match c {
@@ -155,6 +156,21 @@ impl HfTokenizer {
         tokenizers::Tokenizer::from_file(&path)
             .map(Self)
             .map_err(|e| GateError::Value(format!("{}: {e}", path.display())))
+    }
+}
+
+impl HfTokenizer {
+    /// The tokens of `text` as `(id, piece)` pairs (byte-level pieces, as the vocabulary spells them).
+    pub fn pieces(&self, text: &str) -> GResult<Vec<(u32, String)>> {
+        let e = self
+            .0
+            .encode(text, false)
+            .map_err(|e| GateError::Value(format!("tokenizer: {e}")))?;
+        Ok(e.get_ids()
+            .iter()
+            .copied()
+            .zip(e.get_tokens().iter().cloned())
+            .collect())
     }
 }
 

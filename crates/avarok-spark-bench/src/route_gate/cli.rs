@@ -8,10 +8,12 @@ use std::str::FromStr;
 
 use anyhow::{Result, anyhow, bail};
 
+use super::canonical::Serializer;
 use super::fit_eval::{DEFAULT_GRID, FitArgs, StudyParams, cmd_fit, cmd_selftest};
-use super::goldens::{GoldensArgs, cmd_goldens, cmd_tokens};
+use super::goldens::{GoldensArgs, cmd_goldens};
 use super::prep::{self, BuildArgs, CollectArgs, GradeArgs};
 use super::rows::{RowsArgs, cmd_rows};
+use super::token_report::cmd_tokens;
 
 const USAGE: &str = "route_gate: the L04 routing-gate study (CPU only)
 
@@ -26,8 +28,11 @@ usage: route_gate <command> [flags]
   hints                                          where each dataset comes from (prints only)
   rows     --release ~/models/ARC-1.0 --prompts prompts.jsonl --out readouts.safetensors
            [--limit N] [--block-end nl|im_end] [--shell-file F] [--max-tokens 8192] [--fresh] [--bf16] [--threads 8]
-  goldens  --release ~/models/ARC-1.0 [--out goldens_report.json] [--shell-file F ...] [--no-verify] [--bf16] [--threads 8]
-  tokens   --release ~/models/ARC-1.0 [--shell-file F] [--out tokens.json]
+  goldens  --release ~/models/ARC-1.0 [--out goldens_report.json] [--shell-file F ...] [--no-verify] [--f32-only] [--threads 8]
+           [--serializer v2|standin] [--search-readout]   (readout = last token unless --search-readout)
+  tokens   --release ~/models/ARC-1.0 [--serializer v2|standin] [--shell-file F] [--out tokens.json]
+           per golden: our count, the release's, the delta, grouped by request shape; exit 3 unless all match
+  tokens   --release ~/models/ARC-1.0 --probe texts.json [--verbose]   token count (and pieces) of each string
   fit      --labels labels.jsonl --readouts readouts.safetensors [--release DIR] [--no-verify] [--regime fixed]
            [--oracle-report goldens_report.json] [--out-dir DIR] [--folds 5] [--repeats 3] [--seed N]
            [--bootstrap 1000] [--grid 1,10,...] [--drop-truncated] [--drop-no-answer]
@@ -113,6 +118,11 @@ impl Flags {
                 .map_err(|_| anyhow!("--{name}: cannot parse {s:?}")),
         }
     }
+}
+
+/// `--serializer v2|standin` (default `v2`, the reconstructed `canonical_v2`).
+fn serializer_flag(f: &Flags) -> Result<Serializer> {
+    Serializer::parse(f.get("serializer").unwrap_or("v2")).map_err(|e| anyhow!("{e}"))
 }
 
 fn set_threads(f: &Flags) -> Result<()> {
@@ -204,6 +214,7 @@ fn dispatch(cmd: &str, rest: &[String]) -> Result<i32> {
                     "shell-file",
                     "max-tokens",
                     "threads",
+                    "serializer",
                 ],
                 &["fresh", "bf16"],
             )?;
@@ -222,13 +233,14 @@ fn dispatch(cmd: &str, rest: &[String]) -> Result<i32> {
                 max_tokens: f.num("max-tokens", 8192usize)?,
                 fresh: f.has("fresh"),
                 bf16: f.has("bf16"),
+                serializer: serializer_flag(&f)?,
             })
         }
         "goldens" => {
             let f = Flags::parse(
                 rest,
-                &["release", "out", "shell-file", "threads"],
-                &["no-verify", "bf16"],
+                &["release", "out", "shell-file", "threads", "serializer"],
+                &["no-verify", "bf16", "f32-only", "search-readout"],
             )?;
             set_threads(&f)?;
             cmd_goldens(&GoldensArgs {
@@ -240,15 +252,27 @@ fn dispatch(cmd: &str, rest: &[String]) -> Result<i32> {
                     .map(PathBuf::from)
                     .collect(),
                 no_verify: f.has("no-verify"),
-                try_bf16: f.has("bf16"),
+                // bf16 rounding is in the grid by default (the release encodes in BF16); `--bf16` is kept for old
+                // command lines and `--f32-only` turns it off.
+                try_bf16: f.has("bf16") || !f.has("f32-only"),
+                serializer: serializer_flag(&f)?,
+                search_readout: f.has("search-readout"),
             })
         }
         "tokens" => {
-            let f = Flags::parse(rest, &["release", "shell-file", "out"], &[])?;
+            let f = Flags::parse(
+                rest,
+                &["release", "shell-file", "out", "probe", "serializer"],
+                &["verbose"],
+            )?;
+            if let Some(p) = f.opt_path("probe") {
+                return super::probe::cmd_probe(&f.path("release")?, &p, f.has("verbose"));
+            }
             cmd_tokens(
                 &f.path("release")?,
                 &f.opt_path("shell-file"),
                 &f.opt_path("out"),
+                serializer_flag(&f)?,
             )
         }
         "fit" => {

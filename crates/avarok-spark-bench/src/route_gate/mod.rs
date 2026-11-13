@@ -24,6 +24,7 @@
 //! Attribution: the Stage-1 head is a translation of Apache-2.0 code (Atlas Futures, Inc.) and the readouts follow the
 //! Apache-2.0 ARC-1.0 release documentation; see `RAYLINE-ROUTING-ATTRIBUTION.md` and `NOTICE-rayline.txt`.
 
+pub mod canonical;
 pub mod cli;
 pub mod encoder;
 pub mod error;
@@ -36,11 +37,13 @@ pub mod mat;
 pub mod metrics;
 pub mod mt;
 pub mod prep;
+pub mod probe;
 pub mod rows;
 pub mod serializer;
 pub mod signals;
 pub mod stage_one;
 pub mod tensorio;
+pub mod token_report;
 
 #[cfg(test)]
 mod tests_encoder;
@@ -60,6 +63,8 @@ mod tests_mt;
 mod tests_prep;
 #[cfg(test)]
 mod tests_rows;
+#[cfg(test)]
+mod tests_serializer;
 #[cfg(test)]
 mod tests_signals;
 #[cfg(test)]

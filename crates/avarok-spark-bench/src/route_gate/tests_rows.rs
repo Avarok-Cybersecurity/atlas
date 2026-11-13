@@ -7,11 +7,11 @@ use serde_json::json;
 use super::cli::{Flags, run};
 use super::error::GResult;
 use super::fit_eval::{load_inputs, write_readouts};
-use super::goldens::token_report;
 use super::serializer::{
     IM_END, IM_START, Selection, TextTokenizer, encode_blocks, flatten_content, py_json_dumps,
     render_blocks, select_row,
 };
+use super::token_report::token_report;
 
 /// Splits at the two special tokens and otherwise one token per character.
 struct FakeTok;

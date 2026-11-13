@@ -14,10 +14,11 @@ use std::time::Instant;
 use anyhow::{Context, Result, bail};
 use serde_json::json;
 
+use super::canonical::Serializer;
 use super::encoder::{Encoder, EncoderOptions};
 use super::fit_eval::write_readouts;
 use super::goldens::load_jsonl;
-use super::serializer::{HfTokenizer, encode_blocks, render_blocks};
+use super::serializer::{HfTokenizer, encode_blocks};
 use super::tensorio::TensorFile;
 
 /// Arguments of `rows`.
@@ -31,6 +32,8 @@ pub struct RowsArgs {
     pub max_tokens: usize,
     pub fresh: bool,
     pub bf16: bool,
+    /// The request serializer (the reconstructed `canonical_v2` by default).
+    pub serializer: Serializer,
 }
 
 /// Rows already computed: `(row, n_tokens, ok)` by prompt id, with the width.
@@ -107,8 +110,7 @@ pub fn cmd_rows(a: &RowsArgs) -> Result<i32> {
         let (row, nt, good) = match done.get(&id) {
             Some((row, nt, good)) => (row.clone(), *nt, *good),
             None => {
-                let msgs = it["messages"].as_array().cloned().unwrap_or_default();
-                let e = encode_blocks(&tok, &render_blocks(&msgs), shell.as_deref())?;
+                let e = encode_blocks(&tok, &a.serializer.render(it), shell.as_deref())?;
                 let nt = e.ids.len();
                 if nt <= a.max_tokens {
                     let h = enc.hidden(&e.ids)?;
@@ -140,7 +142,7 @@ pub fn cmd_rows(a: &RowsArgs) -> Result<i32> {
         "release": a.release.file_name().map(|n| n.to_string_lossy().into_owned()), "block_end": a.block_end,
         "shell": shell.is_some(), "max_tokens": a.max_tokens,
         "encoder": {"implementation": "route_gate rust cpu", "bf16_rounding": a.bf16, "layers": enc.layers.len(), "weights": "BF16"},
-        "serializer": "stand-in role blocks (render_blocks)",
+        "serializer": a.serializer.name(),
     });
     write_readouts(&a.out, &ids, &x, d, &ntok, &ok, &meta)?;
     if part.exists() {
