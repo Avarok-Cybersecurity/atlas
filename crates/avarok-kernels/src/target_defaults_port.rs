@@ -26,6 +26,24 @@
 /// is the `port` field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PortDefaults {
+    /// Batched sequence swap
+    /// (`spark-model/src/model/trait_impl/sequence/state_io.rs`,
+    /// `spark-runtime/src/kv_cache/block_io.rs`): a swapped-out sequence's image
+    /// (each block's K and V for every attention layer, then each GDN layer's h
+    /// and conv state) is gathered with batched async copies
+    /// (`cuMemcpyBatchAsync` where it resolved, else one async copy per region
+    /// and one event wait per chunk) into one reused page-locked staging buffer
+    /// of at most one `--pinned-pool-chunk-mb` chunk, and the file write of one
+    /// chunk overlaps the copy of the next; restore mirrors it.
+    pub kv_batched_swap: bool,
+    /// SSM tier blob store eviction order
+    /// (`spark-model/src/model/ssm_tier/store.rs`): a capped host-RAM
+    /// `MemBlobStore` gives up the least recently used blob (a fault-in hit and a
+    /// put both make a key the most recent) instead of the oldest insert, and the
+    /// model removes the tier blobs the snapshot index orphans when a fresh save
+    /// re-homes a spilled prefix or the tail sweep drops one
+    /// (`spark-runtime/src/radix_tree/snapshot_insert.rs`).
+    pub ssm_store_lru: bool,
     // @port:fields
 }
 
@@ -35,5 +53,7 @@ pub struct PortDefaults {
 /// by the row templates (one baseline per row, written into both files in the
 /// same apply pass).
 pub const PORT_BASELINE: PortDefaults = PortDefaults {
+    kv_batched_swap: false,
+    ssm_store_lru: false,
     // @port:baseline
 };

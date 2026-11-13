@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+// The row lines below are generated from one template (plan 3.4) that has the same
+// `assert_eq!(<row>, <value>)` shape for bool and string rows, so every row reads alike.
+#![allow(clippy::bool_assert_comparison)]
 
 //! Responsibility: the port sprint's (`port/consumer-opt`) rows of the
 //! CHECKED-IN `kernels/<hw>/HARDWARE.toml` `[defaults]` tables, parsed with the
@@ -30,6 +33,8 @@ const DECLARING: &[&str] = &["gb10", "hopper", "b200", "b300", "ada"];
 /// Every port row, by name. Each must be declared explicitly by every
 /// DECLARING target, in the port block at the end of its `[defaults]`.
 const PORT_LEVERS: &[&str] = &[
+    "kv_batched_swap",
+    "ssm_store_lru",
     // @port:levers
 ];
 
@@ -81,6 +86,8 @@ fn the_baked_port_rows_match_their_own_hardware_tree() {
     let baked = avarok_kernels::TARGET_DEFAULTS;
     let declared = read_defaults(&kernels_root(), baked.hw);
     assert_eq!(baked.hw, declared.hw);
+    assert_eq!(baked.port.kv_batched_swap, declared.port.kv_batched_swap);
+    assert_eq!(baked.port.ssm_store_lru, declared.port.ssm_store_lru);
     // @port:baked-eq
 }
 
@@ -90,6 +97,8 @@ fn the_baked_port_rows_match_their_own_hardware_tree() {
 fn ada_port_rows_hold_their_write_time_values() {
     let d = declared("ada");
     assert_eq!(d.hw, "ada");
+    assert_eq!(declared("ada").port.kv_batched_swap, false);
+    assert_eq!(declared("ada").port.ssm_store_lru, false);
     // @port:ada
 }
 
@@ -98,6 +107,8 @@ fn ada_port_rows_hold_their_write_time_values() {
 fn non_ada_targets_keep_every_port_row_at_its_baseline() {
     for hw in ["gb10", "hopper", "b200", "b300"] {
         assert_eq!(declared(hw).hw, hw);
+        assert!(!declared(hw).port.kv_batched_swap, "{hw}");
+        assert!(!declared(hw).port.ssm_store_lru, "{hw}");
         // @port:non-ada
     }
 }

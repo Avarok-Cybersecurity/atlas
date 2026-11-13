@@ -158,6 +158,33 @@ w8a8_prefill_max_m_narrowing = 4294967295
 # The port sprint's rows (`crates/avarok-kernels/build_defaults_port.rs`). Each
 # is false, or its baseline, until a GPU receipt on this card flips it. Rows
 # are inserted immediately before the marker line below.
+# Batched sequence swap
+# (`spark-model/src/model/trait_impl/sequence/state_io.rs`,
+# `spark-runtime/src/kv_cache/block_io.rs`): a swapped-out sequence's image
+# (each block's K and V for every attention layer, then each GDN layer's h and
+# conv state) is gathered with batched async copies (`cuMemcpyBatchAsync`
+# where it resolved, else one async copy per region and one event wait per
+# chunk) into one reused page-locked staging buffer of at most one
+# `--pinned-pool-chunk-mb` chunk, and the file write of one chunk overlaps the
+# copy of the next; restore mirrors it. The file is byte-identical to the
+# per-region path, so either reader reads either writer's file. OFF until the
+# receipt on this card: `kv_swap_roundtrip` (queue row Q9) passes G1 and G2 at
+# 1K, 4K and 32K tokens and G3 at 32K, batched >= 5x the per-region path and
+# >= 8 GB/s for save and restore. `AVAROK_KV_SWAP_TIMING=1` logs one line per
+# image on either path.
+kv_batched_swap = false
+# SSM tier blob store eviction order
+# (`spark-model/src/model/ssm_tier/store.rs`): a capped host-RAM
+# `MemBlobStore` gives up the least recently used blob (a fault-in hit and a
+# put both make a key the most recent) instead of the oldest insert, and the
+# model removes the tier blobs the snapshot index orphans when a fresh save
+# re-homes a spilled prefix or the tail sweep drops one
+# (`spark-runtime/src/radix_tree/snapshot_insert.rs`). Only matters with the
+# SSM tier on (`AVAROK_SSM_TIER`): no entry is ever spilled without it. OFF
+# until the receipt on this card: the reuse ladder (queue row Q10, rung C)
+# shows no tok/s, TTFT or SSM-hit loss against off. Outputs are unchanged
+# either way: a missing blob is a recompute.
+ssm_store_lru = false
 # @port:defaults
 
 # ── Kernels this target owns ───────────────────────────────────────────────
