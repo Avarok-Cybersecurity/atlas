@@ -501,6 +501,7 @@ impl SafetensorsLoader {
 /// `10` first and silently mis-maps every table after the ninth.
 pub mod adapter;
 mod derived;
+pub mod exl3;
 pub use derived::DerivedStore;
 mod gguf;
 mod k3;
