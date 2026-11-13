@@ -220,6 +220,33 @@ graph_exec_update = false
 # `AVAROK_GDN_WOA=1`) is the A/B; `atlas_gdn_woa_folds_total{k}` counts the
 # folds.
 gdn_woa_mtp = false
+# Which LM-head rows the MTP draft-only NVFP4 head holds. id: the first
+# --mtp-vocab token ids, the head every target has always built. freq: the
+# --mtp-vocab most frequent tokens of the Cinference-derived ranking
+# (crates/spark-model/data/mtp_vocab_rank_qwen35.*, Apache-2.0 data, token
+# counts by NInfer authors, source corpus not published), the tokenizer's added
+# tokens forced in, with the drafter's argmax rows mapped back to token ids on
+# the device (kernels/ada/common/draft_vocab_remap.cu). Held-out coverage at
+# 100,000 rows: 98.1% against 86.2% for the first ids; the first-N head can
+# never draft <|im_end|>, <think> or a tool-call tag. Only drafts change, every
+# one is verified by the main head, so outputs are those of the id head. It
+# applies only when the served tokenizer.json is one the ranking was verified
+# for (Qwen3.5) and the remap kernel is in the build; otherwise it logs once
+# and keeps id. CLI --mtp-vocab-rank {id,freq}. Off until the receipt: greedy
+# token SHA equal id vs freq, and MTP acceptance up per category on the L03
+# corpus.
+mtp_vocab_rank = "id"
+# Run the MTP propose chain device-resident: each draft position after the
+# first gathers its input embeddings on the device from the previous position's
+# ids, and the round reads every draft back once, instead of one blocking
+# readback per draft (per-sequence propose) or per position (batched propose).
+# The same kernels run on the same bytes, so drafts and outputs are
+# bit-identical; only host waits go. It covers grammar-free rows with 2 to 16
+# drafts and declines when the draft-confidence, shadow top-k or debug-norm
+# diagnostics are armed, since those read logits on the host by design. Off
+# until the receipt: greedy token SHA equal at C=1 and C=8, and the propose
+# phase time (L06 device phases) down beyond the ABBA bound.
+mtp_propose_graph = false
 # When a 4-bit BF16 load route is on (dense_affine4_from_bf16,
 # gdn_affine4_from_bf16, attn_affine4_from_bf16), every projection the Marlin
 # kernels serve (N a multiple of 64, K of 128, more than one group) is

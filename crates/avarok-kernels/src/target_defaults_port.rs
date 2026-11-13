@@ -48,6 +48,14 @@ pub struct PortDefaults {
     pub graph_exec_update: bool,
     /// GDN write-on-accept for the batched speculative verify.
     pub gdn_woa_mtp: bool,
+    /// Which LM-head rows the MTP draft-only NVFP4 head holds.
+    pub mtp_vocab_rank: &'static str,
+    /// Run the MTP propose chain device-resident: each draft position after the
+    /// first gathers its input embeddings on the device from the previous
+    /// position's ids, and the round reads every draft back once, instead of one
+    /// blocking readback per draft (per-sequence propose) or per position
+    /// (batched propose).
+    pub mtp_propose_graph: bool,
     /// When a 4-bit BF16 load route is on (dense_affine4_from_bf16,
     /// gdn_affine4_from_bf16, attn_affine4_from_bf16), every projection the
     /// Marlin kernels serve (N a multiple of 64, K of 128, more than one group)
@@ -191,6 +199,8 @@ pub const PORT_BASELINE: PortDefaults = PortDefaults {
     mtp_dcut_cost_model: false,
     graph_exec_update: false,
     gdn_woa_mtp: false,
+    mtp_vocab_rank: "id",
+    mtp_propose_graph: false,
     marlin_w4a16: false,
     gguf_native_iq4: false,
     weights_exl3: false,
