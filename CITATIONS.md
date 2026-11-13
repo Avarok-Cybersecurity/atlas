@@ -276,6 +276,10 @@ copied.
   own K=4 pair (`kernels/gb10/common/gated_delta_rule_wy4_woa.cu`) and the Ada K-generic pair
   (`kernels/ada/common/gated_delta_rule_wyn_woa.cu`, row `gdn_woa_mtp`) reproduce Atlas's wy2/wy3/wyN expressions.
 
+### MTP head v2: frequency-ranked draft vocabulary and device-resident propose chain (L11)
+
+- **Cinference / NInfer** (Apache-2.0), commit 383e5db. Data: the token-count file `tools/freq_corpus/fixtures/ranking/ranking.train.counts.i64` (token counts by NInfer authors; source corpus not published), reduced to the top 131,072 ids. Translated: `tools/convert/proposal.py` `select_shortlist` (ranking with forced special tokens) and `add_proposal` (gather of the shortlisted head rows); `src/ops/kernel/speculative_round.cuh` `proposal_remap_token_ids_kernel` (row to token id after the draft argmax). Design only: the single-graph MTP round of `src/models/qwen3_5/program/speculative/mtp.cpp`. Atlas: `crates/spark-model/data/mtp_vocab_rank_qwen35.{u32,json}`, `crates/spark-model/data/gen_mtp_vocab_rank.py`, `crates/spark-model/src/layers/mtp_head/{vocab_rank.rs, ranked_head.rs, propose_chain.rs}`, `kernels/ada/common/draft_vocab_remap.cu`. Notice in `NOTICE`; details in `MTP-DRAFT-VOCAB-ATTRIBUTION.md`.
+
 ### Affine 4-bit route: TensorFold and the MLX format (L17a, L17b, L17c)
 
 - TensorFold (https://github.com/ashhart/TensorFold, commit 3885dce), Copyright

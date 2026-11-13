@@ -38,6 +38,32 @@ Cinference (CUDA Graph topology signature)
     NInfer is distributed under the Apache License, Version 2.0. The original
     LICENSE is retained unchanged in this distribution.
 
+Cinference / NInfer (MTP draft-vocabulary ranking: data, selection, remap)
+  Source: https://github.com/satellitedown/cinference, commit 383e5db
+  Files: tools/freq_corpus/fixtures/ranking/ranking.train.counts.i64 (data),
+         tools/convert/proposal.py (select_shortlist, add_proposal),
+         src/ops/kernel/speculative_round.cuh (proposal_remap_token_ids_kernel)
+  Licensed under the Apache License, Version 2.0 (LICENSES/Apache-2.0.txt).
+  The ranking data are token counts by NInfer authors; the source corpus is
+  not published.
+  Atlas files: crates/spark-model/data/mtp_vocab_rank_qwen35.u32 (the top
+         131,072 ids of the counts), crates/spark-model/data/
+         mtp_vocab_rank_qwen35.json (provenance), crates/spark-model/data/
+         gen_mtp_vocab_rank.py, crates/spark-model/src/layers/mtp_head/
+         vocab_rank.rs, ranked_head.rs, kernels/ada/common/draft_vocab_remap.cu
+  Changes: the ranking reduced to an id table for Atlas's NVFP4 draft head;
+  selection translated from NumPy to Python and Rust; a tokenizer identity
+  check added; the remap kernel rewritten for u32 argmax rows. See
+  MTP-DRAFT-VOCAB-ATTRIBUTION.md.
+  Cinference's NOTICE, first paragraph:
+    Cinference
+    https://github.com/satellitedown/cinference
+
+    Cinference is derived from NInfer by Neroued and its contributors:
+    https://github.com/Neroued/ninfer
+    NInfer is distributed under the Apache License, Version 2.0. The original
+    LICENSE is retained unchanged in this distribution.
+
 == TensorFold (affine 4-bit route) ==
 
 Source:  https://github.com/ashhart/TensorFold, commit 3885dce
