@@ -30,6 +30,8 @@ pub mod gguf_q4;
 pub mod graph_stats;
 /// The bounded KV view (lanes L31 and L32; row `kv_view_selection`, approximate, off).
 pub mod kv_view;
+/// Host-resident window desk and windowed MTP KV (lane L36, row `kv_window_desk`).
+pub mod kv_window;
 pub mod logit_dump;
 /// The Marlin W4A16 route: GPTQ/AWQ int4 checkpoints and opt-in round-to-nearest int4 from BF16,
 /// repacked on the host and served on vLLM's Marlin GEMM (lane L18b; kernels by lane L18a).

@@ -494,4 +494,8 @@ required-features = ["cuda", "gpu-examples"]
 name = "sparse_prefill_microtest"
 required-features = ["cuda", "gpu-examples"]
 
+[[example]]
+name = "kv_window_view_microtest"
+required-features = ["cuda", "gpu-examples"]
+
 # @port:examples

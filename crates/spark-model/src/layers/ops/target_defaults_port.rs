@@ -95,6 +95,8 @@ pub struct PortLevers {
     pub retro_attn: Resolved<bool>,
     /// Block-sparse prefill attention, XAttention-style (APPROXIMATE): run flash attention over the kept key blocks only.
     pub prefill_sparse_attn: Resolved<bool>,
+    /// Host-resident window desk (APPROXIMATE): keep on the GPU only the head sinks, a recent window and recalled pages of a long sequence.
+    pub kv_window_desk: Resolved<bool>,
     // @port:fields
 }
 
@@ -233,6 +235,10 @@ pub fn resolve(
             d.prefill_sparse_attn,
             var(super::port_rows::prefill_sparse_attn::ENV).as_deref(),
         ),
+        kv_window_desk: super::port_rows::kv_window_desk::resolve(
+            d.kv_window_desk,
+            var(super::port_rows::kv_window_desk::ENV).as_deref(),
+        ),
         // @port:resolve
     }
 }
@@ -303,6 +309,7 @@ pub fn format_port(l: &PortLevers) -> String {
     push(&mut s, "kv_view_selection", &l.kv_view_selection);
     push(&mut s, "retro_attn", &l.retro_attn);
     push(&mut s, "prefill_sparse_attn", &l.prefill_sparse_attn);
+    push(&mut s, "kv_window_desk", &l.kv_window_desk);
     // @port:boot
     if s.len() == header {
         s.push_str(" none");
