@@ -19,9 +19,17 @@
 //!    output's term magnitude.
 //!  * **The extent**: every output carries 64 sentinel bytes either side.
 //!
-//! TIMINGS: sync'd `Instant` over 20 reps after 3 warm-ups, the house pattern.
-//! GEMV rows print GB/s of FP8 weight bytes (the decode budget, against the
-//! RTX 4060 Ti's 288 GB/s); GEMM rows print TFLOP/s for both kernels.
+//! TIMINGS (L07 retrofit, master plan queue row Q1): every row is DRAM-true.
+//! The weights rotate through byte-identical copies totaling more than twice
+//! the L2 (the old rows re-read one copy 20 times, which is how the 4B down
+//! projection showed 927 GB/s on a 288 GB/s card), the two kernels are timed
+//! interleaved in rotated order (five rounds, 3 warm-ups, 20 calls per sample,
+//! CUDA events), and each GEMV row also prints the HOT one-copy figure beside
+//! the cold one so the cache artifact is visible. GEMV rows print GB/s of FP8
+//! weight bytes against the measured ceiling of `hbm_bandwidth_probe`; GEMM rows
+//! print cold TFLOP/s for both kernels. Method: TensorFold's distinct weight
+//! copies, Cinference's and TensorFold's interleaved rounds (see
+//! `common/cold_l2.rs`).
 //!
 //! Run on the Ada card, in a build of the ada target:
 //!     AVAROK_TARGET_HW=ada cargo run --release -p spark-model \
@@ -29,13 +37,27 @@
 use anyhow::{Context, Result, ensure};
 use spark_model::layers::ops;
 use spark_model::weight_map::fp8_blockscale_ref::{
-    self as fref, BlockScaledFp8, gemm_w8a8_ref, gemm_w8a8_term_mag, gemv_w8a16_exact,
-    per_token_group_quant, quantize_blockscaled,
+    BlockScaledFp8, gemm_w8a8_ref, gemm_w8a8_term_mag, gemv_w8a16_exact, per_token_group_quant,
+    quantize_blockscaled,
 };
 use spark_model::weight_map::{DenseWeight, quantize_to_fp8_blockscaled};
 use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
-use std::time::Instant;
+
+#[path = "common/bench_args.rs"]
+mod bench_args;
+#[path = "common/cold_l2.rs"]
+mod cold_l2;
+#[path = "common/profiler.rs"]
+mod profiler;
+#[path = "common/fp8_ada_support.rs"]
+mod support;
+
+use cold_l2::BenchCfg;
+use support::{
+    ACC_TOL, Lcg, Out, acc_err, bf16_bytes, clone_buf, download, host_bits, make_rings, pair_us,
+    unequal, upload, verdict,
+};
 
 /// `(model, hidden, intermediate)` of the dense FFNs this path is for.
 const MODELS: &[(&str, u32, u32)] = &[("holo-0.8b", 1024, 3584), ("holo-4b", 2560, 9216)];
@@ -43,131 +65,6 @@ const MODELS: &[(&str, u32, u32)] = &[("holo-0.8b", 1024, 3584), ("holo-4b", 256
 const GEMM_M: &[u32] = &[1, 16, 17, 63, 65, 128, 512, 2048];
 /// GEMM rows up to this M are also checked against the CPU reference.
 const HOST_CHECK_MAX_M: u32 = 17;
-/// BF16's machine epsilon, 2^-7.
-const BF16_EPS: f32 = 1.0 / 128.0;
-/// Accumulation error allowed per unit of term magnitude (see `acc_err`):
-/// 2^-13. The FP8 `mma.sync` sums its products below FP32 precision; on an
-/// RTX 4060 Ti the worst output at these shapes is 2^-15 of its term
-/// magnitude, with the Ada and gb10 kernels bit-identical, so the margin is
-/// 4x and the error is the instruction's, not the tiling's.
-const ACC_TOL: f32 = 1.0 / 8192.0;
-const GUARD: usize = 64;
-const REPS: u32 = 20;
-const WARMUP: u32 = 3;
-
-struct Lcg(u64);
-
-impl Lcg {
-    fn unit(&mut self) -> f32 {
-        self.0 = self
-            .0
-            .wrapping_mul(6_364_136_223_846_793_005)
-            .wrapping_add(1_442_695_040_888_963_407);
-        ((self.0 >> 40) as f32) / ((1u64 << 24) as f32)
-    }
-    /// BF16 values, roughly normal with standard deviation `sigma`.
-    fn bf16s(&mut self, len: usize, sigma: f32) -> Vec<f32> {
-        (0..len)
-            .map(|_| {
-                let x = (self.unit() + self.unit() + self.unit() + self.unit() - 2.0) * 1.7 * sigma;
-                fref::round_bf16(x)
-            })
-            .collect()
-    }
-}
-
-fn bf16_bytes(v: &[f32]) -> Vec<u8> {
-    v.iter()
-        .flat_map(|x| half::bf16::from_f32(*x).to_bits().to_le_bytes())
-        .collect()
-}
-
-fn upload(gpu: &dyn GpuBackend, bytes: &[u8]) -> Result<DevicePtr> {
-    let ptr = gpu.alloc(bytes.len())?;
-    gpu.copy_h2d(bytes, ptr)?;
-    Ok(ptr)
-}
-
-fn download(gpu: &dyn GpuBackend, ptr: DevicePtr, len: usize) -> Result<Vec<u8>> {
-    let mut host = vec![0u8; len];
-    gpu.copy_d2h(ptr, &mut host)?;
-    Ok(host)
-}
-
-fn time_us(gpu: &dyn GpuBackend, mut run: impl FnMut() -> Result<()>) -> Result<f64> {
-    for _ in 0..WARMUP {
-        run()?;
-    }
-    gpu.synchronize(0)?;
-    let t0 = Instant::now();
-    for _ in 0..REPS {
-        run()?;
-    }
-    gpu.synchronize(0)?;
-    Ok(t0.elapsed().as_secs_f64() * 1e6 / f64::from(REPS))
-}
-
-/// A BF16 output buffer with sentinel guards either side.
-struct Out {
-    base: DevicePtr,
-    bytes: usize,
-}
-
-impl Out {
-    fn new(gpu: &dyn GpuBackend, elems: usize) -> Result<Self> {
-        let o = Self {
-            base: gpu.alloc(elems * 2 + 2 * GUARD)?,
-            bytes: elems * 2,
-        };
-        o.reset(gpu)?;
-        Ok(o)
-    }
-    fn ptr(&self) -> DevicePtr {
-        self.base.offset(GUARD)
-    }
-    fn reset(&self, gpu: &dyn GpuBackend) -> Result<()> {
-        gpu.copy_h2d(&vec![0x5a; self.bytes + 2 * GUARD], self.base)
-    }
-    /// The payload as BF16 bits, after checking both guards.
-    fn read(&self, gpu: &dyn GpuBackend) -> Result<Vec<u16>> {
-        gpu.synchronize(0)?;
-        let host = download(gpu, self.base, self.bytes + 2 * GUARD)?;
-        let guards = host[..GUARD].iter().chain(&host[GUARD + self.bytes..]);
-        ensure!(
-            guards.into_iter().all(|b| *b == 0x5a),
-            "a kernel wrote outside its output"
-        );
-        Ok(host[GUARD..GUARD + self.bytes]
-            .chunks_exact(2)
-            .map(|p| u16::from_le_bytes([p[0], p[1]]))
-            .collect())
-    }
-}
-
-fn unequal(a: &[u16], b: &[u16]) -> usize {
-    a.iter().zip(b).filter(|(x, y)| x != y).count()
-}
-
-fn host_bits(v: &[f32]) -> Vec<u16> {
-    v.iter()
-        .map(|x| half::bf16::from_f32(*x).to_bits())
-        .collect()
-}
-
-/// A GEMM output's accumulation error: its distance from the reference after
-/// allowing 2 BF16 ulps for the final round, as a fraction of the output's
-/// term magnitude (`gemm_w8a8_term_mag`). The error of a long dot product
-/// scales with the size of its terms, not of its result, so a bound relative
-/// to the result alone fails every output whose terms cancel.
-fn acc_err(got: u16, want: f32, mag: f32) -> f32 {
-    let g = half::bf16::from_bits(got).to_f32();
-    let round = 2.0 * BF16_EPS * want.abs();
-    ((g - want).abs() - round).max(0.0) / mag.max(f32::MIN_POSITIVE)
-}
-
-fn verdict(fails: usize) -> &'static str {
-    if fails == 0 { "PASS" } else { "FAIL" }
-}
 
 struct Kernels {
     quant: KernelHandle,
@@ -183,6 +80,24 @@ struct DevWeight {
     host: BlockScaledFp8,
     weight: DevicePtr,
     scale: DevicePtr,
+}
+
+/// Bytes of the FP8 weight and of its 128 x 128 FP32 scale grid.
+fn sizes(n: u32, k: u32) -> (usize, usize) {
+    let (n, k) = (n as usize, k as usize);
+    (n * k, n.div_ceil(128) * k.div_ceil(128) * 4)
+}
+
+/// `gb10 .. us .. GB/s | ada .. us .. GB/s` for FP8 weight `bytes` per call.
+fn pair_str(us: [f64; 2], bytes: f64) -> String {
+    let g = |u: f64| bytes / (u * 1e-6) / 1e9;
+    format!(
+        "gb10 {:.1} us {:.0} GB/s | ada {:.1} us {:.0} GB/s",
+        us[0],
+        g(us[0]),
+        us[1],
+        g(us[1])
+    )
 }
 
 fn quantize(
@@ -231,8 +146,8 @@ fn gemv_rows(
     gpu: &dyn GpuBackend,
     k: &Kernels,
     rng: &mut Lcg,
-    hidden: u32,
-    inter: u32,
+    (hidden, inter): (u32, u32),
+    (l2, cfg): (usize, &BenchCfg),
 ) -> Result<usize> {
     let mut fails = 0;
     let gate = quantize(gpu, k, rng, inter, hidden, &mut fails)?;
@@ -242,31 +157,39 @@ fn gemv_rows(
     let a_dev = upload(gpu, &bf16_bytes(&a))?;
 
     // gate+up dual: both kernels, both against the exact host model.
+    let (wb, sb) = sizes(inter, hidden);
     let outs: Vec<Out> = (0..4)
         .map(|_| Out::new(gpu, inter as usize))
         .collect::<Result<_>>()?;
-    let mut us = [0.0; 2];
-    for (i, h) in k.dual.iter().enumerate() {
-        let (o0, o1) = (outs[2 * i].ptr(), outs[2 * i + 1].ptr());
-        let run = || {
-            ops::w8a16_gemv_dual(
-                gpu,
-                *h,
-                a_dev,
-                gate.weight,
-                gate.scale,
-                o0,
-                up.weight,
-                up.scale,
-                o1,
-                inter,
-                hidden,
-                0,
-            )
-        };
-        run()?;
-        us[i] = time_us(gpu, run)?;
-    }
+    let rings = make_rings(l2, 2 * (wb + sb), |c| {
+        if c == 0 {
+            return Ok([gate.weight, gate.scale, up.weight, up.scale]);
+        }
+        Ok([
+            clone_buf(gpu, gate.weight, wb)?,
+            clone_buf(gpu, gate.scale, sb)?,
+            clone_buf(gpu, up.weight, wb)?,
+            clone_buf(gpu, up.scale, sb)?,
+        ])
+    })?;
+    let dual = |i: usize, c: [DevicePtr; 4]| {
+        ops::w8a16_gemv_dual(
+            gpu,
+            k.dual[i],
+            a_dev,
+            c[0],
+            c[1],
+            outs[2 * i].ptr(),
+            c[2],
+            c[3],
+            outs[2 * i + 1].ptr(),
+            inter,
+            hidden,
+            0,
+        )
+    };
+    let cold = pair_us(gpu, cfg, &rings.cold, &dual)?;
+    let hot = pair_us(gpu, cfg, &rings.hot, &dual)?;
     let want = [
         host_bits(&gemv_w8a16_exact(&a, &gate.host)),
         host_bits(&gemv_w8a16_exact(&a, &up.host)),
@@ -277,14 +200,13 @@ fn gemv_rows(
         bad += unequal(&ada, &base) + unequal(&ada, w) + unequal(&base, w);
     }
     fails += usize::from(bad != 0);
-    let gbs = |us: f64| 2.0 * f64::from(inter) * f64::from(hidden) / (us * 1e-6) / 1e9;
+    let bytes = 2.0 * wb as f64;
     println!(
-        "  [{}] gate+up dual N=2x{inter} K={hidden}: unequal={bad}  gb10 {:.1} us {:.0} GB/s | ada {:.1} us {:.0} GB/s",
+        "  [{}] gate+up dual N=2x{inter} K={hidden}: unequal={bad}  cold x{} copies: {}\n        HOT (one copy, L2-resident, not a bandwidth number): {}",
         verdict(bad),
-        us[0],
-        gbs(us[0]),
-        us[1],
-        gbs(us[1])
+        rings.plan.copies,
+        pair_str(cold, bytes),
+        pair_str(hot, bytes)
     );
 
     // down, plain and with the SwiGLU input computed inline.
@@ -294,67 +216,81 @@ fn gemv_rows(
     let outs: Vec<Out> = (0..4)
         .map(|_| Out::new(gpu, hidden as usize))
         .collect::<Result<_>>()?;
-    let (mut us_plain, mut us_silu) = ([0.0; 2], [0.0; 2]);
-    for i in 0..2 {
-        let (op, os) = (outs[i].ptr(), outs[2 + i].ptr());
-        let plain = || {
-            ops::w8a16_gemv(
-                gpu,
-                k.gemv[i],
-                g_dev,
-                down.weight,
-                down.scale,
-                op,
-                hidden,
-                inter,
-                0,
-            )
-        };
-        let silu = || {
-            ops::w8a16_gemv_silu_input(
-                gpu,
-                k.silu[i],
-                g_dev,
-                u_dev,
-                down.weight,
-                down.scale,
-                os,
-                hidden,
-                inter,
-                0,
-            )
-        };
-        plain()?;
-        silu()?;
-        us_plain[i] = time_us(gpu, plain)?;
-        us_silu[i] = time_us(gpu, silu)?;
-    }
+    let (wb, sb) = sizes(hidden, inter);
+    let rings = make_rings(l2, wb + sb, |c| {
+        if c == 0 {
+            return Ok((down.weight, down.scale));
+        }
+        Ok((
+            clone_buf(gpu, down.weight, wb)?,
+            clone_buf(gpu, down.scale, sb)?,
+        ))
+    })?;
+    let plain = |i: usize, (w, s): (DevicePtr, DevicePtr)| {
+        ops::w8a16_gemv(gpu, k.gemv[i], g_dev, w, s, outs[i].ptr(), hidden, inter, 0)
+    };
+    let silu = |i: usize, (w, s): (DevicePtr, DevicePtr)| {
+        ops::w8a16_gemv_silu_input(
+            gpu,
+            k.silu[i],
+            g_dev,
+            u_dev,
+            w,
+            s,
+            outs[2 + i].ptr(),
+            hidden,
+            inter,
+            0,
+        )
+    };
+    let (plain_cold, plain_hot) = (
+        pair_us(gpu, cfg, &rings.cold, &plain)?,
+        pair_us(gpu, cfg, &rings.hot, &plain)?,
+    );
+    let (silu_cold, silu_hot) = (
+        pair_us(gpu, cfg, &rings.cold, &silu)?,
+        pair_us(gpu, cfg, &rings.hot, &silu)?,
+    );
     let want = host_bits(&gemv_w8a16_exact(&g, &down.host));
     let (pb, pa) = (outs[0].read(gpu)?, outs[1].read(gpu)?);
     let bad_plain = unequal(&pa, &pb) + unequal(&pa, &want);
     let bad_silu = unequal(&outs[3].read(gpu)?, &outs[2].read(gpu)?);
     fails += usize::from(bad_plain != 0) + usize::from(bad_silu != 0);
-    let gbs = |us: f64| f64::from(inter) * f64::from(hidden) / (us * 1e-6) / 1e9;
+    let bytes = wb as f64;
     println!(
-        "  [{}] down N={hidden} K={inter}: unequal={bad_plain}  gb10 {:.1} us {:.0} GB/s | ada {:.1} us {:.0} GB/s",
+        "  [{}] down N={hidden} K={inter}: unequal={bad_plain}  cold x{} copies: {}\n        HOT (L2-resident): {}",
         verdict(bad_plain),
-        us_plain[0],
-        gbs(us_plain[0]),
-        us_plain[1],
-        gbs(us_plain[1])
+        rings.plan.copies,
+        pair_str(plain_cold, bytes),
+        pair_str(plain_hot, bytes)
     );
     println!(
-        "  [{}] down+SwiGLU N={hidden} K={inter}: unequal(ada vs gb10)={bad_silu}  gb10 {:.1} us | ada {:.1} us",
+        "  [{}] down+SwiGLU N={hidden} K={inter}: unequal(ada vs gb10)={bad_silu}  cold gb10 {:.1} us | ada {:.1} us   HOT gb10 {:.1} us | ada {:.1} us",
         verdict(bad_silu),
-        us_silu[0],
-        us_silu[1]
+        silu_cold[0],
+        silu_cold[1],
+        silu_hot[0],
+        silu_hot[1]
     );
     Ok(fails)
 }
 
-fn gemm_rows(gpu: &dyn GpuBackend, k: &Kernels, rng: &mut Lcg, n: u32, kk: u32) -> Result<usize> {
+fn gemm_rows(
+    gpu: &dyn GpuBackend,
+    k: &Kernels,
+    rng: &mut Lcg,
+    (n, kk): (u32, u32),
+    (l2, cfg): (usize, &BenchCfg),
+) -> Result<usize> {
     let mut fails = 0;
     let w = quantize(gpu, k, rng, n, kk, &mut fails)?;
+    let (wb, sb) = sizes(n, kk);
+    let rings = make_rings(l2, wb + sb, |c| {
+        if c == 0 {
+            return Ok((w.weight, w.scale));
+        }
+        Ok((clone_buf(gpu, w.weight, wb)?, clone_buf(gpu, w.scale, sb)?))
+    })?;
     for &m in GEMM_M {
         let (mu, kd) = (m as usize, kk as usize);
         let x = rng.bf16s(mu * kd, 1.0);
@@ -365,17 +301,22 @@ fn gemm_rows(gpu: &dyn GpuBackend, k: &Kernels, rng: &mut Lcg, n: u32, kk: u32) 
         let outs: Vec<Out> = (0..2)
             .map(|_| Out::new(gpu, mu * n as usize))
             .collect::<Result<_>>()?;
-        let mut us = [0.0; 2];
-        for (i, h) in k.gemm.iter().enumerate() {
-            let o = outs[i].ptr();
-            let run = || {
-                ops::fp8_gemm_t_blockscaled(
-                    gpu, *h, a_fp8, a_scale, w.weight, w.scale, o, m, n, kk, 0,
-                )
-            };
-            run()?;
-            us[i] = time_us(gpu, run)?;
-        }
+        let launch = |i: usize, (wp, sp): (DevicePtr, DevicePtr)| {
+            ops::fp8_gemm_t_blockscaled(
+                gpu,
+                k.gemm[i],
+                a_fp8,
+                a_scale,
+                wp,
+                sp,
+                outs[i].ptr(),
+                m,
+                n,
+                kk,
+                0,
+            )
+        };
+        let us = pair_us(gpu, cfg, &rings.cold, &launch)?;
         let (base, ada) = (outs[0].read(gpu)?, outs[1].read(gpu)?);
         let vs_gb10 = unequal(&ada, &base);
         let mut host = String::new();
@@ -404,7 +345,7 @@ fn gemm_rows(gpu: &dyn GpuBackend, k: &Kernels, rng: &mut Lcg, n: u32, kk: u32) 
         fails += usize::from(bad != 0);
         let tf = |us: f64| 2.0 * f64::from(m) * f64::from(n) * f64::from(kk) / (us * 1e-6) / 1e12;
         println!(
-            "  [{}] W8A8 M={m:<5} N={n} K={kk}: unequal={vs_gb10}{host}  gb10 {:.1} us {:.1} TFLOP/s | ada {:.1} us {:.1} TFLOP/s",
+            "  [{}] W8A8 M={m:<5} N={n} K={kk}: unequal={vs_gb10}{host}  cold gb10 {:.1} us {:.1} TFLOP/s | ada {:.1} us {:.1} TFLOP/s",
             verdict(bad),
             us[0],
             tf(us[0]),
@@ -420,6 +361,13 @@ fn gemm_rows(gpu: &dyn GpuBackend, k: &Kernels, rng: &mut Lcg, n: u32, kk: u32) 
 
 fn main() -> Result<()> {
     let gpu = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
+    let info = profiler::device_info();
+    let l2 = if info.l2_bytes > 0 {
+        info.l2_bytes
+    } else {
+        cold_l2::FALLBACK_L2_BYTES
+    };
+    let cfg = bench_args::bench_cfg(0)?;
     let pair = |base: (&str, &str), ada: (&str, &str)| -> Result<[KernelHandle; 2]> {
         Ok([
             gpu.kernel(base.0, base.1)?,
@@ -456,13 +404,17 @@ fn main() -> Result<()> {
             ("fp8_gemm_ada", "fp8_gemm_ada_w8a8"),
         )?,
     };
+    println!(
+        "L2 {} MiB: rows are cold (rotated copies > 2x L2); HOT is the one-copy contrast",
+        l2 >> 20
+    );
     let mut rng = Lcg(0x5e89_2026_f8f8_0001);
     let mut fails = 0;
     for &(model, hidden, inter) in MODELS {
         println!("{model} (hidden {hidden}, intermediate {inter}):");
-        fails += gemv_rows(&gpu, &k, &mut rng, hidden, inter)?;
-        fails += gemm_rows(&gpu, &k, &mut rng, inter, hidden)?;
-        fails += gemm_rows(&gpu, &k, &mut rng, hidden, inter)?;
+        fails += gemv_rows(&gpu, &k, &mut rng, (hidden, inter), (l2, &cfg))?;
+        fails += gemm_rows(&gpu, &k, &mut rng, (inter, hidden), (l2, &cfg))?;
+        fails += gemm_rows(&gpu, &k, &mut rng, (hidden, inter), (l2, &cfg))?;
     }
     ensure!(fails == 0, "{fails} row(s) failed");
     println!("all rows PASS");
