@@ -239,6 +239,21 @@ impl ModelHost {
     pub fn is_loaded(&self) -> bool {
         self.current.read().is_some()
     }
+
+    /// The live model id with the device bytes it holds, or `None` while no
+    /// model is loaded (the `/v1/models` `x_atlas` view; port sprint L41).
+    ///
+    /// The bytes are the allocation ledger's live total: everything Atlas
+    /// allocated for this model (weights, KV and state pools, scratch), which
+    /// is also what a swap away from it frees. One read of the cell, so the id
+    /// and the answer to "is a model loaded" cannot disagree.
+    pub fn residency(&self) -> Option<super::swap_metrics::atlas::Residency> {
+        let model = self.live_model()?;
+        Some(super::swap_metrics::atlas::Residency::new(
+            model,
+            spark_runtime::run_metrics::ledger_bytes().0,
+        ))
+    }
 }
 
 #[cfg(test)]

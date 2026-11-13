@@ -1180,6 +1180,9 @@ pub fn run(
     );
     // Shutdown applies to every slot the worker has; seq_id is ignored.
     let _ = model.ep_broadcast_cmd_for_seq(0, 0xFFFFFFFF);
+    // The drain is over; the stream sync, `Model::teardown` and the allocator
+    // sweep that follow are the swap timer's `teardown` phase (L41).
+    crate::main_modules::swap_metrics::mark_teardown_begin();
 
     // Release the model's device memory HERE, in order and able to report a
     // failure, before the `Box` drops.

@@ -16,7 +16,9 @@ pub(crate) mod serve;
 pub(crate) mod serve_flags;
 pub(crate) mod serve_load;
 pub(crate) mod serve_phases;
+// Hot-swap phase timing, residency and the `/v1/models` x_atlas objects (L41).
 mod serve_router;
+pub(crate) mod swap_metrics;
 
 #[cfg(test)]
 mod tests;

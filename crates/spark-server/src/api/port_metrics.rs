@@ -38,6 +38,7 @@ pub fn render(out: &mut String) {
     spark_runtime::kv_host_tier::disk::render_prometheus(out);
     spark_runtime::radix_tree::render_prometheus(out);
     spark_model::layers::qwen3_attention::sparse_seam::render_prometheus(out);
+    crate::main_modules::swap_metrics::render::render_prometheus(out);
     spark_model::port::sparse_quest::render_prometheus(out);
     crate::scheduler::kv_view::render_prometheus(out);
     spark_model::port::retro::metrics::render_prometheus(out);
