@@ -26,4 +26,25 @@ Cinference (CUDA Graph topology signature)
     https://github.com/Neroued/ninfer
     NInfer is distributed under the Apache License, Version 2.0. The original
     LICENSE is retained unchanged in this distribution.
+
+== LMCache (KV block transfer, pinned host pool, LRU blob store) ==
+
+Source:  https://github.com/LMCache/LMCache, commit 3aefae1
+         csrc/cuda/mp_mem_kernels.cu (batched copy submission, staged DMA),
+         csrc/cuda/phase_timing_recorder.cu (per-phase GB/s),
+         lmcache/v1/memory_allocators/lazy_memory_allocator.py,
+         tensor_memory_allocator.py, paged_tensor_memory_allocator.py,
+         csrc/cuda/mem_alloc.cpp (reserve once, pin in chunks, page runs)
+License: Apache License, Version 2.0 (LICENSES/Apache-2.0.txt). LMCache ships
+  no NOTICE file.
+
+Atlas files: crates/spark-runtime/src/kv_cache/{block_io.rs, block_io_swap.rs},
+  crates/spark-runtime/src/{pinned_pool.rs, pinned_pool_free.rs},
+  crates/spark-model/src/model/trait_impl/sequence/state_io.rs,
+  crates/spark-model/src/model/ssm_tier/store.rs
+Changes: design only, no code copied; written in Rust for Atlas's paged KV
+  layout (one contiguous region per layer, side and block, so no layout
+  transform), a two-buffer staging that overlaps copies with file I/O, best-fit
+  page runs that never cross a pinning chunk, and one stamp index serving FIFO
+  and LRU orders. See LMCACHE-KV-TRANSFER-ATTRIBUTION.md.
 # @port:notice
