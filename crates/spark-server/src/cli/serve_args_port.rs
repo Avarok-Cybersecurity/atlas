@@ -15,6 +15,12 @@
 /// The port lanes' serve flags.
 #[derive(clap::Args, Debug, Clone, Default, PartialEq)]
 pub struct PortArgs {
+    /// MTP draft-head vocabulary (`mtp_vocab_rank` row): `id` holds the first
+    /// `--mtp-vocab` token ids, `freq` the most frequent tokens of the shipped
+    /// ranking (Qwen3.5 tokenizer only; logs and keeps `id` otherwise). Absent:
+    /// `AVAROK_MTP_VOCAB_RANK`, then the target's declaration.
+    #[arg(long = "mtp-vocab-rank", value_name = "RANK", value_parser = ["id", "freq"])]
+    pub mtp_vocab_rank: Option<String>,
     /// Affine W4 routes (lane L23a): code width of the load-time BF16 -> affine
     /// quantizer, 2, 3, 4, 5, 6 or 8 (default 4, or `AVAROK_W4_BITS`). Widths
     /// other than 4 need `--w4-group 64`. Changes nothing unless an affine

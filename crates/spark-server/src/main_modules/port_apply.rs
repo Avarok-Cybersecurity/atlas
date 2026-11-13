@@ -21,6 +21,7 @@ use crate::cli::serve_args_port::PortArgs;
 /// Publish every port flag and row value. Empty until a lane adds a line.
 #[allow(unused_variables)]
 pub(crate) fn apply(args: &PortArgs) -> anyhow::Result<()> {
+    spark_model::layers::ops::port_rows::mtp_vocab_rank::set_cli(args.mtp_vocab_rank.as_deref())?;
     spark_runtime::weights::keep_packed_iq4::set_enabled(
         spark_model::layers::ops::port_rows::gguf_native_iq4::row(),
     );
@@ -66,6 +67,11 @@ pub(crate) fn apply(args: &PortArgs) -> anyhow::Result<()> {
 #[allow(unused_variables)]
 pub(crate) fn validate(args: &PortArgs) -> anyhow::Result<()> {
     crate::scheduler::conf_summary::validate_env()?;
+    spark_model::layers::ops::port_rows::mtp_vocab_rank::validate(
+        std::env::var(spark_model::layers::ops::port_rows::mtp_vocab_rank::ENV)
+            .ok()
+            .as_deref(),
+    )?;
     spark_model::port::affine_opts::validate(spark_model::port::affine_opts::AffineCli {
         bits: args.w4_bits,
         group: args.w4_group,

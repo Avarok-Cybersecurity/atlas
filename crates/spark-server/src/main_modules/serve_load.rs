@@ -106,6 +106,7 @@ pub(crate) fn load_model(
     // 0. Resolve model directory from HF ID or path
     spark_runtime::progress::phase(1, "model resolve");
     let model_dir = serve_phases::resolve_model_dir(&args)?;
+    spark_model::layers::mtp_head::vocab_rank::note_model_dir(&model_dir);
 
     tracing::info!("Port: {}", args.port);
 
