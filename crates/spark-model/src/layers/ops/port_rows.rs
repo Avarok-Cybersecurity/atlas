@@ -27,6 +27,7 @@ pub mod kv_batched_swap;
 pub mod kv_host_tier;
 pub mod kv_restore_async;
 pub mod kv_tier_disk;
+pub mod kv_view_selection;
 pub mod l2_evict_first_weights;
 pub mod marlin_w4a16;
 pub mod mtp_dcut_cost_model;

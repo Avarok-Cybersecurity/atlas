@@ -115,5 +115,29 @@ pub trait ModelPortExt {
     ) -> anyhow::Result<spark_runtime::kv_host_tier::RestoreState> {
         Ok(spark_runtime::kv_host_tier::RestoreState::Failed)
     }
+
+    /// Bounded KV view (lane L32): before a prefill call, arm each stream's
+    /// final user message for query capture and record the call's streams.
+    /// Default: nothing.
+    fn kv_view_begin_call(
+        &self,
+        _streams: &[crate::port::kv_view::CallStream<'_>],
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Bounded KV view (L32): after the prefill call. Default: nothing.
+    fn kv_view_end_call(&self) {}
+
+    /// Bounded KV view (L32): after a sequence's final prefill chunk, select
+    /// (or keep, or skip) its per-turn view (`Some`), or drop its arm and view
+    /// (`None`). `seq_id` is the sequence's pool slot. Default: off.
+    fn set_kv_view(
+        &self,
+        _seq_id: u64,
+        _spec: Option<crate::port::kv_view::ViewSpec<'_>>,
+    ) -> anyhow::Result<crate::port::kv_view::ViewOutcome> {
+        Ok(crate::port::kv_view::ViewOutcome::Off)
+    }
     // @port:methods
 }

@@ -85,5 +85,38 @@ impl ModelPortExt for TransformerModel {
     ) -> anyhow::Result<spark_runtime::kv_host_tier::RestoreState> {
         self.restore_poll(t)
     }
+
+    fn kv_view_begin_call(
+        &self,
+        streams: &[crate::port::kv_view::CallStream<'_>],
+    ) -> anyhow::Result<()> {
+        if !crate::port::kv_view::enabled() {
+            return Ok(());
+        }
+        let facts = {
+            let kv = self.kv_cache.lock();
+            crate::port::kv_view::ModelFacts::from_parts(
+                self.gpu.as_ref(),
+                &kv,
+                self.config.num_attention_heads,
+                self.config.rotary_dim(),
+                self.config.rope_theta,
+                self.max_blocks_per_seq,
+            )
+        };
+        crate::port::kv_view::begin_call(&facts, streams)
+    }
+
+    fn kv_view_end_call(&self) {
+        crate::port::kv_view::end_call()
+    }
+
+    fn set_kv_view(
+        &self,
+        seq_id: u64,
+        spec: Option<crate::port::kv_view::ViewSpec<'_>>,
+    ) -> anyhow::Result<crate::port::kv_view::ViewOutcome> {
+        crate::port::kv_view::set_kv_view(self.gpu.as_ref(), seq_id, spec)
+    }
     // @port:impls
 }

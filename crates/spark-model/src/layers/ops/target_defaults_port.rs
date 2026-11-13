@@ -89,6 +89,8 @@ pub struct PortLevers {
     pub prefix_cow_tail: Resolved<bool>,
     /// Quest page-sparse decode attention (APPROXIMATE): attend only to the sink pages, the best-scoring pages and the recent tokens.
     pub attn_page_sparse: Resolved<bool>,
+    /// Bounded KV view (APPROXIMATE): once per user turn, score the context's blocks against the final user message and attend only to the selected view.
+    pub kv_view_selection: Resolved<bool>,
     // @port:fields
 }
 
@@ -215,6 +217,10 @@ pub fn resolve(
             d.attn_page_sparse,
             var(super::port_rows::attn_page_sparse::ENV).as_deref(),
         ),
+        kv_view_selection: super::port_rows::kv_view_selection::resolve(
+            d.kv_view_selection,
+            var(super::port_rows::kv_view_selection::ENV).as_deref(),
+        ),
         // @port:resolve
     }
 }
@@ -282,6 +288,7 @@ pub fn format_port(l: &PortLevers) -> String {
     push(&mut s, "radix_lru_index", &l.radix_lru_index);
     push(&mut s, "prefix_cow_tail", &l.prefix_cow_tail);
     push(&mut s, "attn_page_sparse", &l.attn_page_sparse);
+    push(&mut s, "kv_view_selection", &l.kv_view_selection);
     // @port:boot
     if s.len() == header {
         s.push_str(" none");
