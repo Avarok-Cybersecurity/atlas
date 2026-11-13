@@ -233,12 +233,15 @@ gdn_woa_mtp = false
 # ids on the device (kernels/ada/common/draft_vocab_remap.cu). Held-out
 # coverage at 100,000 rows: 98.1% against 86.2% for the first ids; the first-N
 # head can never draft <|im_end|>, <think> or a tool-call tag. Only drafts
-# change, every one is verified by the main head, so outputs are those of the
-# id head. It applies only when the served tokenizer.json is one the ranking
+# change, every one is verified by the main head: lossless, but not bit-identical
+# to the id head (different drafts, different accept windows, bf16 logits that
+# move one step, and a greedy pick that flips where two tokens are that close;
+# L11 measured 7 of 8 prompts equal at C=1, see layers/mtp_head/vocab_rank.rs).
+# It applies only when the served tokenizer.json is one the ranking
 # was verified for (Qwen3.5) and the remap kernel is in the build; otherwise
 # it logs once and keeps id. CLI --mtp-vocab-rank {id,freq}. Off until the
-# receipt: greedy token SHA equal id vs freq, and MTP acceptance up per
-# category on the L03 corpus.
+# receipt: MTP acceptance up per category on the L03 corpus, and the logprob
+# KL of the screen inside its bar (greedy SHA equality is not the receipt).
 mtp_vocab_rank = "id"
 # Run the MTP propose chain device-resident: each draft position after the
 # first gathers its input embeddings on the device from the previous

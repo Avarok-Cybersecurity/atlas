@@ -27,8 +27,43 @@
 //! * the grammar-mask translation and the `atlas_mtp_draft_*` series.
 //!
 //! Only drafts change: every draft is verified by the main LM head, so the
-//! emitted tokens are those of the id-ranked head (greedy SHA equal is the
-//! row's receipt).
+//! emitted tokens are those the verify forward picks. The row is lossless in
+//! the sense speculative decoding is (an accept needs `draft == pick` of the
+//! target's own verify row, and nothing draft-side enters that pick), and it is
+//! NOT bit-identical to the `id` row, any more than any two runs with
+//! different accept patterns are.
+//!
+//! # Why greedy output can differ between `id` and `freq` (L11, measured)
+//!
+//! Different drafts mean different accept lengths, so a given token is
+//! computed as a different row of a different verify window, continuing from a
+//! different per-token SSM snapshot. The target forward is exact in each case
+//! but not bitwise equal across shapes (batched GEMM and GDN kernel choice by
+//! row count, per-row reduction order): bf16 logits move by one rounding step.
+//! A greedy pick flips only where two tokens are within that step, and such
+//! positions are common:
+//!
+//! * In the base arm's own quality run (`bench-results/queue-1/rows/_base/g2/
+//!   qual-scrr-g2-base.json`, 24 replies, 2,683 positions) 40 positions (1.5%)
+//!   have a bit-exact top-2 logit tie, 129 (4.8%) are within 0.125 (one bf16
+//!   step at |logit| 16 to 32), and 19 of 24 replies contain at least one
+//!   exact tie.
+//! * The row-off arm already disagrees with itself across batch shapes: in
+//!   `ab/l11-sha-vocab-rank-c8.json` the same prompts served alone and
+//!   eight at a time give different replies (prompts 5 and 7). Identical arms
+//!   at C=8 concurrent differ 2 of 8 (the devacc agent's note, 2026-11-13).
+//! * `mtp_propose_graph`, which launches the identical drafts a different way,
+//!   is bit-identical to off in all 24 cells of the same runs.
+//! * L11's one flip at C=1 (prompt 0, 71 against 70 tokens, first difference
+//!   at char 341) is therefore a verify-shape effect at a near-tie, not a
+//!   draft leak: both arms ran the same binary, the accept rule is
+//!   `draft == pick` on the target's own verify row (`verify_k3_step.rs`),
+//!   the freq head differs from the id head only in which tokens it can
+//!   propose, and a different row count is enough to move a tie that close.
+//!
+//! So the receipt for this row is acceptance and speed, with quality judged by
+//! the logprob KL of the screen, and greedy SHA equality is expected only where
+//! the drafts, and so the accept pattern, are the same.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};

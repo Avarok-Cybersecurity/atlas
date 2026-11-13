@@ -88,6 +88,9 @@ produces Atlas's own ranking from committed tokens to replace the v1 table.
 
 ## Receipts still owed (GPU)
 
-`mtp_vocab_rank=freq`: greedy token SHA equal vs `id`; acceptance per category up
-on the L03 corpus (`atlas_mtp_drafts_accepted_total`, `atlas_mtp_draft_out_of_head_total`).
+`mtp_vocab_rank=freq`: acceptance per category up on the L03 corpus
+(`atlas_mtp_drafts_accepted_total`, `atlas_mtp_draft_out_of_head_total`) and the
+logprob KL inside the screen's bar. Greedy token SHA equal vs `id` is NOT the
+receipt: L11 measured 7 of 8 equal at C=1, a verify-width numerics effect at a
+bf16 near-tie (`layers/mtp_head/vocab_rank.rs`).
 `mtp_propose_graph`: greedy SHA equal at C=1 and C=8; propose phase time down.

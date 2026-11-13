@@ -8,6 +8,13 @@
 //! declaration. An unknown environment value falls back to the declaration
 //! here and is a startup error through [`validate`], never a panic in the
 //! resolver.
+//!
+//! Lossless, not bit-identical: drafts change, so accept patterns and verify
+//! windows change, and greedy output can move where two tokens sit within one
+//! bf16 step of each other (L11: 7 of 8 prompts equal at C=1, three drafts,
+//! first difference at char 341). `layers/mtp_head/vocab_rank.rs` has the
+//! measurements; screen this row on acceptance, speed and the logprob KL, and
+//! expect greedy SHA equality only where the accept pattern is the same.
 
 use std::sync::OnceLock;
 
