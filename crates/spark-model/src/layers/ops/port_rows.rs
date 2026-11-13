@@ -19,6 +19,7 @@ pub mod dense_affine4_from_bf16;
 pub mod dense_nvfp4_from_bf16;
 pub mod embed_host_offload;
 pub mod ffn_fp8_decode_gemv;
+pub mod ffn_fp8_m16_tc;
 pub mod ffn_fp8_verify_gemv;
 pub mod gdn_affine4_from_bf16;
 pub mod gdn_verify_gemv;

@@ -111,6 +111,8 @@ pub struct PortLevers {
     pub lm_head_verify_gemv: Resolved<bool>,
     /// A greedy decode step under a min_tokens floor stays on the device argmax; only a step whose argmax is an EOS id is redone on the host.
     pub min_tokens_gpu_argmax: Resolved<bool>,
+    /// A native-FP8 dense FFN over 5 to 16 decode or verify rows on the sm_89 16-row tensor-core GEMM (BF16 activations, one weight pass), within 2 BF16 ULP of the decode GEMV.
+    pub ffn_fp8_m16_tc: Resolved<bool>,
     // @port:fields
 }
 
@@ -281,6 +283,10 @@ pub fn resolve(
             d.min_tokens_gpu_argmax,
             var(super::port_rows::min_tokens_gpu_argmax::ENV).as_deref(),
         ),
+        ffn_fp8_m16_tc: super::port_rows::ffn_fp8_m16_tc::resolve(
+            d.ffn_fp8_m16_tc,
+            var(super::port_rows::ffn_fp8_m16_tc::ENV).as_deref(),
+        ),
         // @port:resolve
     }
 }
@@ -359,6 +365,7 @@ pub fn format_port(l: &PortLevers) -> String {
     push(&mut s, "gdn_verify_gemv", &l.gdn_verify_gemv);
     push(&mut s, "lm_head_verify_gemv", &l.lm_head_verify_gemv);
     push(&mut s, "min_tokens_gpu_argmax", &l.min_tokens_gpu_argmax);
+    push(&mut s, "ffn_fp8_m16_tc", &l.ffn_fp8_m16_tc);
     // @port:boot
     if s.len() == header {
         s.push_str(" none");
