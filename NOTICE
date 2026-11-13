@@ -8,4 +8,22 @@ license text under LICENSES/, and the Atlas files that carry the code. For an
 Apache-2.0 source, the section also reproduces the relevant parts of that
 project's own NOTICE file.
 
+
+Cinference (CUDA Graph topology signature)
+  Source: https://github.com/satellitedown/cinference, commit 383e5db
+  File: src/core/decode_graph.cpp:62-80 (DecodeGraphDefinition::topology_signature)
+  Licensed under the Apache License, Version 2.0 (LICENSES/Apache-2.0.txt).
+  Atlas files: crates/spark-runtime/src/gpu/port_ext.rs,
+         crates/spark-runtime/src/cuda_backend/gpu_impl_graph_update.rs
+  Changes: translated from C++ (CUDA runtime API) to Rust over the CUDA
+  driver API; the node count is folded into the one returned hash. See
+  GPU-BACKEND-EXT-ATTRIBUTION.md.
+  From Cinference's NOTICE:
+    Cinference
+    https://github.com/satellitedown/cinference
+
+    Cinference is derived from NInfer by Neroued and its contributors:
+    https://github.com/Neroued/ninfer
+    NInfer is distributed under the Apache License, Version 2.0. The original
+    LICENSE is retained unchanged in this distribution.
 # @port:notice

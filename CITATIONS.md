@@ -199,4 +199,21 @@ from or built on as an idea, one entry per source, with its license and the
 Atlas files that carry it. License texts are in `LICENSES/`; notices are in
 `NOTICE`.
 
+
+### GPU backend extensions (L08)
+
+- Cinference (https://github.com/satellitedown/cinference, commit `383e5db`,
+  Apache-2.0, derived from NInfer by Neroued and contributors):
+  `src/core/decode_graph.cpp:62-80`, the CUDA Graph topology signature,
+  translated to Rust in `crates/spark-runtime/src/gpu/port_ext.rs` and
+  `crates/spark-runtime/src/cuda_backend/gpu_impl_graph_update.rs`.
+- LMCache (https://github.com/LMCache/LMCache, commit `3aefae1`, Apache-2.0):
+  `csrc/cuda/mp_mem_kernels.cu:358-849`, design of the batched copy path
+  (`cuMemcpyBatchAsync`, the 12.8 versus 13.x signature, the support probe);
+  no code copied.
+- vLLM (https://github.com/vllm-project/vllm, commit `8a36f08`, Apache-2.0):
+  `csrc/cache_kernels.cu:110-190`, design of the `cuGetProcAddress`
+  resolution and the per-copy fallback; no code copied. Atlas file:
+  `crates/spark-runtime/src/cuda_backend/gpu_impl_batch_copy.rs`.
+- See `GPU-BACKEND-EXT-ATTRIBUTION.md`.
 <!-- @port:citations -->

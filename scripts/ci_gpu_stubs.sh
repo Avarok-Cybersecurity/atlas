@@ -109,6 +109,13 @@ int cuMemsetD32Async(unsigned long long a, unsigned int b, unsigned long c, void
  * with "undefined symbol: cuMemsetD8_v2 / cuMemcpyDtoH_v2". */
 int cuMemsetD8_v2(unsigned long long d, unsigned char v, unsigned long n) { (void)d; (void)v; (void)n; return 100; }
 int cuMemcpyDtoH_v2(void *d, unsigned long long s, unsigned long n) { (void)d; (void)s; (void)n; return 100; }
+/* spark-runtime's optional driver entry points (cuda_backend/port_ffi.rs) are
+ * resolved at run time through these two link-time imports; a failing
+ * cuDriverGetVersion leaves every optional entry point unresolved. */
+int cuDriverGetVersion(int *v) { (void)v; return 100; }
+int cuGetProcAddress_v2(const char *s, void **p, int v, unsigned long long f, int *st) {
+    (void)s; (void)p; (void)v; (void)f; (void)st; return 100;
+}
 /* Graphs */
 int cuGraphInstantiateWithFlags(void **a, void *b, unsigned long long c) {
     (void)a; (void)b; (void)c; return 100;
