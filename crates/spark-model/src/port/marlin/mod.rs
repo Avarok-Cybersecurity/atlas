@@ -14,8 +14,8 @@
 //! ```text
 //! BF16 [n, k] --quantize::rtn_int4_sym--+
 //! GPTQ tensors --checkpoint::gptq------+--> reference::LogicalInt4 --repack::to_host--> MarlinHost
-//! AWQ tensors  --checkpoint::awq-------+        (q [k][n], scales,          (Marlin tiles,
-//!                                               zeros)                       permuted scales)
+//! CT packed    --compressed::ct--------+        (q [k][n], scales,          (Marlin tiles,
+//! AWQ tensors  --checkpoint::awq-------+        zeros)                       permuted scales)
 //! MarlinHost --weight::MarlinWeight::upload--> device --w4linear::MarlinLinear--> W4Box
 //! ```
 //!
@@ -46,6 +46,7 @@ use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use crate::port::w4::{W4Box, W4Opts};
 
 pub mod checkpoint;
+pub mod compressed;
 pub mod config;
 pub mod kernels;
 pub mod quantize;
@@ -171,6 +172,17 @@ pub fn from_gptq(gpu: &dyn GpuBackend, w: &GptqWeights<'_>, stream: u64) -> Resu
 /// An AWQ int4 checkpoint tensor set (`qweight`, `qzeros`, `scales`, all AWQ-interleaved).
 pub fn from_awq(gpu: &dyn GpuBackend, w: &AwqWeights<'_>, stream: u64) -> Result<W4Box> {
     let logical = checkpoint::awq_to_logical(w)?;
+    from_logical(gpu, &logical, stream)
+}
+
+/// A compressed-tensors `pack-quantized` int4 tensor set (`weight_packed`, `weight_scale`, optional
+/// contiguous `weight_g_idx`); see [`compressed`].
+pub fn from_compressed(
+    gpu: &dyn GpuBackend,
+    w: &compressed::CtPackedWeights<'_>,
+    stream: u64,
+) -> Result<W4Box> {
+    let logical = compressed::ct_to_logical(w)?;
     from_logical(gpu, &logical, stream)
 }
 

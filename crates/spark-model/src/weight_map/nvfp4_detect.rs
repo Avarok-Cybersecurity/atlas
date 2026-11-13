@@ -32,7 +32,15 @@ pub fn config_declared_variant(config: &avarok_core::config::ModelConfig) -> Opt
             // Hcompany/Holo-3.1-*-FP8); the rest ("nvfp4-pack-quantized",
             // "pack-quantized") are NVFP4.
             let fmt = qc.format.to_ascii_lowercase();
-            if fmt.contains("fp8") || fmt.contains("float-quant") {
+            // Exactly "pack-quantized" is compressed-tensors' INT packer
+            // (W4A16 GPTQ, e.g. RedHatAI/*-quantized.w4a16); the FP4 packers
+            // are "nvfp4-pack-quantized" / "mxfp4-pack-quantized". Its
+            // unquantized tensors are BF16 and its int4 linears are served by
+            // the Marlin route (`qwen35_dense/ct_install.rs`), so the rest of
+            // the load is the BF16 dispatch.
+            if crate::port::marlin::compressed::is_int_pack_format(&fmt) {
+                Some(Nvfp4Variant::Bf16Raw)
+            } else if fmt.contains("fp8") || fmt.contains("float-quant") {
                 Some(Nvfp4Variant::Fp8Dequanted)
             } else {
                 Some(Nvfp4Variant::CompressedTensors)

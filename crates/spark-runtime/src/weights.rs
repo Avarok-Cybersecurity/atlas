@@ -39,6 +39,11 @@ pub enum WeightDtype {
     FP8E8M0,
     UInt8,
     Int64,
+    /// Raw little-endian I32 (compressed-tensors `pack-quantized` W4A16:
+    /// `weight_packed`, eight int4 codes per word, and `weight_g_idx`). The
+    /// dense Qwen3.5 loader defers these and reads them on the host for the
+    /// Marlin repack (`spark-model` `port::marlin::compressed`).
+    Int32,
     /// Keep-packed PrismML ternary Q2_0 (ggml id 42): raw on-disk blocks stay
     /// 2-bit in VRAM (fp16 scale + 2-bit codes per group of `group` elements),
     /// dequantized in-kernel by the native `q2_0_gemv` decode path. Only
@@ -81,6 +86,7 @@ impl WeightDtype {
             Self::FP8E8M0 => 1,
             Self::UInt8 => 1,
             Self::Int64 => 8,
+            Self::Int32 => 4,
             Self::PackedQ2_0 { .. } => 0,
             Self::Q2K => 0,
             Self::Q3K => 0,
@@ -101,6 +107,7 @@ impl WeightDtype {
             safetensors::Dtype::F8_E4M3 => Ok(Self::FP8E4M3),
             safetensors::Dtype::F8_E8M0 => Ok(Self::FP8E8M0),
             safetensors::Dtype::I64 => Ok(Self::Int64),
+            safetensors::Dtype::I32 => Ok(Self::Int32),
             other => bail!("Unsupported safetensors dtype: {other:?}"),
         }
     }
@@ -121,6 +128,7 @@ impl WeightDtype {
             "F8_E4M3" => Self::FP8E4M3,
             "F8_E8M0" => Self::FP8E8M0,
             "I64" => Self::Int64,
+            "I32" => Self::Int32,
             other => bail!("Unsupported safetensors dtype '{other}'"),
         })
     }

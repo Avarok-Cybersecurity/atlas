@@ -49,6 +49,12 @@ impl QuantFormat for CompressedTensorsFormat {
     }
 
     fn base_variant(&self) -> Nvfp4Variant {
+        // The INT packer ("pack-quantized", W4A16): BF16 dispatch for every
+        // unquantized tensor; the int4 linears go to Marlin
+        // (`weight_map::config_declared_variant` says the same).
+        if crate::port::marlin::compressed::is_int_pack_format(&self.format) {
+            return Nvfp4Variant::Bf16Raw;
+        }
         Nvfp4Variant::CompressedTensors
     }
 

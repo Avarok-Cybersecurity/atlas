@@ -31,8 +31,9 @@ use spark_runtime::weights::WeightStore;
 use super::affine4_selfcheck::SelfChecks;
 use super::fp8_residency::DerivedResidency;
 use super::{affine4_from_bf16, attn_affine4_from_bf16, gdn_affine4_from_bf16};
-use super::{nvfp4_from_bf16, packed_install};
+use super::{ct_install, nvfp4_from_bf16, packed_install};
 use crate::layers::{DenseFfnLayer, Qwen3AttentionLayer, Qwen3SsmLayer};
+use crate::port::marlin::compressed::CtW4Scheme;
 use crate::port::w4::{W4Box, W4Format};
 use crate::port::w4_stats::{self, RoleRecord, W4Role};
 use crate::weight_map::{DenseWeight, Nvfp4Variant};
@@ -108,6 +109,9 @@ pub struct W4Load<'a> {
     plans: LoadPlans,
     checks: SelfChecks,
     tally: [Tally; 4],
+    /// The compressed-tensors `pack-quantized` W4A16 scheme (`ct_install.rs`): `None` for every
+    /// other checkpoint, `Some(Err)` when the checkpoint is one but its scheme is not served.
+    ct: Option<std::result::Result<CtW4Scheme, String>>,
 }
 
 impl<'a> W4Load<'a> {
@@ -148,6 +152,25 @@ impl<'a> W4Load<'a> {
             plans,
             checks: SelfChecks::default(),
             tally: [Tally::default(); 4],
+            ct: ct_install::resolve_scheme(store, config),
+        }
+    }
+
+    /// True when this is a compressed-tensors `pack-quantized` checkpoint.
+    fn ct_on(&self) -> bool {
+        self.ct.is_some()
+    }
+
+    /// The served compressed-tensors scheme, or the load error that says why it is not served.
+    fn ct_scheme(&self) -> Result<CtW4Scheme> {
+        match &self.ct {
+            Some(Ok(s)) => Ok(s.clone()),
+            Some(Err(e)) => Err(anyhow::anyhow!(
+                "compressed-tensors pack-quantized checkpoint not served: {e}"
+            )),
+            None => Err(anyhow::anyhow!(
+                "not a compressed-tensors pack-quantized checkpoint"
+            )),
         }
     }
 
@@ -230,11 +253,18 @@ impl<'a> W4Load<'a> {
     /// The store holds a keep-packed 4-bit tensor for this layer's FFN.
     pub fn ffn_packed(&self, lp: &str) -> bool {
         packed_install::ffn_any_packed(self.store, lp)
+            || (self.ct_on() && ct_install::ffn_any(self.store, lp))
     }
 
-    /// This layer's keep-packed FFN as `W4Linear`s borrowing the store's buffers, checked and
-    /// tallied.
+    /// This layer's keep-packed FFN as `W4Linear`s borrowing the store's buffers (GGUF) or built
+    /// from the checkpoint's int4 codes (compressed-tensors, Marlin), checked and tallied.
     pub fn packed_ffn_boxes(&mut self, lp: &str, layer: usize) -> Result<[W4Box; 3]> {
+        if self.ct_on() && ct_install::ffn_any(self.store, lp) {
+            let scheme = self.ct_scheme()?;
+            let boxes =
+                ct_install::ffn_boxes(self.gpu, self.store, self.config, lp, &scheme, self.stream)?;
+            return self.accept(W4Role::Ffn, layer, boxes, None);
+        }
         let gpu = self.gpu;
         let boxes = packed_install::ffn_boxes(
             self.store,
@@ -265,6 +295,7 @@ impl<'a> W4Load<'a> {
     /// `<layer>.self_attn`).
     pub fn attn_packed(&self, p: &str) -> bool {
         packed_install::attn_any_packed(self.store, p)
+            || (self.ct_on() && ct_install::attn_any(self.store, p))
     }
 
     /// Hook of the loader's attention arm when [`Self::attn_packed`] is true: the layer was built
@@ -280,14 +311,27 @@ impl<'a> W4Load<'a> {
     ) -> Result<()> {
         let gpu = self.gpu;
         let shapes = super::attn_fp8_from_bf16::AttnShapes::of(self.config).projections();
-        let boxes = packed_install::attn_boxes(
-            self.store,
-            p,
-            shapes,
-            self.config.tp_world_size,
-            self.config.adapter_max_rank > 0,
-            |t| crate::port::gguf_q4::from_weight_tensor(gpu, t),
-        )?;
+        let boxes = if self.ct_on() && ct_install::attn_any(self.store, p) {
+            let scheme = self.ct_scheme()?;
+            ct_install::attn_boxes(
+                gpu,
+                self.store,
+                self.config,
+                p,
+                shapes,
+                &scheme,
+                self.stream,
+            )?
+        } else {
+            packed_install::attn_boxes(
+                self.store,
+                p,
+                shapes,
+                self.config.tp_world_size,
+                self.config.adapter_max_rank > 0,
+                |t| crate::port::gguf_q4::from_weight_tensor(gpu, t),
+            )?
+        };
         let [q, k, v, o] = self.accept(W4Role::Attn, idx, boxes, None)?;
         layer.try_set_w4_proj(q, k, v, o).with_context(|| {
             format!("attention layer {idx} ({p}): keep-packed W4 q/k/v/o install")
@@ -301,6 +345,9 @@ impl<'a> W4Load<'a> {
     pub fn refuse_packed_gdn(&self, la: &str) -> Result<()> {
         if packed_install::gdn_any_packed(self.store, la) {
             return Err(packed_install::gdn_packed_refusal(la));
+        }
+        if self.ct_on() && ct_install::gdn_any(self.store, la) {
+            return Err(ct_install::gdn_refusal(la));
         }
         Ok(())
     }

@@ -45,7 +45,14 @@ pub(crate) fn canonicalize_model_quant(config: &avarok_core::config::ModelConfig
     {
         return "fp8".into();
     }
-    // compressed-tensors with no FP8/NVFP4 marker is usually GPTQ/AWQ —
+    // compressed-tensors' INT packer (exactly "pack-quantized", GPTQ W4A16):
+    // the dense Qwen3.5 loader serves it through the Marlin int4 route
+    // (`spark-model` `weight_loader/qwen35_dense/ct_install.rs`), which fails
+    // the load by name on a target without the Marlin kernels.
+    if method == "compressed-tensors" && fmt.trim() == "pack-quantized" {
+        return "w4a16".into();
+    }
+    // Other compressed-tensors with no FP8/NVFP4 marker is usually GPTQ/AWQ —
     // we don't currently dispatch those on Atlas; report verbatim so
     // the bail message is precise.
     if !algo.is_empty() {
@@ -99,6 +106,11 @@ pub(crate) fn quant_pair_compatible(kernel_quant: &str, model_quant: &str) -> bo
         ("nvfp4", "bf16") |
         // BF16 reference bundle handles any quant by dequant on load.
         ("bf16", "fp8") |
-        ("bf16", "nvfp4")
+        ("bf16", "nvfp4") |
+        // compressed-tensors W4A16: BF16 dispatch for every unquantized
+        // tensor plus the Marlin int4 linears (Ada common module); a bundle
+        // without Marlin fails at the first install, naming the module.
+        ("nvfp4", "w4a16") |
+        ("bf16", "w4a16")
     )
 }

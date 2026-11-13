@@ -138,6 +138,13 @@ fn compat_nvfp4_handles_fp8_and_bf16() {
 }
 
 #[test]
+fn compat_w4a16_on_nvfp4_and_bf16_bundles() {
+    assert!(quant_pair_compatible("nvfp4", "w4a16"));
+    assert!(quant_pair_compatible("bf16", "w4a16"));
+    assert!(!quant_pair_compatible("fp8", "w4a16"));
+}
+
+#[test]
 fn incompat_unknown_rejected() {
     assert!(!quant_pair_compatible("nvfp4", "gptq-4bit"));
     assert!(!quant_pair_compatible("fp8", "nvfp4"));

@@ -279,6 +279,8 @@ mod rowwise_fp8;
 mod affine4_from_bf16;
 mod affine4_selfcheck;
 mod attn_affine4_from_bf16;
+// compressed-tensors `pack-quantized` W4A16 checkpoints, served by Marlin (active by format).
+mod ct_install;
 mod gdn_affine4_from_bf16;
 mod nvfp4_from_bf16;
 mod packed_install;
@@ -2182,6 +2184,13 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
             );
         }
         Ok(Some(mtp))
+    }
+
+    /// A compressed-tensors `pack-quantized` W4A16 checkpoint keeps its `weight_packed` /
+    /// `weight_scale` tensors on disk: the Marlin install reads them on the host
+    /// (`qwen35_dense/ct_install.rs`). `None` (upload everything) for every other checkpoint.
+    fn defer_predicate(&self, config: &ModelConfig) -> Option<spark_runtime::weights::DeferHook> {
+        ct_install::defer_hook(config)
     }
 
     fn load_vision_encoder(
