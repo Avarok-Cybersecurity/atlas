@@ -22,6 +22,7 @@
 /// field, with `String` where the runtime type has `&'static str`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PortFields {
+    pub marlin_w4a16: bool,
     pub kv_batched_swap: bool,
     pub ssm_store_lru: bool,
     pub radix_lru_index: bool,
@@ -38,6 +39,7 @@ pub struct PortFields {
 impl Default for PortFields {
     fn default() -> Self {
         Self {
+            marlin_w4a16: false,
             kv_batched_swap: false,
             ssm_store_lru: false,
             radix_lru_index: false,
@@ -53,6 +55,10 @@ impl Default for PortFields {
 #[allow(unused_variables, clippy::match_single_binding)]
 pub fn parse(out: &mut PortFields, key: &str, value: &toml::Value) -> bool {
     match key {
+        "marlin_w4a16" => {
+            out.marlin_w4a16 = boolean(key, value);
+            true
+        }
         "kv_batched_swap" => {
             out.kv_batched_swap = boolean(key, value);
             true
@@ -84,12 +90,14 @@ pub fn parse(out: &mut PortFields, key: &str, value: &toml::Value) -> bool {
 pub fn literal(d: &PortFields) -> String {
     format!(
         "crate::target_defaults_port::PortDefaults {{\n\
+         \x20   marlin_w4a16: {marlin_w4a16},\n\
          \x20   kv_batched_swap: {kv_batched_swap},\n\
          \x20   ssm_store_lru: {ssm_store_lru},\n\
          \x20   radix_lru_index: {radix_lru_index},\n\
          \x20   prefix_cow_tail: {prefix_cow_tail},\n\
          // @port:literal-fmt\n\
          \x20   }}",
+        marlin_w4a16 = d.marlin_w4a16,
         kv_batched_swap = d.kv_batched_swap,
         ssm_store_lru = d.ssm_store_lru,
         radix_lru_index = d.radix_lru_index,

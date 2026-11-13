@@ -26,6 +26,17 @@
 /// is the `port` field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PortDefaults {
+    /// When a 4-bit BF16 load route is on (dense_affine4_from_bf16,
+    /// gdn_affine4_from_bf16, attn_affine4_from_bf16), every projection the
+    /// Marlin kernels serve (N a multiple of 64, K of 128, more than one group)
+    /// is quantized once at load by round-to-nearest int4 at group 128 (GPTQ's
+    /// symmetric uint4b8 grid, --w4-clip-search shrink candidates per group)
+    /// instead of the MLX affine codes, and served through W4Linear on vLLM's
+    /// Marlin W4A16 GEMM (kernels/ada/common/marlin_ada.cu, host
+    /// crates/spark-model/src/port/marlin/): decode and verify rows 1..64 in one
+    /// launch on one thread configuration fixed per weight (row invariant),
+    /// prompts on vLLM's M split.
+    pub marlin_w4a16: bool,
     /// Batched sequence swap
     /// (`spark-model/src/model/trait_impl/sequence/state_io.rs`,
     /// `spark-runtime/src/kv_cache/block_io.rs`): a swapped-out sequence's image
@@ -64,6 +75,7 @@ pub struct PortDefaults {
 /// by the row templates (one baseline per row, written into both files in the
 /// same apply pass).
 pub const PORT_BASELINE: PortDefaults = PortDefaults {
+    marlin_w4a16: false,
     kv_batched_swap: false,
     ssm_store_lru: false,
     radix_lru_index: false,
