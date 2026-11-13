@@ -387,4 +387,8 @@ required-features = ["cuda", "gpu-examples"]
 
 # The port sprint's (`port/consumer-opt`) GPU oracles and microtests are
 # inserted immediately before this marker by the coordinator's apply pass.
+[[example]]
+name = "gpu_ext_selftest"
+required-features = ["cuda", "gpu-examples"]
+
 # @port:examples
