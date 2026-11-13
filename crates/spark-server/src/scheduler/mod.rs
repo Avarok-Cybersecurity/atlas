@@ -38,6 +38,9 @@ mod lifecycle_tests;
 mod logit_dump;
 mod logit_processors;
 mod logprobs;
+// Row `min_tokens_gpu_argmax` (off by default): a floored greedy step stays on
+// the device argmax.
+mod min_floor_fast;
 mod mod_helpers;
 pub use mod_helpers::capture_runtime_handle;
 pub mod dumps;
