@@ -578,4 +578,26 @@ TierKV pager design (window desk; design only, no code copied)
   Apache-2.0) lmcache/v1/distributed/l1_manager/base.py for the host copy
   rules (publish after the copy completed; keep memory a copy still touches);
   design only.
+
+== LFM3 support (HuggingFace transformers, vLLM) ==
+
+Sources: HuggingFace transformers, models/lfm3 (modeling_lfm3.py,
+         configuration_lfm3.py, as shipped in LiquidAI/LFM3-1.7B, transformers
+         5.12.1), Copyright 2026 The HuggingFace Team, Apache License 2.0;
+         vLLM, vllm/model_executor/models/lfm3.py (commit 8a36f08), Copyright
+         contributors to the vLLM project, Apache License 2.0
+         (LICENSES/Apache-2.0.txt).
+
+Atlas translates the LFM3 architecture (tensor names, block structure, the
+zero-tail partial RoPE, config fields) from Python to Rust and CUDA. No source
+is copied. The files that carry it are listed, with the upstream lines and the
+changes made, in LFM3-ATTRIBUTION.md:
+  crates/avarok-core/src/config/parsers/lfm3.rs
+  crates/spark-model/src/weight_loader/lfm3/
+  (the conv layer and kernels, crates/spark-model/src/port/lfm3_conv/ and
+   kernels/ada/common/lfm3_shortconv_ada.cu, are credited by lane L38)
+
+The LFM3 model weights are NOT part of Atlas. They are licensed by Liquid AI
+under the LFM Open License v1.0 (commercial use is not licensed at USD
+10,000,000 annual revenue or more); Atlas bundles no weights.
 # @port:notice

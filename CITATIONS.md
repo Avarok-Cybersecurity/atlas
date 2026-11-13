@@ -496,4 +496,19 @@ copied.
 - **TierKV pager** of `arczhi/llama-tierkv` (MIT, Copyright (c) 2023-2026 The ggml authors), `kv-paging-design.md`, as described in the port plan's report 77 section 2.5. Design only, nothing fetched or copied: a VRAM desk of head sinks (2,048 positions), a recent window and recalled pages over a host-RAM store; staging at most once per 1,024 positions and only after evictions; MTP draft contexts excluded from paging. Atlas reads the desk through a compacted paged block table instead of staging pages into ordinary KV cells. Atlas: `crates/spark-model/src/port/kv_window/`, `crates/spark-runtime/src/kv_host_tier/pages.rs`, `kernels/ada/common/kv_page_fetch_ada.cu`. Notice in `NOTICE`.
 - **LMCache** (Apache-2.0), commit 3aefae1, `lmcache/v1/distributed/l1_manager/base.py`: host copies are published only after their copy completed and their memory is kept while a copy touches it. Design only. Atlas: `crates/spark-runtime/src/kv_host_tier/pages.rs`, `crates/spark-model/src/port/kv_window/fetch.rs`.
 - **Quest** (Tang et al., "Quest: Query-Aware Sparsity for Efficient Long-Context LLM Inference", ICML 2024): the page upper-bound scorer the desk's recall seam (`selector::PageScorer`) is built for; the scorer itself is lane L30's.
+
+### LFM3 support (L37, L38)
+
+- Liquid AI, LFM3-1.7B (https://huggingface.co/LiquidAI/LFM3-1.7B, released 2026-10-27): 24
+  layers of gated short convolutions (width 7), sliding-window and global GQA attention with a
+  per-head sigmoid output gate, sandwich RMSNorms and a dense SwiGLU FFN. The weights are under
+  the LFM Open License v1.0 (commercial use not licensed at USD 10M annual revenue or more) and
+  are not part of Atlas. Facts used: config, tensor names, sampling defaults, the XML tool-call
+  format (model card and `tokenizer_config.json`).
+- HuggingFace transformers `models/lfm3` (Apache-2.0, Copyright 2026 The HuggingFace Team) and
+  vLLM `vllm/model_executor/models/lfm3.py` (Apache-2.0, Copyright contributors to the vLLM
+  project, commit 8a36f08): the reference implementations the loader and the config parser are
+  translated from. Files, upstream lines and changes: `LFM3-ATTRIBUTION.md`.
+- llama.cpp `src/models/lfm3.cpp` (MIT, Copyright (c) 2023-2026 The ggml authors): cross-check
+  of the tensor map and of the zero-frequency partial RoPE. No source copied.
 <!-- @port:citations -->
