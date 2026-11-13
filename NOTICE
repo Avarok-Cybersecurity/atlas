@@ -47,4 +47,27 @@ Changes: design only, no code copied; written in Rust for Atlas's paged KV
   transform), a two-buffer staging that overlaps copies with file I/O, best-fit
   page runs that never cross a pinning chunk, and one stamp index serving FIFO
   and LRU orders. See LMCACHE-KV-TRANSFER-ATTRIBUTION.md.
+
+LMCache (radix prefix-cache eviction without a full scan; design only)
+  Source: https://github.com/LMCache/LMCache, commit 3aefae1
+  Files: lmcache/v1/distributed/eviction_policy/isolated_lru.py,
+         lmcache/v1/distributed/eviction_policy/lru.py
+  Licensed under the Apache License, Version 2.0 (LICENSES/Apache-2.0.txt).
+  LMCache ships no NOTICE file. No code copied.
+  Atlas files: crates/spark-runtime/src/radix_tree/inner/lru_index.rs
+  Changes: an ordered index of evictable radix leaves that picks the same
+  victim as Atlas's full scan. See LMCACHE-RADIX-EVICT-ATTRIBUTION.md.
+
+vLLM (copy-on-write partial-tail prefix hits)
+  Source: https://github.com/vllm-project/vllm, commit 8a36f08
+  Files: vllm/v1/core/single_type_kv_cache_manager.py,
+         vllm/v1/core/kv_cache_manager.py,
+         vllm/v1/worker/gpu/model_runner.py
+  Copyright contributors to the vLLM project. Licensed under the Apache
+  License, Version 2.0 (LICENSES/Apache-2.0.txt).
+  Atlas files: crates/spark-runtime/src/radix_tree/inner/cow_walk.rs,
+         crates/spark-model/src/model/trait_impl/prefill_b/prefix_cow.rs
+  Changes: the partial-hit and copy-before-forward scheme translated to Rust
+  over Atlas's radix tree and paged KV cache; one D2D per attention layer and
+  side on the prefill stream. See VLLM-COW-ATTRIBUTION.md.
 # @port:notice
