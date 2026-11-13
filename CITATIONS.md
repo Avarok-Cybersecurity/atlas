@@ -490,4 +490,10 @@ copied.
   `prefill_sparse_attn`, APPROXIMATE, off on every target). Atlas's choices: 128-token blocks on absolute positions,
   the strided logit as the mean of its S products, forced sink, diagonal and previous blocks, and a cut found by a
   deterministic binary search on the FP32 mass.
+
+### Host-resident window desk and windowed MTP KV (L36)
+
+- **TierKV pager** of `arczhi/llama-tierkv` (MIT, Copyright (c) 2023-2026 The ggml authors), `kv-paging-design.md`, as described in the port plan's report 77 section 2.5. Design only, nothing fetched or copied: a VRAM desk of head sinks (2,048 positions), a recent window and recalled pages over a host-RAM store; staging at most once per 1,024 positions and only after evictions; MTP draft contexts excluded from paging. Atlas reads the desk through a compacted paged block table instead of staging pages into ordinary KV cells. Atlas: `crates/spark-model/src/port/kv_window/`, `crates/spark-runtime/src/kv_host_tier/pages.rs`, `kernels/ada/common/kv_page_fetch_ada.cu`. Notice in `NOTICE`.
+- **LMCache** (Apache-2.0), commit 3aefae1, `lmcache/v1/distributed/l1_manager/base.py`: host copies are published only after their copy completed and their memory is kept while a copy touches it. Design only. Atlas: `crates/spark-runtime/src/kv_host_tier/pages.rs`, `crates/spark-model/src/port/kv_window/fetch.rs`.
+- **Quest** (Tang et al., "Quest: Query-Aware Sparsity for Efficient Long-Context LLM Inference", ICML 2024): the page upper-bound scorer the desk's recall seam (`selector::PageScorer`) is built for; the scorer itself is lane L30's.
 <!-- @port:citations -->

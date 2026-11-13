@@ -560,4 +560,22 @@ RetrievalAttention / RetroInfer (exact-zone gather and estimation attention)
   read in place; fixed-capacity buffers with device counts (CUDA-graph
   capturable); fixed reduction order. No CUTLASS code is used. See
   RETROINFER-ATTRIBUTION.md.
+
+TierKV pager design (window desk; design only, no code copied)
+  Source: arczhi/llama-tierkv, kv-paging-design.md (a VRAM desk of head sinks,
+          a recent window and recalled pages over a host-RAM store; head
+          protection of 2,048 positions; staging at most once per 1,024
+          positions and only after evictions; MTP draft contexts kept out of
+          paging), as described in the port plan's report 77 section 2.5. The
+          files were not fetched or read by Atlas contributors.
+  Copyright (c) 2023-2026 The ggml authors. MIT License
+          (LICENSES/llama.cpp-MIT.txt).
+  Atlas files: crates/spark-model/src/port/kv_window/{mod.rs, policy.rs,
+          desk.rs, fetch.rs, selector.rs, mtp_window.rs},
+          crates/spark-runtime/src/kv_host_tier/pages.rs,
+          kernels/ada/common/kv_page_fetch_ada.cu
+  Also after LMCache (https://github.com/LMCache/LMCache, commit 3aefae1,
+  Apache-2.0) lmcache/v1/distributed/l1_manager/base.py for the host copy
+  rules (publish after the copy completed; keep memory a copy still touches);
+  design only.
 # @port:notice
