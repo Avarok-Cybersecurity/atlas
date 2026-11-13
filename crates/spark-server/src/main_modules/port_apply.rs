@@ -22,6 +22,7 @@ use crate::cli::serve_args_port::PortArgs;
 #[allow(unused_variables)]
 pub(crate) fn apply(args: &PortArgs) -> anyhow::Result<()> {
     spark_model::layers::ops::port_rows::mtp_vocab_rank::set_cli(args.mtp_vocab_rank.as_deref())?;
+    crate::scheduler::copy_draft::apply_args(args);
     spark_runtime::weights::keep_packed_iq4::set_enabled(
         spark_model::layers::ops::port_rows::gguf_native_iq4::row(),
     );
@@ -72,6 +73,7 @@ pub(crate) fn validate(args: &PortArgs) -> anyhow::Result<()> {
             .ok()
             .as_deref(),
     )?;
+    crate::scheduler::copy_draft::validate_args(args)?;
     spark_model::port::affine_opts::validate(spark_model::port::affine_opts::AffineCli {
         bits: args.w4_bits,
         group: args.w4_group,

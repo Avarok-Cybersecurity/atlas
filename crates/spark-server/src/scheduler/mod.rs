@@ -68,6 +68,9 @@ mod admission_port_tests;
 // Scheduler-side port series (`/metrics`): steady-state gauges and the render
 // entry for the accepted-prefix histogram, device phase timer and D-Cut v2.
 pub mod port_gauges;
+// The merged copy drafter and the speculative round plan seam (L13).
+pub(crate) mod copy_draft;
+pub(crate) mod spec_round_plan;
 mod preempt;
 #[cfg(test)]
 mod preempt_tests;

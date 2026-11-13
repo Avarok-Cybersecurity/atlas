@@ -21,6 +21,27 @@ pub struct PortArgs {
     /// `AVAROK_MTP_VOCAB_RANK`, then the target's declaration.
     #[arg(long = "mtp-vocab-rank", value_name = "RANK", value_parser = ["id", "freq"])]
     pub mtp_vocab_rank: Option<String>,
+    /// Copy drafter for speculative rounds (lane L13): `off`, `chain` (fill
+    /// the MTP verify chain from an earlier copy of the context), `rounds`
+    /// (verify a confident copy of up to `--copy-draft-max-len` tokens alone,
+    /// single sequence) or `auto` (both). Absent: the `copy_draft` row
+    /// (`AVAROK_COPY_DRAFT`, else the target's declaration, `off`). Outputs
+    /// stay the target's own: every copied token is verified.
+    #[arg(long = "copy-draft", value_name = "MODE")]
+    pub copy_draft: Option<String>,
+    /// Copy drafter: tokens a copy source must agree on before it may fill the
+    /// MTP chain (2 to 64; default 8, or `AVAROK_COPY_DRAFT_MIN_MATCH`).
+    #[arg(long = "copy-draft-min-match", value_name = "N")]
+    pub copy_draft_min_match: Option<u32>,
+    /// Copy drafter: the longest lookup round, in tokens (1 to 15; default 15,
+    /// or `AVAROK_COPY_DRAFT_MAX_LEN`).
+    #[arg(long = "copy-draft-max-len", value_name = "N")]
+    pub copy_draft_max_len: Option<u32>,
+    /// Copy drafter: the factor by which a copy chain's expected accepted
+    /// tokens must beat the MTP chain's (default 1.3, or
+    /// `AVAROK_COPY_DRAFT_ADVANTAGE`).
+    #[arg(long = "copy-draft-advantage", value_name = "X")]
+    pub copy_draft_advantage: Option<f32>,
     /// Affine W4 routes (lane L23a): code width of the load-time BF16 -> affine
     /// quantizer, 2, 3, 4, 5, 6 or 8 (default 4, or `AVAROK_W4_BITS`). Widths
     /// other than 4 need `--w4-group 64`. Changes nothing unless an affine

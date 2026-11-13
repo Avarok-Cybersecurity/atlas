@@ -9,6 +9,16 @@
 //! This is equivalent to vLLM's "prompt lookup decoding" and works
 //! well for tasks where the model paraphrases, quotes, or produces
 //! structured output similar to earlier content.
+//!
+//! [`NgramProposer::propose_next`] is the scheduler's entry point. With the
+//! `copy_draft` row off (every target's default) it IS [`NgramProposer::propose`],
+//! the linear scan below, byte for byte. With the row on it answers from an
+//! incremental bigram index (`scheduler::copy_draft::legacy`) that returns
+//! the same token as the scan for every history (CPU oracle in
+//! `scheduler/copy_draft/legacy_tests.rs`), without rescanning the history
+//! every step.
+
+use crate::scheduler::copy_draft::legacy::LegacyLookup;
 
 /// Prompt-lookup based draft proposer for speculative decoding.
 ///
@@ -23,6 +33,9 @@ pub struct NgramProposer {
     /// Running accept/reject stats for logging
     pub accepts: u64,
     pub rejects: u64,
+    /// The incremental index `propose_next` uses when `copy_draft != off`;
+    /// never allocated otherwise.
+    indexed: Option<LegacyLookup>,
 }
 
 impl NgramProposer {
@@ -32,7 +45,22 @@ impl NgramProposer {
             max_match: 16,
             accepts: 0,
             rejects: 0,
+            indexed: None,
         }
+    }
+
+    /// The scheduler's proposal for `all_tokens`: the same token as
+    /// [`Self::propose`], from the incremental index when the copy drafter
+    /// is on and from the scan otherwise.
+    pub fn propose_next(&mut self, all_tokens: &[u32]) -> Option<u32> {
+        if self.min_match >= 2 && crate::scheduler::copy_draft::active() {
+            let (min, max) = (self.min_match, self.max_match);
+            return self
+                .indexed
+                .get_or_insert_with(LegacyLookup::new)
+                .propose(all_tokens, min, max);
+        }
+        self.propose(all_tokens)
     }
 
     /// Record an accepted draft (for stats only).

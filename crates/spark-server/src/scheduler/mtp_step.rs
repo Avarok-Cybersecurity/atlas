@@ -87,6 +87,11 @@ pub fn step_mtp(
     );
 
     // ── Phase A: Bootstrap decode for sequences without a draft ──
+    // AVAROK_MTP_TIMING=2 (lane L06's device timer): Phase A is one interval.
+    let had_bootstrap = !bootstrap_idxs.is_empty();
+    if had_bootstrap {
+        super::mtp_device_timing::step_start(model);
+    }
     if !bootstrap_idxs.is_empty() {
         // The previous verify commit's live-state restore runs async on the
         // secondary stream; order it before the bootstrap decode reads
@@ -120,6 +125,7 @@ pub fn step_mtp(
         // + M=1+k fused in Phase B) with a single M=1+k fused sweep.
         if dflash_verify_raw_argmax
             && !sched.levers.dflash_seam_serial
+            && !super::copy_draft::no_drafts(a)
             && crate::scheduler::adaptive_spec::spec_allowed(a, sched)
         {
             let eff = if a.grammar_state.is_some() {
@@ -277,7 +283,8 @@ pub fn step_mtp(
         // skip flag this sets is consumed by that propose — one append,
         // no duplicate, seam covered.
         let was_suspended = crate::scheduler::adaptive_spec::is_suspended(a, sched);
-        let will_propose = crate::scheduler::adaptive_spec::spec_allowed(a, sched);
+        let will_propose = crate::scheduler::adaptive_spec::spec_allowed(a, sched)
+            && !super::copy_draft::no_drafts(a);
         let reprobe_resume = was_suspended && will_propose;
         if sched.levers.dflash_unified_ctx {
             // Unified ctx commit: same complement-gate as the old serial
@@ -343,6 +350,9 @@ pub fn step_mtp(
         if let Err(e) = model.start_checkpoint_async(&mut a.seq) {
             tracing::error!("bootstrap start_checkpoint_async: {e:#}");
         }
+    }
+    if had_bootstrap {
+        super::mtp_device_timing::mark_model(super::mtp_device_timing::Phase::Bootstrap, model);
     }
 
     // ── Phase B: Verify with pipelined checkpoint ──
@@ -626,12 +636,14 @@ pub fn step_mtp(
             serial_idxs.extend_from_slice(chunk);
         }
     }
+    let n_active = active.len();
     for &idx in &serial_idxs {
         let a = &mut active[idx];
         let mut drafts: Vec<u32> = std::mem::take(&mut a.pending_drafts);
-        // Confidences describe the taken drafts; clearing here is the single
-        // place the two vectors are kept in lock-step for the serial path.
-        a.pending_draft_conf.clear();
+        // Confidences describe the taken drafts; taking both here is the
+        // single place the two vectors are kept in lock-step for the serial
+        // path (the round plan below reads the confidences).
+        let draft_conf = std::mem::take(&mut a.pending_draft_conf);
         if drafts.is_empty() {
             continue;
         }
@@ -654,6 +666,22 @@ pub fn step_mtp(
                 continue;
             }
         }
+
+        // Port sprint round plan (`spec_round_plan`): copy chain, lookup round,
+        // D-Cut v2 budget. Inert with the `copy_draft` and D-Cut v2 rows off.
+        let Some(round) = super::spec_round_plan::begin_serial(
+            model,
+            a,
+            sched,
+            &mut drafts,
+            &draft_conf,
+            num_drafts,
+            n_active,
+            verify_ctx,
+            dflash_verify_raw_argmax,
+        ) else {
+            continue;
+        };
 
         // DFlash γ-block drafters return ≥4 drafts per step (γ=16 typical).
         // The K=2/3/4 graphed paths are MTP-shaped and don't generalize past
@@ -701,6 +729,7 @@ pub fn step_mtp(
                 dflash_verify_raw_argmax,
             );
         }
+        super::spec_round_plan::end_serial(a, round);
     }
     sched
         .timing

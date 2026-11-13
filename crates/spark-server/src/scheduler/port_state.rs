@@ -19,5 +19,8 @@ pub struct SeqPortState {
     /// D-Cut's stash for the step in flight (L06): written by `mtp_dcut::plan`,
     /// taken by `mtp_stats::account_step`.
     pub dcut: crate::scheduler::mtp_dcut::cost::SeqDcut,
+    /// The copy drafter's per-sequence index and estimators (L13). Never
+    /// allocated while `copy_draft` is off.
+    pub copy: crate::scheduler::copy_draft::SeqCopyState,
     // @port:fields
 }

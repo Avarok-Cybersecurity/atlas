@@ -277,8 +277,11 @@ pub(super) fn step_mtp_bootstrap_batched(
         }
         a.last_token = tok;
         crate::scheduler::adaptive_spec::tick_serial(a, sched);
-        // `spec_allowed` mutates re-probe state — evaluate exactly once.
-        if crate::scheduler::adaptive_spec::spec_allowed(a, sched) {
+        // `spec_allowed` mutates re-probe state: evaluate exactly once. A
+        // `no_drafts` request (port sprint, lane L05) never proposes.
+        if crate::scheduler::adaptive_spec::spec_allowed(a, sched)
+            && !super::copy_draft::no_drafts(a)
+        {
             propose_rows[j] = Some(j);
         }
     }

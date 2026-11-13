@@ -19,6 +19,13 @@ pub fn step_self_spec(
     verify_ctx: &crate::scheduler::logit_processors::LogitsContext,
 ) {
     let a = &mut active[0];
+    // A `no_drafts` request takes no speculative step: zero drafts reduce
+    // this to the full decode and the plain emit below.
+    let num_drafts = if super::copy_draft::no_drafts(a) {
+        0
+    } else {
+        num_drafts
+    };
 
     // 1. Full-model decode to get token_0
     if let Err(e) = model.ep_broadcast_cmd_for_seq(a.seq.slot_idx as u32, a.last_token) {
@@ -222,8 +229,12 @@ pub fn step_ngram(
         }
         a.last_token = tok;
 
-        // N-gram propose (CPU-only, zero GPU cost)
-        if let Some(draft) = proposer.propose(&a.seq.tokens) {
+        // N-gram propose (CPU-only, zero GPU cost). `propose_next` is the
+        // scan itself unless the copy drafter is on (then an index that
+        // returns the same token); a `no_drafts` request never proposes.
+        if !super::copy_draft::no_drafts(a)
+            && let Some(draft) = proposer.propose_next(&a.seq.tokens)
+        {
             a.pending_drafts = vec![draft];
 
             // Checkpoint SSM for potential rollback during verify
@@ -327,7 +338,9 @@ pub fn step_ngram_verify(
         }
 
         // Propose next draft
-        if let Some(draft) = proposer.propose(&a.seq.tokens) {
+        if !super::copy_draft::no_drafts(a)
+            && let Some(draft) = proposer.propose_next(&a.seq.tokens)
+        {
             a.pending_drafts = vec![draft];
         }
 
@@ -360,7 +373,9 @@ pub fn step_ngram_verify(
         a.last_token = v0;
 
         // Propose next draft
-        if let Some(draft) = proposer.propose(&a.seq.tokens) {
+        if !super::copy_draft::no_drafts(a)
+            && let Some(draft) = proposer.propose_next(&a.seq.tokens)
+        {
             a.pending_drafts = vec![draft];
         }
 
