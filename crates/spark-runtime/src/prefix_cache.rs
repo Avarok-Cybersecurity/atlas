@@ -110,7 +110,12 @@ pub struct PrefixMatch {
     /// before treating them as live (the cache itself does not
     /// retain disk-side refs — see `RadixTree::lookup` for the bump).
     pub matched_disk_block_ids: Vec<u32>,
-    /// Number of tokens matched (always block-aligned).
+    /// Number of tokens matched. Block-aligned (`matched_blocks.len() *
+    /// block_size`) except in two cases: the legacy sub-block arms
+    /// (`AVAROK_PREFIX_SUBBLOCK=1`, where the last entry of `matched_blocks` is
+    /// a shared partial block), and a copy-on-write tail from
+    /// [`PrefixCache::lookup_cow`], where `matched_tokens ==
+    /// matched_blocks.len() * block_size + cow_tail.1`.
     pub matched_tokens: usize,
     /// SSM state snapshot ID at the deepest matched node (Marconi caching).
     /// When `Some`, the caller can restore SSM h_state + conv_state from
@@ -135,6 +140,15 @@ pub struct PrefixMatch {
     /// prefix). The restore site session-gates only tails; exact and
     /// is_tail_sibling snapshots are content-addressed (safe cross-session).
     pub ssm_snapshot_is_tail: bool,
+    /// Copy-on-write partial tail (row `prefix_cow_tail`, issue #1193):
+    /// `(source block, matched rows)`. The match continues `rows` tokens into
+    /// `source`, which is NOT in `matched_blocks` and must never be pushed
+    /// onto the requester's block table: the caller allocates a private
+    /// block, copies `source` into it (every attention layer, K and V) before
+    /// the block table is used, and appends the copy. The tree took no
+    /// reference on `source` for the requester. Only `lookup_cow` returns
+    /// `Some`; `None` everywhere else.
+    pub cow_tail: Option<(u32, usize)>,
 }
 
 impl PrefixMatch {
@@ -149,6 +163,7 @@ impl PrefixMatch {
             ssm_snapshot_tier_key: None,
             ssm_snapshot_tier_tokens: 0,
             ssm_snapshot_is_tail: false,
+            cow_tail: None,
         }
     }
 
@@ -193,12 +208,45 @@ pub trait PrefixCache: Send + Sync {
         adapter_id: u64,
     ) -> PrefixMatch;
 
+    /// [`Self::lookup`] for a caller that applies copy-on-write tails (the
+    /// chunked prefill, `prefill_b/prefix_cow.rs`). When the implementation
+    /// runs in copy-on-write mode (row `prefix_cow_tail`) and the prompt's
+    /// tail after its last full block matches the leading rows of a cached
+    /// block, the result carries `cow_tail` and a `matched_tokens` that
+    /// includes those rows; the SSM snapshot lookup uses that extended count.
+    /// References are taken exactly as `lookup` takes them (full blocks only),
+    /// so `release` / `release_matched` balance it unchanged. The default, and
+    /// every implementation not in copy-on-write mode, is `lookup`.
+    fn lookup_cow(
+        &self,
+        tokens: &[u32],
+        block_size: usize,
+        session_hash: u64,
+        adapter_id: u64,
+    ) -> PrefixMatch {
+        self.lookup(tokens, block_size, session_hash, adapter_id)
+    }
+
     /// Read-only longest-prefix probe: number of tokens (block-aligned)
     /// `lookup` would match, WITHOUT taking refs, touching LRU state, or
     /// counting a hit/miss. Used by the prefill tail-checkpoint split to
     /// detect conversation reuse before deciding to pay the extra pass.
     /// Task #24: keyed by `adapter_id` so a cross-adapter peek reports a miss.
     fn peek_matched_tokens(&self, _tokens: &[u32], _block_size: usize, _adapter_id: u64) -> usize {
+        0
+    }
+
+    /// Read-only snapshot probe for the host KV tier's restore planner (lane L26b): the token
+    /// depth of the deepest SSM snapshot (resident OR spilled) that a lookup of `tokens` would
+    /// accept at a GPU match of `max_tokens` tokens, or 0. Takes no reference and touches no
+    /// LRU state, session lease or statistic. Same session gate and adapter keying as `lookup`.
+    fn peek_snapshot_tokens(
+        &self,
+        _tokens: &[u32],
+        _max_tokens: usize,
+        _session_hash: u64,
+        _adapter_id: u64,
+    ) -> usize {
         0
     }
 
@@ -379,6 +427,14 @@ pub trait PrefixCache: Send + Sync {
         false
     }
 
+    /// Tier keys whose SSM blob lost its snapshot-index entry (a fresh save re-homed a spilled
+    /// prefix to HBM, or the tail sweep dropped a spilled entry), each handed out once; the
+    /// caller removes the blobs from its store. A key spilled again since is not returned.
+    /// Default: none (no snapshot index). Lane L25.
+    fn take_orphaned_snapshot_tier_keys(&self) -> Vec<u64> {
+        Vec::new()
+    }
+
     /// Number of SSM snapshots currently stored in the snapshot index.
     fn snapshot_count(&self) -> usize;
 
@@ -396,6 +452,17 @@ mod tests {
         assert!(m.is_empty());
         assert_eq!(m.matched_tokens, 0);
         assert!(m.matched_blocks.is_empty());
+        assert_eq!(m.cow_tail, None);
+    }
+
+    /// The trait default for `lookup_cow` is `lookup`: a cache that knows
+    /// nothing of copy-on-write tails never returns one.
+    #[test]
+    fn lookup_cow_defaults_to_lookup() {
+        let cache = NoPrefixCaching;
+        let m = cache.lookup_cow(&[1, 2, 3, 4, 5], 4, 0, 0);
+        assert!(m.is_empty());
+        assert_eq!(m.cow_tail, None);
     }
 
     #[test]
