@@ -33,6 +33,14 @@ pub struct PortArgs {
     /// time only.
     #[arg(long = "w4-clip-search", value_name = "N")]
     pub w4_clip_search: Option<u8>,
+    /// Packed LM head (lane L24): keep a GGUF checkpoint's Q6_K output head as
+    /// the file's raw super-blocks and serve it with the Ada keep-packed GEMV
+    /// (`port::packed_head`; 1.04 GB instead of 2.54 GB read per token on
+    /// Qwen3.8-27B). Needs the keep-packed GGUF route (`AVAROK_GGUF_NATIVE_IQ4`)
+    /// and `--lm-head-dtype bf16`; refused with `--speculative`, whose drafter
+    /// reads the head as BF16. Off: the head is expanded as before.
+    #[arg(long = "lm-head-packed")]
+    pub lm_head_packed: bool,
     /// Pinned host pool (lane L25): MiB page-locked per `cuMemHostRegister`
     /// call, 1 to 4096 (default 64). Each pool chunk is pinned by its own call,
     /// on a background thread after the first chunks; a run never spans two

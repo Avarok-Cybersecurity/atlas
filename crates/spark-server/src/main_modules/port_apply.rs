@@ -29,6 +29,10 @@ pub(crate) fn apply(args: &PortArgs) -> anyhow::Result<()> {
         group: args.w4_group,
         clip_search: args.w4_clip_search,
     });
+    spark_model::port::packed_head::set_requested(args.lm_head_packed);
+    if args.lm_head_packed {
+        spark_runtime::weights::keep_packed_iq4::set_keep_head(true);
+    }
     spark_runtime::pinned_pool::set_default_chunk_mb(args.pinned_pool_chunk_mb);
     spark_runtime::radix_tree::set_lru_index_enabled(
         spark_model::layers::ops::port_rows::radix_lru_index::row(),

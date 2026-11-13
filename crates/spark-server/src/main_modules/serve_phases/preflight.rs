@@ -12,9 +12,11 @@ use avarok_core::config::ModelConfig;
 
 use crate::cli;
 
+mod consumer_pools;
 mod decode_ring;
 mod gpu_backend;
 mod headroom;
+mod measured_ceiling;
 mod per_sequence_state;
 mod post_load_audit;
 mod refusal;
@@ -57,6 +59,12 @@ pub(crate) fn preflight_reserve(
     let spec_on_pool =
         args.speculative || args.self_speculative || args.ngram_speculative || args.dflash;
     ssm_h_fp16_preconditions(args, config)?;
+    // Port lane L24 (ada only, `memory_fit_consumer`): a measured context
+    // ceiling may refuse what the formula below would admit, and the verify
+    // pools are fitted to the card before `mtp_state_slots` is read, so this
+    // reserve, `SsmStatePool::new` and the scheduler see one slot count.
+    measured_ceiling::check(args, config, post_load)?;
+    let _ = consumer_pools::publish_verify_slot_fit(args, config, free_mem, post_load);
     // SSM state pool = per-seq live state (max_batch blobs) + MTP verify
     // state (intermediates + checkpoint) for the slots spec dispatch can
     // actually reach. SSOT: `ssm_reserve::mtp_state_slots` — the SAME
@@ -190,7 +198,16 @@ pub(crate) fn preflight_reserve(
         free_mem,
         headroom::resident_weight_bytes(
             headroom::checkpoint_bytes(post_load.model_dir).unwrap_or(0) as usize,
-            post_load.fp8_ffn_freed,
+            // Port lane L24 (row `embed_host_offload`; 0 with the row off or a tied
+            // head): the device copy of the embedding table the load frees. Added
+            // here, not folded into `fp8_ffn_freed`, because `consumer_pools.rs`
+            // subtracts the same bytes on top of `fp8_ffn_freed` for its own fit.
+            post_load.fp8_ffn_freed
+                + spark_model::port::embed_host::predicted_freed_bytes(
+                    config.vocab_size,
+                    config.hidden_size,
+                    config.tie_word_embeddings,
+                ),
         ),
     );
     // Marconi snapshot region. SSOT:
