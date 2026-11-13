@@ -64,6 +64,28 @@ Cinference / NInfer (MTP draft-vocabulary ranking: data, selection, remap)
     NInfer is distributed under the Apache License, Version 2.0. The original
     LICENSE is retained unchanged in this distribution.
 
+Cinference / NInfer (device-side speculative acceptance)
+  Source: https://github.com/satellitedown/cinference, commit 383e5db
+  Files: src/ops/kernel/speculative_round.cuh (speculative_accept_greedy_drafts_kernel),
+         src/ops/kernel/sampling_device.cuh (sampling_uniform, sampling_better,
+         sampling_pick_from_support)
+  Licensed under the Apache License, Version 2.0 (LICENSES/Apache-2.0.txt).
+  Atlas files: kernels/ada/common/spec_accept_sample_ada.cu,
+         crates/spark-model/src/port/spec_accept/reference.rs
+  Changes: translated for Atlas's paged verify rows and SamplingParams
+  (temperature, top-k, top-p, min-p as spark_runtime::sampler applies them,
+  no top-20 cap), with an exact radix top-k, the host pre-sample pipeline as a
+  sparse edit list, a bit-identical greedy argmax and a Rust CPU model. See
+  SPEC-ACCEPT-ATTRIBUTION.md.
+  Cinference's NOTICE, first paragraph:
+    Cinference
+    https://github.com/satellitedown/cinference
+
+    Cinference is derived from NInfer by Neroued and its contributors:
+    https://github.com/Neroued/ninfer
+    NInfer is distributed under the Apache License, Version 2.0. The original
+    LICENSE is retained unchanged in this distribution.
+
 == TensorFold (affine 4-bit route) ==
 
 Source:  https://github.com/ashhart/TensorFold, commit 3885dce

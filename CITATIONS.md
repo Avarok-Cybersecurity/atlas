@@ -280,6 +280,17 @@ copied.
 
 - **Cinference / NInfer** (Apache-2.0), commit 383e5db. Data: the token-count file `tools/freq_corpus/fixtures/ranking/ranking.train.counts.i64` (token counts by NInfer authors; source corpus not published), reduced to the top 131,072 ids. Translated: `tools/convert/proposal.py` `select_shortlist` (ranking with forced special tokens) and `add_proposal` (gather of the shortlisted head rows); `src/ops/kernel/speculative_round.cuh` `proposal_remap_token_ids_kernel` (row to token id after the draft argmax). Design only: the single-graph MTP round of `src/models/qwen3_5/program/speculative/mtp.cpp`. Atlas: `crates/spark-model/data/mtp_vocab_rank_qwen35.{u32,json}`, `crates/spark-model/data/gen_mtp_vocab_rank.py`, `crates/spark-model/src/layers/mtp_head/{vocab_rank.rs, ranked_head.rs, propose_chain.rs}`, `kernels/ada/common/draft_vocab_remap.cu`. Notice in `NOTICE`; details in `MTP-DRAFT-VOCAB-ATTRIBUTION.md`.
 
+- **Cinference speculative acceptance** (Apache-2.0, satellitedown/cinference commit 383e5db, derived from
+  Neroued/ninfer), `src/ops/kernel/speculative_round.cuh` (`speculative_accept_greedy_drafts_kernel`) and
+  `src/ops/kernel/sampling_device.cuh`: one-hot draft acceptance with residual sampling, the splitmix64 uniform keyed by
+  seed, position and purpose, and the inverse-CDF pick with an excluded token. Translated for
+  `kernels/ada/common/spec_accept_sample_ada.cu` and its CPU model `crates/spark-model/src/port/spec_accept/reference.rs`
+  (row `mtp_device_accept`). Attribution: `SPEC-ACCEPT-ATTRIBUTION.md`.
+- **Speculative sampling**: Y. Leviathan, M. Kalman, Y. Matias, "Fast Inference from Transformers via Speculative
+  Decoding", ICML 2023 (arXiv:2211.17192); C. Chen et al., "Accelerating Large Language Model Decoding with Speculative
+  Sampling" (arXiv:2302.01318). The acceptance rule (accept a draft with probability min(1, p/q), else sample the
+  normalized residual) whose one-hot-q case the device path implements.
+
 ### Affine 4-bit route: TensorFold and the MLX format (L17a, L17b, L17c)
 
 - TensorFold (https://github.com/ashhart/TensorFold, commit 3885dce), Copyright
