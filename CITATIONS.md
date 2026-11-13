@@ -236,4 +236,18 @@ Atlas files that carry it. License texts are in `LICENSES/`; notices are in
   u32, low nibble first) and the quantizer's rounding rules, as TensorFold
   implements them (`zig/src/core/affine4_host.zig`). Credited for the format;
   no MLX source is copied.
+
+### Marlin W4A16 kernels for Ada (L18a)
+
+- vLLM (https://github.com/vllm-project/vllm, commit `8a36f08`, Apache-2.0):
+  `csrc/quantization/marlin/{marlin_template.h, dequant.h, marlin_mma.h,
+  marlin_dtypes.cuh, marlin.cuh, kernel.h, generate_kernels.py}`,
+  `marlin.cu:96-147` and `csrc/core/scalar_type.hpp`, copied into
+  `kernels/ada/common/marlin_ada.cu` and the six `marlin_*_ada.cuh` headers.
+  Marlin files: Copyright (C) Marlin.2024 Elias Frantar, adapted from
+  https://github.com/IST-DASLab/marlin (Apache-2.0).
+- Elias Frantar, Roberto L. Castro, Jiale Chen, Torsten Hoefler, Dan Alistarh,
+  "MARLIN: Mixed-Precision Auto-Regressive Parallel Inference on Large Language
+  Models", arXiv:2408.11743.
+- See `VLLM-MARLIN-ATTRIBUTION.md`.
 <!-- @port:citations -->

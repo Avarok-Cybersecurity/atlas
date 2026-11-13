@@ -60,6 +60,26 @@ ranges and the changes made, in TENSORFOLD-ATTRIBUTION.md:
 The affine format itself (per-group bf16 scale and bias, value = s * q + b)
 is MLX's (Apple, MIT); see CITATIONS.md.
 
+vLLM Marlin W4A16 kernels
+  Source: https://github.com/vllm-project/vllm, commit 8a36f08
+  Files: csrc/quantization/marlin/marlin_template.h, dequant.h, marlin_mma.h,
+         marlin_dtypes.cuh, marlin.cuh, kernel.h, marlin.cu (lines 96-147),
+         generate_kernels.py (the instantiation rule), csrc/core/scalar_type.hpp
+  Copyright contributors to the vLLM project.
+  Modified by Neural Magic.
+  Copyright (C) Marlin.2024 Elias Frantar. Adapted from
+  https://github.com/IST-DASLab/marlin.
+  Licensed under the Apache License, Version 2.0 (LICENSES/Apache-2.0.txt).
+  vLLM ships no NOTICE file; the lines above are the copyright notices the
+  copied files and the repository carry.
+  Atlas files: kernels/ada/common/marlin_ada.cu, marlin_template_ada.cuh,
+         marlin_dequant_ada.cuh, marlin_mma_ada.cuh, marlin_dtypes_ada.cuh,
+         marlin_common_ada.cuh, marlin_scalar_type_ada.cuh
+  Changes: copied and pruned to BF16 activations with GPTQ and AWQ int4 at
+  group 128; the kernel template exported through extern "C" wrappers; a
+  torch-free ScalarType usable in device code without relaxed constexpr;
+  sm_89 only. See VLLM-MARLIN-ATTRIBUTION.md.
+
 == LMCache (KV block transfer, pinned host pool, LRU blob store) ==
 
 Source:  https://github.com/LMCache/LMCache, commit 3aefae1
