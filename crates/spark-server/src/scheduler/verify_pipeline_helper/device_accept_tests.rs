@@ -19,14 +19,14 @@ use spark_model::port::spec_accept::metrics::{self, Fallback};
 use spark_model::port::spec_accept::{JobResult, reference, status};
 use spark_runtime::gpu::DevicePtr;
 
-const VOCAB: usize = 160;
+pub(super) const VOCAB: usize = 160;
 const THINK_END: u32 = 150;
 const THINK_START: u32 = 151;
 const TOOL_OPEN: u32 = 152;
 const TOOL_CLOSE: u32 = 153;
 const EOS: u32 = 154;
 
-fn seq() -> ActiveSeq {
+pub(super) fn seq() -> ActiveSeq {
     let (mut a, _rx) = test_seq(vec![3, 9, 3, 40, 9, 3], 500, None, 20);
     a.finished = false;
     a.min_tokens = 0;
@@ -39,7 +39,7 @@ fn seq() -> ActiveSeq {
 
 /// Deterministic rows with many exact ties (eight values on a 0.25 grid in [-1, 0.75]) and the named
 /// hot ids, so the first-index-wins tie break is exercised on every row.
-fn rows(k: usize, seed: u64, hot: &[(usize, u32, f32)]) -> Vec<Vec<f32>> {
+pub(super) fn rows(k: usize, seed: u64, hot: &[(usize, u32, f32)]) -> Vec<Vec<f32>> {
     (0..k)
         .map(|r| {
             let mut v: Vec<f32> = (0..VOCAB)
@@ -69,7 +69,7 @@ fn distinct_row() -> Vec<Vec<f32>> {
     ]
 }
 
-fn bf16_rows(rows: &[Vec<f32>]) -> Vec<u8> {
+pub(super) fn bf16_rows(rows: &[Vec<f32>]) -> Vec<u8> {
     rows.iter()
         .flat_map(|r| {
             r.iter()
@@ -78,7 +78,7 @@ fn bf16_rows(rows: &[Vec<f32>]) -> Vec<u8> {
         .collect()
 }
 
-fn with_ctx<R>(
+pub(super) fn with_ctx<R>(
     sampling: SamplingLevers,
     mid_word: Option<std::sync::Arc<[bool]>>,
     f: impl FnOnce(&LogitsContext) -> R,

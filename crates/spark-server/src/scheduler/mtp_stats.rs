@@ -244,6 +244,26 @@ pub(super) fn account_step(
     timing: &super::mtp_timing::RunTiming,
     step: impl FnOnce(&mut [super::ActiveSeq]),
 ) -> (std::time::Duration, usize) {
+    let accept_row = super::verify_pipeline_helper::device_accept_row();
+    account_step_for(active, timing, accept_row, step)
+}
+
+/// [`account_step`] with the `mtp_device_accept` row given, so a test drives
+/// both polarities. With the row on, a step whose verify passes moved neither
+/// the device-accept rows nor any of its reasons has every pass counted as
+/// `not_consulted` (`verify_pipeline_helper/device_accept.rs`): the two
+/// series can never both stand still while verify passes run.
+pub(super) fn account_step_for(
+    active: &mut [super::ActiveSeq],
+    timing: &super::mtp_timing::RunTiming,
+    accept_row: bool,
+    step: impl FnOnce(&mut [super::ActiveSeq]),
+) -> (std::time::Duration, usize) {
+    let accept_events = if accept_row {
+        spark_model::port::spec_accept::metrics::events()
+    } else {
+        0
+    };
     let before: Vec<(usize, usize)> = active
         .iter()
         .map(|a| (a.seq.seq_len, a.pending_drafts.len()))
@@ -283,6 +303,7 @@ pub(super) fn account_step(
         }
     }
     export_step(prop, acc, com, passes, st);
+    super::verify_pipeline_helper::account_verify_passes(accept_row, passes, accept_events);
     super::port_gauges::note_spec_rows(feed.rows());
     feed.finish(wall_us);
     (wall, tot_committed)

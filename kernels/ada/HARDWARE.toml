@@ -263,9 +263,22 @@ mtp_propose_graph = false
 # distribution-exact, not bit-identical (decision D10: the RNG is keyed by
 # seed and position, not the host sampler's stream). Only Ada builds the
 # kernel; any other target has no module and keeps the host pipeline with one
-# log line. Off until the receipt: spec_accept_oracle (greedy equal, sampled
-# chi-square), qual.py top-20 KL and a sampled-pick chi-square against the
-# host, and steady C=8 sampled waves no slower.
+# log line. The device path is asked before the verify pick helper's greedy
+# shortcuts (queue-1 L12: behind them it was never reached on greedy traffic,
+# 675 verify passes with 0 rows and 0 for every reason), so with the row on a
+# covered greedy row gets the host pipeline's pick where the row off gives it
+# the shortcut's raw argmax. Those differ at an exact top tie (1.3% of greedy
+# positions in queue-1's quality dumps; the graphed argmax keeps the lower
+# index mod 1024, the pipeline the lower index) and where the shortcut skips a
+# mask, so greedy SHA with the row on equals a row-off serve run with
+# AVAROK_NO_FAST_GREEDY_CHAT=1 (the host pipeline), not the default row-off
+# serve. Every verify pass with the row on moves a counter: device rows, or
+# one reason (not_consulted for a pass that never reaches the pick helper,
+# such as DFlash raw-argmax verify). Off until the receipt: spec_accept_oracle
+# (greedy equal, sampled chi-square), greedy token SHA equal to the host
+# pipeline (both arms with AVAROK_NO_FAST_GREEDY_CHAT=1), qual.py top-20 KL
+# and a sampled-pick chi-square against the host, and steady C=8 sampled waves
+# no slower.
 mtp_device_accept = false
 # Copy drafter for MTP speculative rounds
 # (`spark-server/src/scheduler/copy_draft/`): a per-sequence index over
