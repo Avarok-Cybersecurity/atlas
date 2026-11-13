@@ -594,5 +594,22 @@ attn_page_sparse = false
 # `atlas_kv_view_*` series show selections, view tokens, recall mass and skips
 # by reason.
 kv_view_selection = false
+# RetroInfer retrieval attention (spark-model port/retro, lanes L33 and L34):
+# at or above --retro-min-context tokens, each full-attention layer's decode
+# attends exactly to the first --retro-sink tokens, the recent tail and the
+# tokens of the few highest-scoring clusters of a segmented spherical k-means
+# index over its keys (retrieval zone, --retro-retrieval-budget of the
+# clusters), estimates the next clusters through their centroids and value sums
+# (--retro-estimation-budget), and drops the rest; the index is built once per
+# sequence, grown every --retro-update-interval generated tokens and reused by
+# sequences that share a prefix. It is APPROXIMATE attention, so outputs differ
+# from dense attention; decode runs without CUDA graphs while it is on, and
+# BF16 or FP8 KV with head dim 256 is served (other layers stay dense). OFF on
+# every target and never flipped by default; the receipt that would justify any
+# default is the shadow gate on this card (--retro-shadow at 64K and 128K on
+# all 8 layers: mass recall at least 0.97 and output error at most 0.03), then
+# the L02 NIAH grid and RULER within 2 points of dense, and decode tok/s above
+# dense at 128K.
+retro_attn = false
 # @port:defaults
 

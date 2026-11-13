@@ -51,6 +51,7 @@ pub struct PortFields {
     pub prefix_cow_tail: bool,
     pub attn_page_sparse: bool,
     pub kv_view_selection: bool,
+    pub retro_attn: bool,
     // @port:struct
 }
 
@@ -92,6 +93,7 @@ impl Default for PortFields {
             prefix_cow_tail: false,
             attn_page_sparse: false,
             kv_view_selection: false,
+            retro_attn: false,
             // @port:default
         }
     }
@@ -219,6 +221,10 @@ pub fn parse(out: &mut PortFields, key: &str, value: &toml::Value) -> bool {
             out.kv_view_selection = boolean(key, value);
             true
         }
+        "retro_attn" => {
+            out.retro_attn = boolean(key, value);
+            true
+        }
         // @port:parse
         _ => false,
     }
@@ -263,6 +269,7 @@ pub fn literal(d: &PortFields) -> String {
          \x20   prefix_cow_tail: {prefix_cow_tail},\n\
          \x20   attn_page_sparse: {attn_page_sparse},\n\
          \x20   kv_view_selection: {kv_view_selection},\n\
+         \x20   retro_attn: {retro_attn},\n\
          // @port:literal-fmt\n\
          \x20   }}",
         conf_summary = d.conf_summary,
@@ -294,6 +301,7 @@ pub fn literal(d: &PortFields) -> String {
         prefix_cow_tail = d.prefix_cow_tail,
         attn_page_sparse = d.attn_page_sparse,
         kv_view_selection = d.kv_view_selection,
+        retro_attn = d.retro_attn,
         // @port:literal-args
     )
 }

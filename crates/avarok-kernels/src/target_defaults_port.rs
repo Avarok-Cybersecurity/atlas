@@ -243,6 +243,17 @@ pub struct PortDefaults {
     /// paged prefill chunks of the conversation's next turn; GDN layers and the
     /// MTP head stay dense, the first output token comes from the full prefill.
     pub kv_view_selection: bool,
+    /// RetroInfer retrieval attention (spark-model port/retro, lanes L33 and
+    /// L34): at or above --retro-min-context tokens, each full-attention layer's
+    /// decode attends exactly to the first --retro-sink tokens, the recent tail
+    /// and the tokens of the few highest-scoring clusters of a segmented
+    /// spherical k-means index over its keys (retrieval zone,
+    /// --retro-retrieval-budget of the clusters), estimates the next clusters
+    /// through their centroids and value sums (--retro-estimation-budget), and
+    /// drops the rest; the index is built once per sequence, grown every
+    /// --retro-update-interval generated tokens and reused by sequences that
+    /// share a prefix.
+    pub retro_attn: bool,
     // @port:fields
 }
 
@@ -281,5 +292,6 @@ pub const PORT_BASELINE: PortDefaults = PortDefaults {
     prefix_cow_tail: false,
     attn_page_sparse: false,
     kv_view_selection: false,
+    retro_attn: false,
     // @port:baseline
 };
