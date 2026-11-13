@@ -42,7 +42,23 @@
 //! same fixed state — eligibility is uniform across positions and the
 //! equivalence is per-call exact. Any ineligible position falls through
 //! to the unmodified slow path for the whole call.
-//! Kill-switch: `AVAROK_DISABLE_FAST_MASKED=1`.
+//! Kill-switches: `AVAROK_DISABLE_FAST_MASKED=1`, and `AVAROK_NO_FAST_GREEDY_CHAT=1`, which is the
+//! switch for every raw-argmax shortcut of the verify pick helper and so covers this one too.
+//!
+//! # Why `AVAROK_NO_FAST_GREEDY_CHAT=1` must switch this path off (lane L12, 2026-11-13)
+//!
+//! `dflash_masked_verify` is a lever that defaults ON whether or not a DFlash drafter is loaded, so
+//! this path answers every grammarless greedy MTP call too (the "verify chat fast path ACTIVE" boot
+//! line). It used to ignore `fast_greedy_chat`, so `AVAROK_NO_FAST_GREEDY_CHAT=1`, documented as
+//! "restores the slow path (the byte-invariant tie-breaking arm)", still returned the verify
+//! graph's raw argmax. That argmax is `argmax_bf16`'s tree reduction, which settles an exact top tie
+//! by reduction order, not by lowest index. The `mtp_device_accept` identity screen used that switch
+//! to ask for the host pipeline and got the raw argmax instead. The eight verify rows where its two
+//! arms differed (queue-1 `rows/devacc`, K4 trace) had the device path (first index wins, as the host
+//! pipeline) on one side and this shortcut on the other; the two that reached the output are exact
+//! BF16 top ties (equal top-2 logprobs in the quality dump: ` data`/` columns`, ` move`/` send`).
+//! With the switch honored here, the off arm of that screen is the host pipeline and the row's claim
+//! ("bit-identical to the host pipeline") is testable.
 
 use crate::scheduler::ActiveSeq;
 use crate::scheduler::logit_processors::LogitsContext;
@@ -71,7 +87,9 @@ pub(super) fn try_chat_fast_path(
     // vs an unpatched binary (think block identical, answer flips at
     // low-margin tokens). MTP keeps the slow path unconditionally so
     // its behavior is byte-invariant by construction.
-    if !ctx.sampling.dflash_masked_verify {
+    //
+    // `AVAROK_NO_FAST_GREEDY_CHAT=1` switches every raw-argmax shortcut off (see the module docs).
+    if !ctx.sampling.dflash_masked_verify || !ctx.sampling.fast_greedy_chat {
         return None;
     }
     let fast_masked_enabled = ctx.sampling.fast_masked;

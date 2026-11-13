@@ -43,6 +43,19 @@
 //! claim and what `AVAROK_NO_FAST_GREEDY_CHAT=1` serves with the row off; it is not bit-identical
 //! to the default row-off serve, whose greedy rows take the shortcut.
 //!
+//! # The identity screen's off arm (queue-1 `rows/devacc`, fixed 2026-11-13)
+//!
+//! The screen compared `AVAROK_NO_FAST_GREEDY_CHAT=1` against the same plus the row and found 2 of
+//! 8 prompts different. The off arm was not the host pipeline: the masked-verify shortcut
+//! (`fast_masked`, "verify chat fast path ACTIVE" in its log) ignored the kill switch and answered
+//! with the verify graph's raw argmax, which breaks an exact top tie by reduction order where the
+//! host pipeline (and this path) take the lowest id. All eight K4 verify rows that differed between
+//! the arms vanished once the off arm really was the host pipeline, and the two that reached the
+//! output were exact BF16 ties. `fast_masked` now honors the switch (`kill_switch_tests.rs`). With the old
+//! binary the same off arm needs `AVAROK_DISABLE_FAST_MASKED=1` as well; run that way, bin-fix2's
+//! device path equals the off arm on all 8 prompts at C=1, the K4 trace (every row of every step,
+//! emitted or not) included: `logs/devacc-fix/diag/diag-host*`.
+//!
 //! # No verify pass without a trace
 //!
 //! A verify pass that never reaches the helper (DFlash raw-argmax verify) cannot record here, so

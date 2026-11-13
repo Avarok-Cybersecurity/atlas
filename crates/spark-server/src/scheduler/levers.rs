@@ -27,7 +27,8 @@ pub struct SchedLevers {
     pub fast_masked: bool,
     /// GRAMMARLESS verify fast-greedy — the chat sibling of the #237 grammar
     /// arm. Ships ON; `AVAROK_NO_FAST_GREEDY_CHAT=1` restores the per-seq
-    /// `[K,vocab]`-D2H slow path (the byte-invariant tie-breaking arm).
+    /// `[K,vocab]`-D2H slow path (the byte-invariant tie-breaking arm), the
+    /// masked-verify shortcut (`fast_masked`) included.
     pub fast_greedy_chat: bool,
     /// Force temperature 0 regardless of the request. Diagnostic.
     pub force_temp_zero: bool,

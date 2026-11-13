@@ -57,6 +57,8 @@ mod device_accept_order_tests;
 #[cfg(test)]
 mod device_accept_tests;
 mod fast_masked;
+#[cfg(test)]
+mod kill_switch_tests;
 mod pick_positions;
 #[cfg(test)]
 mod pick_positions_tests;

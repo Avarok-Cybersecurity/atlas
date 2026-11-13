@@ -254,6 +254,8 @@ pub(super) struct PreemptStubModel {
     pub(super) free_blocks: AtomicUsize,
     pub(super) total_blocks: usize,
     pub(super) reclaimable: AtomicUsize,
+    pub(super) vocab: usize,
+    pub(super) host_logits: Vec<u8>,
 }
 
 impl PreemptStubModel {
@@ -376,7 +378,7 @@ impl Model for PreemptStubModel {
         Ok(())
     }
     fn vocab_size(&self) -> usize {
-        0
+        self.vocab
     }
     fn bind_gpu_to_thread(&self) -> Result<()> {
         Ok(())
@@ -384,7 +386,9 @@ impl Model for PreemptStubModel {
     fn alloc_sequence(&self) -> Result<SequenceState> {
         Ok(SequenceState::host_only(0))
     }
-    fn copy_logits_to_host(&self, _p: DevicePtr, _d: &mut [u8]) -> Result<()> {
+    fn copy_logits_to_host(&self, _p: DevicePtr, d: &mut [u8]) -> Result<()> {
+        let n = d.len().min(self.host_logits.len());
+        d[..n].copy_from_slice(&self.host_logits[..n]);
         Ok(())
     }
     fn logits_buffer_ptr(&self) -> DevicePtr {
