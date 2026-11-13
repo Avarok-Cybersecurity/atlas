@@ -430,6 +430,8 @@ pub struct PagedKvCache {
 pub mod block_io;
 mod block_trace;
 mod catalog;
+/// Quest page summaries: per-page key min/max layout and arena (port L30, `attn_page_sparse`).
+pub mod page_summary;
 mod paged_impl;
 /// Release both pools of every layer.
 ///
