@@ -59,6 +59,11 @@ pub mod gdn_batched_gemm;
 // `AVAROK_GDN_VERIFY_GEMV`).
 #[path = "ops/gdn_verify_gemv.rs"]
 pub mod gdn_verify_gemv;
+// The `lm_head_verify_gemv` port row: a BF16 head's verify rows above 8 on the
+// same batched GEMV instead of the scalar `dense_gemm` (off on every target;
+// `AVAROK_LM_HEAD_VERIFY_GEMV`).
+#[path = "ops/lm_head_verify_gemv.rs"]
+pub mod lm_head_verify_gemv;
 // The `attn_gated_bf16_batchm` target row: gated dense-BF16 Q/K/V on the
 // batched GEMV in multi-seq decode (ada: on, bit-identical).
 #[path = "ops/attn_gated_bf16_batchm.rs"]

@@ -351,6 +351,31 @@ impl TransformerModel {
                 h,
                 stream,
             )?;
+        } else if ops::lm_head_verify_gemv::row()
+            && ops::lm_head_verify_gemv::claims(
+                true,
+                self.dense_gemv_batchm_kernel.0 != 0,
+                self.lmhead_vocab_shard(v).is_some(),
+                num_tokens as usize,
+                h as usize,
+            )
+        {
+            // Row `lm_head_verify_gemv` (off on every target): a BF16 head's
+            // verify rows above 8 on the batched GEMV, 16 rows a weight pass,
+            // each row the M=1 decode head's bits, instead of the scalar
+            // `dense_gemm` below (`ops/lm_head_verify_gemv.rs`). Reached only
+            // by a BF16 head: the FP8 and NVFP4 arms are all above.
+            ops::lm_head_verify_gemv::launch_rows(
+                self.gpu.as_ref(),
+                self.dense_gemv_batchm_kernel,
+                hidden,
+                &self.lm_head_weight,
+                logits,
+                num_tokens as usize,
+                v,
+                h,
+                stream,
+            )?;
         } else {
             ops::dense_gemm(
                 self.gpu.as_ref(),
