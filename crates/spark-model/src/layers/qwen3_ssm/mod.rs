@@ -33,6 +33,7 @@ pub use layer_struct::Qwen3SsmLayer;
 // ── Sub-files (split for ≤500 LoC) ────────────────────────────────────────
 mod debug;
 mod decode_w8a8_proj;
+pub(crate) mod gdn_chunk_tc_ada;
 pub mod gdn_flags;
 mod init;
 mod init_fp8;

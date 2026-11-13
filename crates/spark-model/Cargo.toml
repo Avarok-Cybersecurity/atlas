@@ -435,6 +435,10 @@ name = "rmsnorm_quant_fp8_microtest"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]
+name = "gdn_chunk_tc_ada_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
 name = "affine_ada_microtest"
 required-features = ["cuda", "gpu-examples"]
 

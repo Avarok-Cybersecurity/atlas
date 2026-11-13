@@ -474,6 +474,7 @@ impl Qwen3SsmLayer {
                 "fp8_scale_transpose",
                 "fp8_act_scale_to_kmajor",
             ),
+            gdn_tc_ada: Default::default(),
             w4_proj: None,
         })
     }
