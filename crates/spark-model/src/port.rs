@@ -10,4 +10,7 @@
 
 /// Per-model state the port lanes add (`ModelPortState`), one field per lane.
 pub mod state;
+/// The packed-weight linear contract (`W4Linear`, master plan 3.7.2), its
+/// shared scratch and dispatch rules. Lane L21; `w4/nvfp4.rs` is L23b's.
+pub mod w4;
 // @port:mods
