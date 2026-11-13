@@ -832,8 +832,9 @@ min_tokens_gpu_argmax = false
 # for a cancelled output), and a row's bits do not depend on how many rows
 # share the launch. Rows 2..4 keep w8a16_gemv_batch4, which is bit-exact and
 # already at the floor (AVAROK_FFN_FP8_M16_TC_MIN_ROWS=2 lowers the bound for
-# a measurement); above 16 rows nothing changes; a prompt pass never takes
-# it. With this row on it is asked before ffn_fp8_verify_gemv and
+# a measurement); 17 to 32 rows take the 32-row entries (fp8_gemm_ada_m32,
+# a second A tile on the same weight pass); above 32 rows nothing changes; a
+# prompt pass never takes it. With this row on it is asked before ffn_fp8_verify_gemv and
 # ffn_fp8_decode_gemv at the widths it takes. Only targets that compile the
 # module can take it (no lookup elsewhere). Off until the receipt:
 # examples/fp8_ada_m16_tc_microtest.rs all PASS with memcheck clean, a conc
@@ -1199,7 +1200,9 @@ overrides = [
   #                       BF16 there, activations staged per 128-wide scale
   #                       block, the block scale folded once per block in
   #                       FP32. Plain and dual (gate + up) entries, M an
-  #                       argument. Reassociated: within 2 BF16 ULP of
+  #                       argument; entries fp8_gemm_ada_m32 and _m32_dual
+  #                       are the 32-row tile (two m16 tiles a warp) for
+  #                       17..32 rows. Reassociated: within 2 BF16 ULP of
   #                       fp8_gemv_ada, not bit-identical
   #                       (`examples/fp8_ada_m16_tc_microtest.rs`). gb10 has
   #                       no counterpart; Hopper's w8a16_gemm_m16.cu is the

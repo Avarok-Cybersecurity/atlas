@@ -24,9 +24,16 @@
 //                           `examples/fp8_ada_m16_tc_microtest.rs` only; the
 //                           host launches neither. Same output bits.
 //
-// Preconditions the host selector enforces: K % 128 == 0, 1 <= M <= 16, A and
-// B 16-byte aligned. N is arbitrary (columns past N are neither read nor
-// written).
+//   fp8_gemm_ada_m32        (A, B, block_scale, C, M, N, K)   M = 1..32
+//   fp8_gemm_ada_m32_dual   (A, B1, B1_scale, C1, B2, B2_scale, C2, M, N, K)
+//                           the 32-row tile (two m16 tiles a warp, see
+//                           "THE 32-ROW TILE" below); the host takes it for
+//                           17..32 rows. Same grids and blocks as the 16-row
+//                           entries.
+//
+// Preconditions the host selector enforces: K % 128 == 0, 1 <= M <= 16 (the
+// m32 entries: 1 <= M <= 32), A and B 16-byte aligned. N is arbitrary (columns
+// past N are neither read nor written).
 //
 // ── WHY ──────────────────────────────────────────────────────────────────
 //
@@ -106,6 +113,20 @@
 // The dequant is `cvt.rn.f16x2.e4m3x2` then FP16 -> FP32 -> BF16, all exact
 // for the 254 finite E4M3 bytes. The two NaN bytes (0x7F, 0xFF) stay NaN; no
 // Atlas quantizer or block-FP8 checkpoint emits them.
+//
+// ── THE 32-ROW TILE ──────────────────────────────────────────────────────
+//
+// A 3-draft verify over 8 streams is 32 rows and a DFlash verify is 17, which
+// the 16-row tile cannot take and the W8A8 arm serves at 144 to 162 us. The m32
+// entries are the same kernel with a second A tile: every dequantized B
+// fragment feeds two `mma.sync` (rows 0..15 and 16..31), so the weights are
+// still read once and widened once. Tile 0 runs the identical MMA sequence, so
+// rows 0..15 are bit-equal to the 16-row kernel's (the microtest checks that);
+// tile 1 is the same arithmetic on rows 16..31, so row invariance holds for
+// all 32 rows. Activation stages are 32 rows (8,704 bytes, three stages,
+// 26,112 bytes of static shared memory: 3 CTAs an SM by shared memory). Same
+// ADDRESSING rules (one weight row pointer per thread; unsigned 32-bit element
+// indices).
 //
 // ── ADDRESSING ───────────────────────────────────────────────────────────
 //
@@ -338,6 +359,181 @@ __device__ __forceinline__ void fm16_gemm(const __nv_bfloat16* __restrict__ A, c
     }
 }
 
+// ── The 32-row tile ──────────────────────────────────────────────────────
+
+#define FM32_ROWS 32u
+#define FM32_A_STAGE (FM32_ROWS * FM16_A_PITCH) // 8,704 bytes; three stages, 26,112 static
+
+// The whole 32-row GEMM for one CTA: `fm16_gemm` with two A tiles. Every
+// per-thread role is the 16-row kernel's; only the activation staging (4 rows a
+// thread instead of 2) and the MMA loop (two MMAs per B fragment) widen.
+template <int AHEAD>
+__device__ __forceinline__ void fm32_gemm(const __nv_bfloat16* __restrict__ A, const unsigned char* __restrict__ B,
+                                          const float* __restrict__ block_scale, __nv_bfloat16* __restrict__ C,
+                                          unsigned int M, unsigned int N, unsigned int K) {
+    __shared__ __align__(16) unsigned char smem_a[FM16_STAGES * FM32_A_STAGE];
+
+    const unsigned int tid = threadIdx.x;
+    const unsigned int warp = tid >> 5;
+    const unsigned int lane = tid & 31u;
+    const unsigned int g = lane >> 2;
+    const unsigned int t = lane & 3u;
+    const unsigned int n0 = blockIdx.x * FM16_N_TILE + warp * 8u;
+    const unsigned int k_blocks = K / FM16_FP8_BLOCK;
+    const unsigned int rows = M < FM32_ROWS ? M : FM32_ROWS;
+
+    // A stage is 32 rows x 128 BF16 = 512 chunks of 16 bytes, four per thread:
+    // rows `ra + 8 j` (j = 0..3), the 8 BF16 at element `ach * 8` of the block.
+    const unsigned int ra = tid >> 4;
+    const unsigned int ach = tid & 15u;
+    const unsigned int s_base = (unsigned int)__cvta_generic_to_shared(smem_a);
+
+    // Rows >= M: zero once in every stage. No load ever writes them.
+#pragma unroll
+    for (int s = 0; s < FM16_STAGES; s++) {
+#pragma unroll
+        for (int j = 0; j < 4; j++) {
+            const unsigned int r = ra + 8u * (unsigned int)j;
+            if (r >= rows) {
+                *reinterpret_cast<uint4*>(smem_a + s * FM32_A_STAGE + r * FM16_A_PITCH + ach * 16u) =
+                    make_uint4(0u, 0u, 0u, 0u);
+            }
+        }
+    }
+
+    auto stage_a = [&](unsigned int stage, unsigned int kb) {
+#pragma unroll
+        for (int j = 0; j < 4; j++) {
+            const unsigned int r = ra + 8u * (unsigned int)j;
+            if (r < rows) {
+                fm16_cp_async16(s_base + stage * FM32_A_STAGE + r * FM16_A_PITCH + ach * 16u,
+                                A + (r * K + ach * 8u + kb * FM16_FP8_BLOCK));
+            }
+        }
+    };
+
+    const unsigned int bn = n0 + g;
+    const bool b_live = bn < N;
+    const uint4* bp = reinterpret_cast<const uint4*>(B + (unsigned long long)(b_live ? bn : 0u) * K) + t;
+    const bool tile_live = n0 < N;
+    const float* scale_row = block_scale + (unsigned long long)(tile_live ? n0 / FM16_FP8_BLOCK : 0u) * k_blocks;
+
+    float in[2][4], out[2][4];
+#pragma unroll
+    for (int mt = 0; mt < 2; mt++) {
+#pragma unroll
+        for (int e = 0; e < 4; e++) {
+            in[mt][e] = 0.0f;
+            out[mt][e] = 0.0f;
+        }
+    }
+
+    stage_a(0u, 0u);
+    fm16_commit();
+    if (k_blocks > 1u) {
+        stage_a(1u, 1u);
+    }
+    fm16_commit();
+
+    uint4 ring[AHEAD][2];
+#pragma unroll
+    for (int d = 0; d < AHEAD; d++) {
+        const bool ok = b_live && (unsigned int)d < k_blocks;
+        ring[d][0] = fm16_load_b(bp + (unsigned int)d * 8u, ok);
+        ring[d][1] = fm16_load_b(bp + (unsigned int)d * 8u + 4u, ok);
+    }
+
+    for (unsigned int kb = 0; kb < k_blocks; kb++) {
+        fm16_wait_one_pending();
+        __syncthreads();
+        if (kb + 2u < k_blocks) {
+            stage_a((kb + 2u) % FM16_STAGES, kb + 2u);
+        }
+        fm16_commit();
+
+        const uint4 b[2] = {ring[0][0], ring[0][1]};
+#pragma unroll
+        for (int d = 0; d + 1 < AHEAD; d++) {
+            ring[d][0] = ring[d + 1][0];
+            ring[d][1] = ring[d + 1][1];
+        }
+        {
+            const unsigned int nb = kb + (unsigned int)AHEAD;
+            const bool ok = b_live && nb < k_blocks;
+            ring[AHEAD - 1][0] = fm16_load_b(bp + nb * 8u, ok);
+            ring[AHEAD - 1][1] = fm16_load_b(bp + nb * 8u + 4u, ok);
+        }
+        const float sc = tile_live ? __ldg(scale_row + kb) : 0.0f;
+
+        const unsigned char* sa = smem_a + (kb % FM16_STAGES) * FM32_A_STAGE;
+#pragma unroll
+        for (int h = 0; h < 2; h++) {
+            const unsigned int off = (unsigned int)h * 128u + t * 32u;
+            unsigned int wg[2][8], wh[2][8];
+#pragma unroll
+            for (int mt = 0; mt < 2; mt++) {
+                // Tile mt: rows 16 mt + g and 16 mt + g + 8.
+                const unsigned int rg = (unsigned int)mt * 16u + g;
+                const uint4 q0 = *reinterpret_cast<const uint4*>(sa + rg * FM16_A_PITCH + off);
+                const uint4 q1 = *reinterpret_cast<const uint4*>(sa + rg * FM16_A_PITCH + off + 16u);
+                const uint4 r0 = *reinterpret_cast<const uint4*>(sa + (rg + 8u) * FM16_A_PITCH + off);
+                const uint4 r1 = *reinterpret_cast<const uint4*>(sa + (rg + 8u) * FM16_A_PITCH + off + 16u);
+                wg[mt][0] = q0.x; wg[mt][1] = q0.y; wg[mt][2] = q0.z; wg[mt][3] = q0.w;
+                wg[mt][4] = q1.x; wg[mt][5] = q1.y; wg[mt][6] = q1.z; wg[mt][7] = q1.w;
+                wh[mt][0] = r0.x; wh[mt][1] = r0.y; wh[mt][2] = r0.z; wh[mt][3] = r0.w;
+                wh[mt][4] = r1.x; wh[mt][5] = r1.y; wh[mt][6] = r1.z; wh[mt][7] = r1.w;
+            }
+            const unsigned int bw[4] = {b[h].x, b[h].y, b[h].z, b[h].w};
+#pragma unroll
+            for (int i = 0; i < 4; i++) {
+                const unsigned int b0 = fm16_dequant_pair(bw[i] & 0xFFFFu);
+                const unsigned int b1 = fm16_dequant_pair(bw[i] >> 16);
+#pragma unroll
+                for (int mt = 0; mt < 2; mt++) {
+                    asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 "
+                                 "{%0, %1, %2, %3}, {%4, %5, %6, %7}, {%8, %9}, {%10, %11, %12, %13};\n"
+                                 : "=f"(in[mt][0]), "=f"(in[mt][1]), "=f"(in[mt][2]), "=f"(in[mt][3])
+                                 : "r"(wg[mt][2 * i]), "r"(wh[mt][2 * i]), "r"(wg[mt][2 * i + 1]),
+                                   "r"(wh[mt][2 * i + 1]), "r"(b0), "r"(b1), "f"(in[mt][0]), "f"(in[mt][1]),
+                                   "f"(in[mt][2]), "f"(in[mt][3]));
+                }
+            }
+        }
+
+#pragma unroll
+        for (int mt = 0; mt < 2; mt++) {
+#pragma unroll
+            for (int e = 0; e < 4; e++) {
+                out[mt][e] = __fadd_rn(out[mt][e], __fmul_rn(in[mt][e], sc));
+                in[mt][e] = 0.0f;
+            }
+        }
+    }
+
+    const unsigned int col = n0 + t * 2u;
+    if (col < N) {
+        const bool second = col + 1u < N;
+#pragma unroll
+        for (int mt = 0; mt < 2; mt++) {
+            const unsigned int rg = (unsigned int)mt * 16u + g;
+            if (rg < rows) {
+                const unsigned int idx = rg * N + col;
+                C[idx] = __float2bfloat16(out[mt][0]);
+                if (second) {
+                    C[idx + 1u] = __float2bfloat16(out[mt][1]);
+                }
+            }
+            if (rg + 8u < rows) {
+                const unsigned int idx = (rg + 8u) * N + col;
+                C[idx] = __float2bfloat16(out[mt][2]);
+                if (second) {
+                    C[idx + 1u] = __float2bfloat16(out[mt][3]);
+                }
+            }
+        }
+    }
+}
+
 // ── Entry points ─────────────────────────────────────────────────────────
 
 // C[M, N] = A[M, K] x dequant(B[N, K])^T. Grid (ceil(N/32), 1, 1), block 128.
@@ -372,4 +568,24 @@ extern "C" __global__ void __launch_bounds__(FM16_THREADS)
                             const float* __restrict__ block_scale, __nv_bfloat16* __restrict__ C, unsigned int M,
                             unsigned int N, unsigned int K) {
     fm16_gemm<4>(A, B, block_scale, C, M, N, K);
+}
+
+// The 32-row tile, 17..32 rows (M <= 32; fewer rows work but waste a tile).
+// Grid (ceil(N/32), 1, 1), block 128.
+extern "C" __global__ void __launch_bounds__(FM16_THREADS)
+    fp8_gemm_ada_m32(const __nv_bfloat16* __restrict__ A, const unsigned char* __restrict__ B,
+                     const float* __restrict__ block_scale, __nv_bfloat16* __restrict__ C, unsigned int M,
+                     unsigned int N, unsigned int K) {
+    fm32_gemm<2>(A, B, block_scale, C, M, N, K);
+}
+
+// Gate and up of the same 17..32 rows; blockIdx.z picks the weight and its
+// output. Grid (ceil(N/32), 1, 2), block 128.
+extern "C" __global__ void __launch_bounds__(FM16_THREADS)
+    fp8_gemm_ada_m32_dual(const __nv_bfloat16* __restrict__ A, const unsigned char* __restrict__ B1,
+                          const float* __restrict__ B1_scale, __nv_bfloat16* __restrict__ C1,
+                          const unsigned char* __restrict__ B2, const float* __restrict__ B2_scale,
+                          __nv_bfloat16* __restrict__ C2, unsigned int M, unsigned int N, unsigned int K) {
+    const bool second = blockIdx.z != 0;
+    fm32_gemm<2>(A, second ? B2 : B1, second ? B2_scale : B1_scale, second ? C2 : C1, M, N, K);
 }
