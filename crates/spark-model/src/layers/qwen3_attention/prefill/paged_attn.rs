@@ -14,7 +14,8 @@ use super::super::Qwen3AttentionLayer;
 use crate::layer::{AttnMetadataDev, ForwardContext};
 use crate::layers::ops;
 
-#[allow(clippy::too_many_arguments)]
+#[path = "paged_attn_sparse.rs"]
+mod sparse; // block-sparse prefill bridge (lane L35, row prefill_sparse_attn, off by default)
 #[allow(dead_code)]
 pub(super) struct PagedAttnArgs<'a> {
     pub q_contiguous: DevicePtr,
@@ -98,10 +99,12 @@ impl Qwen3AttentionLayer {
             ref mut disk_last_offloaded_per_layer,
             stream,
         } = *args;
-        let _ = &disk_block_ids; // unused after issue #31 (HSS-streaming branch removed)
-        let _ = &disk_last_offloaded_per_layer;
+        let _ = (&disk_block_ids, &disk_last_offloaded_per_layer); // unused after issue #31
 
         let bs_u = bs as u32;
+        if sparse::try_run(self, kv_cache, ctx, args)? {
+            return Ok(PagedAttnOutcome::Continue);
+        }
 
         // HDIM=512 path: Gemma-4 long-attention layers.
         if hd > 256 && self.prefill_attn_512_k.0 != 0 && seq_len_start == 0 {

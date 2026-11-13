@@ -34,6 +34,7 @@ pub mod mtp_dcut_cost_model;
 pub mod mtp_device_accept;
 pub mod mtp_propose_graph;
 pub mod mtp_vocab_rank;
+pub mod prefill_sparse_attn;
 pub mod prefix_cow_tail;
 pub mod radix_lru_index;
 pub mod retro_attn;

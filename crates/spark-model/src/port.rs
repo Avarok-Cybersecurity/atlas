@@ -41,6 +41,9 @@ pub mod packed_head;
 /// shadow mode, index lifecycle and update, the verify union and the sparse-seam selector (lane
 /// L33), with the k-means, selection, gather and estimation-attention kernels (lanes L34a, L34b).
 pub mod retro;
+/// Block-sparse prefill attention, XAttention-style (row `prefill_sparse_attn`, APPROXIMATE, off on
+/// every target): knobs, launch, selection rule, FP64 reference and metrics. Lane L35.
+pub mod sparse_prefill;
 /// Quest page-sparse decode attention (lane L30, row `attn_page_sparse`, approximate, off).
 pub mod sparse_quest;
 /// Lane L12: device-side speculative acceptance (row `mtp_device_accept`).

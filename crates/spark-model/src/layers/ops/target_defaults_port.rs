@@ -93,6 +93,8 @@ pub struct PortLevers {
     pub kv_view_selection: Resolved<bool>,
     /// RetroInfer retrieval attention (APPROXIMATE): attend exactly to the sink, the recent tail and the top-scoring clusters of a k-means index over the keys.
     pub retro_attn: Resolved<bool>,
+    /// Block-sparse prefill attention, XAttention-style (APPROXIMATE): run flash attention over the kept key blocks only.
+    pub prefill_sparse_attn: Resolved<bool>,
     // @port:fields
 }
 
@@ -227,6 +229,10 @@ pub fn resolve(
             d.retro_attn,
             var(super::port_rows::retro_attn::ENV).as_deref(),
         ),
+        prefill_sparse_attn: super::port_rows::prefill_sparse_attn::resolve(
+            d.prefill_sparse_attn,
+            var(super::port_rows::prefill_sparse_attn::ENV).as_deref(),
+        ),
         // @port:resolve
     }
 }
@@ -296,6 +302,7 @@ pub fn format_port(l: &PortLevers) -> String {
     push(&mut s, "attn_page_sparse", &l.attn_page_sparse);
     push(&mut s, "kv_view_selection", &l.kv_view_selection);
     push(&mut s, "retro_attn", &l.retro_attn);
+    push(&mut s, "prefill_sparse_attn", &l.prefill_sparse_attn);
     // @port:boot
     if s.len() == header {
         s.push_str(" none");
