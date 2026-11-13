@@ -306,6 +306,7 @@ impl TransformerModel {
         // causing CUDA 700 at >9K tokens. This sync adds ~5μs overhead
         // per chunk but prevents the illegal memory access.
         self.gpu.synchronize(stream)?;
+        crate::port::affine::prefill::harvest_fallbacks(self.gpu.as_ref(), stream);
 
         // ── Mid-chunk tail SSM capture (opt-in): plan BEFORE the forward
         // pass so SSM layers split their h/conv kernels at `tb` in-pass.

@@ -396,6 +396,10 @@ name = "affine_ada_microtest"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]
+name = "affine_prefill_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
 name = "kv_swap_roundtrip"
 required-features = ["cuda", "gpu-examples"]
 
