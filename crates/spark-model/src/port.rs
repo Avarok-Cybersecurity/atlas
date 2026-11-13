@@ -32,6 +32,9 @@ pub mod graph_stats;
 pub mod kv_view;
 /// Host-resident window desk and windowed MTP KV (lane L36, row `kv_window_desk`).
 pub mod kv_window;
+/// The LFM3 gated short-convolution layer (`Lfm3ConvLayer`), its kernels' host ABI and its CPU
+/// reference (lane L38; built by the LFM3 loader of lane L37).
+pub mod lfm3_conv;
 pub mod logit_dump;
 /// The Marlin W4A16 route: GPTQ/AWQ int4 checkpoints and opt-in round-to-nearest int4 from BF16,
 /// repacked on the host and served on vLLM's Marlin GEMM (lane L18b; kernels by lane L18a).

@@ -498,4 +498,8 @@ required-features = ["cuda", "gpu-examples"]
 name = "kv_window_view_microtest"
 required-features = ["cuda", "gpu-examples"]
 
+[[example]]
+name = "lfm3_shortconv_microtest"
+required-features = ["cuda", "gpu-examples"]
+
 # @port:examples

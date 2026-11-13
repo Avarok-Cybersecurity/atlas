@@ -47,6 +47,14 @@ impl TransformerModel {
     /// streams. Cheap upfront check — caller (dispatch) falls back to
     /// per-stream when false.
     pub(in crate::model) fn kernel_batched_eligible(&self, streams: &[PrefillSlice<'_>]) -> bool {
+        // Port lane L38: LFM3's conv layers keep per-sequence windows outside
+        // the SSM pool and have no batched arm (their `prefill_inner_batched_q12`
+        // is the trait default, which bails after earlier layers already ran),
+        // so LFM3 stays on the per-stream path. Keyed on the model type: every
+        // other model's admission is unchanged.
+        if self.config.model_type == "lfm3" {
+            return false;
+        }
         // Routed-MoE prefill is a flat [total_tokens] sort/grouped-GEMM/scatter
         // with no notion of stream boundaries (layers/moe/** contains no
         // chunk_len / batch_size / stream_idx), so it needs no ragged
