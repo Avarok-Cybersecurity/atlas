@@ -825,5 +825,21 @@ overrides = [
   #                        (fixed capacities, graph-capturable). Resolved only
   #                        by `port/retro/select.rs` under `retro_attn`.
   "retro_select_ada.cu",
+  # retro_gather_ada.cu    ADDITION (port lane L34b). RetroInfer exact-zone
+  #                        gather: the sink, the retrieval clusters' members
+  #                        and the tail of one sequence from the paged BF16
+  #                        or FP8 pool into a fixed BF16 scratch per kv head
+  #                        (device counts, graph-capturable). Resolved only
+  #                        by the RetroInfer selector (`port/retro/gather.rs`)
+  #                        when the APPROXIMATE row `retro_attn` is on; no
+  #                        other path looks it up.
+  "retro_gather_ada.cu",
+  # retro_attn_ada.cu      ADDITION (port lane L34b). RetroInfer estimation
+  #                        attention: one softmax over the exact buffer and
+  #                        the estimation clusters (centroid pseudo-tokens
+  #                        weighted by cluster size), head_dim 256, GQA
+  #                        groups 1/2/4/6/8, fixed reduction order. Resolved
+  #                        only by `port/retro/attn.rs` under `retro_attn`.
+  "retro_attn_ada.cu",
   # @port:overrides
 ]
