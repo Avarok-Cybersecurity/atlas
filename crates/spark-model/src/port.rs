@@ -25,4 +25,7 @@ pub mod state;
 /// The packed-weight linear contract (`W4Linear`, master plan 3.7.2), its
 /// shared scratch and dispatch rules. Lane L21; `w4/nvfp4.rs` is L23b's.
 pub mod w4;
+/// What the 4-bit (`W4Linear`) routes installed at load (`W4Role`, the
+/// per-role records) and its `/metrics` series. Lane L23b.
+pub mod w4_stats;
 // @port:mods

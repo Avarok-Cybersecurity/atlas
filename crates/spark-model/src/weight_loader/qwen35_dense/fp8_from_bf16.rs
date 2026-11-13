@@ -118,7 +118,9 @@ pub fn layer_freed_bytes(hidden: usize, inter: usize) -> usize {
 /// run on this load: the same clauses as [`Fp8FromBf16::resolve`], without
 /// its log line, over the layers [`layer_shapes_ok`] admits, plus what the
 /// GDN and attention routes free (`gdn_fp8_from_bf16::deferred_free_bytes`,
-/// `attn_fp8_from_bf16::deferred_free_bytes`).
+/// `attn_fp8_from_bf16::deferred_free_bytes`) and what the 4-bit routes free
+/// (`w4_residency::deferred_free_bytes`; the same holds for
+/// [`predicted_free_bytes`]), so the server's call sites need no new term.
 ///
 /// WHY. The server's post-load memory audit measures free memory between the
 /// checkpoint upload and `load_layers`, while the BF16 FFN this route replaces
@@ -134,11 +136,13 @@ pub fn deferred_free_bytes(
     lora: bool,
 ) -> usize {
     let dense_loader = dense_loader_for(config);
+    // The 4-bit routes' credit (`w4_residency.rs`): 0, with no lookup, while every 4-bit row is off.
+    let w4 = super::w4_residency::deferred_free_bytes(gpu, store, config, tp_world_size, lora);
     let levers = ops::target_defaults::resolved();
     let lever = levers.dense_fp8_from_bf16.value;
     let any = lever || levers.gdn_fp8_from_bf16.value || levers.attn_fp8_from_bf16.value;
     if !(dense_loader && any) {
-        return 0;
+        return w4;
     }
     let bf16_checkpoint = matches!(
         crate::weight_map::detect_nvfp4_variant(store, config),
@@ -161,7 +165,7 @@ pub fn deferred_free_bytes(
         lora,
     );
     if !lever {
-        return gdn;
+        return gdn + w4;
     }
     let quant_k = crate::layers::try_target_kernel(gpu, QUANT_MODULE, QUANT_MODULE);
     let gemv = crate::layers::dense_ffn::ada_kernels::Fp8FfnKernels::resolve(gpu).gemv;
@@ -173,13 +177,13 @@ pub fn deferred_free_bytes(
         kernels: quant_k.0 != 0 && gemv.0 != 0,
     });
     if !on {
-        return gdn;
+        return gdn + w4;
     }
     let (h, i) = (config.hidden_size, config.intermediate_size);
     let layers = (0..config.num_hidden_layers)
         .filter(|&l| layer_shapes_ok(store, &config.layer_prefix(l), h, i))
         .count();
-    layers * layer_freed_bytes(h, i) + gdn
+    layers * layer_freed_bytes(h, i) + gdn + w4
 }
 
 /// [`deferred_free_bytes`] predicted BEFORE the checkpoint is read, for the
@@ -198,9 +202,11 @@ pub fn predicted_free_bytes(
     tp_world_size: usize,
     lora: bool,
 ) -> usize {
+    // The 4-bit routes' credit (`w4_residency.rs`): 0, with no lookup, while every 4-bit row is off.
+    let w4 = super::w4_residency::predicted_free_bytes(gpu, config, tp_world_size, lora);
     let lever = ops::target_defaults::resolved().dense_fp8_from_bf16.value;
     if !(dense_loader_for(config) && lever) {
-        return 0;
+        return w4;
     }
     let quant_k = crate::layers::try_target_kernel(gpu, QUANT_MODULE, QUANT_MODULE);
     let gemv = crate::layers::dense_ffn::ada_kernels::Fp8FfnKernels::resolve(gpu).gemv;
@@ -213,7 +219,7 @@ pub fn predicted_free_bytes(
             lora,
             kernels: quant_k.0 != 0 && gemv.0 != 0,
         },
-    )
+    ) + w4
 }
 
 /// The pure half of [`predicted_free_bytes`]: 0 unless the dense loader takes
@@ -226,8 +232,9 @@ pub fn predicted_free_bytes_for(config: &ModelConfig, inputs: RouteInputs) -> us
 }
 
 /// The factory's loader choice for this route (`loader_for_config`): the
-/// dense Qwen3.5 loader, under any of the family's spellings.
-fn dense_loader_for(config: &ModelConfig) -> bool {
+/// dense Qwen3.5 loader, under any of the family's spellings. Also the 4-bit
+/// routes' (`w4_install::dense_loader_takes`).
+pub(super) fn dense_loader_for(config: &ModelConfig) -> bool {
     let family = config.model_type.to_lowercase().replace(['-', '.'], "_");
     matches!(
         family.as_str(),
