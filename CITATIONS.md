@@ -517,4 +517,22 @@ copied.
 - **peculiar-ragdoll/Qwen-Sharp-Chat-Templates** (Apache-2.0), `chat_template.jinja`, `template_version qwen3.8-froggeric-v22.5.0`, obtained 2026-11-12: embedded verbatim (plus one header comment) as the opt-in chat template `--chat-template sharp`. Based on **froggeric/Qwen-Fixed-Chat-Templates** v22.5 (Apache-2.0), which is based on the Qwen3.5 chat template (Apache-2.0, Alibaba Cloud / Qwen team). Atlas: `crates/spark-server/assets/chat_templates/qwen-sharp-v22.5.0.jinja`, `SHARP-CHAT-TEMPLATE-ATTRIBUTION.md`.
 - The upstream project's reported gain (fewer thinking tokens per correct answer on 27B-class models) is its own claim, measured by it and not by Atlas. Atlas's own measurement, on the 4B and 0.8B models with thinking on, is `bench/sharp_eval.py`; until that has run, the template is an opt-in answer-style feature and never part of a kernel or decode benchmark.
 - Evaluation sets named by `bench/sharp_eval.py` (question ids only are committed, no dataset text): **MMLU-Pro** (TIGER-Lab/MMLU-Pro, MIT; Wang et al. 2024, arXiv:2406.01574) and **GSM8K** (openai/gsm8k, MIT; Cobbe et al. 2021, arXiv:2110.14168). Statistics: McNemar's exact test and a paired bootstrap, computed by the script itself.
+
+- **ARC technical report** ("ARC: Learned Model Routing for Long-Horizon Agentic Workflows", Rayline Team, 2026,
+  https://static.rayline.ai/rayline/reports/arc/latest), section 2.2 and Appendix A: the expected-utility rule
+  `V * p - sum_k n_k * rho_k`, the prefer-local threshold, the switching cost at user-turn boundaries
+  `L_t * [max(rho_in, rho_write) - rho_read]+`, and decision timing (task start, subagent start, compaction, user
+  turn); the Sage (V = 4.5) and Swift (V = 0.1) presets of the Apache-2.0 ARC-1.0 release. Formulas only, no code:
+  `crates/atlas-route-policy/src/{utility.rs, prefer_local.rs, timing.rs, types.rs}`. Attribution:
+  `RAYLINE-ROUTING-ATTRIBUTION.md`.
+- **Cascade routing** (J. Dekoninck, M. Baader, M. Vechev, "A Unified Approach to Routing and Cascading for LLMs",
+  arXiv 2024, ICML 2025; eth-sri/cascade-routing, Apache-2.0, commit 9da6cf7): the expected-utility formalism for
+  routing under a cost trade-off. Idea only, no code read into Atlas: `crates/atlas-route-policy/src/utility.rs`.
+- **rayline-core** (atlasfutures/semantic-router, branch vsr-next, commit f6d0393, Apache-2.0):
+  `rayline-core/execution/{events.go, deployment_wire.go, capacity.go}`, event inference from consecutive requests
+  and context-capacity facts with measured, bounded and estimated provenance. Translated from Go for
+  `crates/atlas-route-policy/src/{events.rs, capacity.rs}`.
+- **Raydock** (rayline-ai/raydock, commit 20f02d5, Apache-2.0), `crates/rayline-cli/src/hybrid_profile.rs`: the
+  `min_p_pass` name and the utility versus prefer-local policy choice. Naming only, no code copied.
+
 <!-- @port:citations -->

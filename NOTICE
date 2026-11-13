@@ -636,4 +636,42 @@ Test fixtures that are byte copies of the Qwen3.5-4B and Qwen3.5-0.8B
 chat_template.jinja files (Apache-2.0, Alibaba Cloud / Qwen team) are under
 crates/spark-server/test_data/chat_templates/sharp/. Details and the change
 statement: SHARP-CHAT-TEMPLATE-ATTRIBUTION.md.
+
+== atlasfutures/semantic-router, rayline-core (routing policy: event inference and capacity facts) ==
+
+Source:  https://github.com/atlasfutures/semantic-router, branch vsr-next, commit f6d0393
+         rayline-core/execution/events.go (lines 12-26, 130-162)
+         rayline-core/execution/deployment_wire.go (lines 11-23)
+         rayline-core/execution/capacity.go (lines 14-68, 161-206)
+License: Apache License, Version 2.0 (LICENSES/Apache-2.0.txt)
+Copyright: published by Atlas Futures, Inc.; the translated files carry no
+  copyright line of their own and the repository has no NOTICE file.
+
+Atlas files: crates/atlas-route-policy/src/{events.rs, capacity.rs}
+Changes: translated from Go to Rust; the wire request is reduced to a
+  per-message digest the routing front computes; a shrinking rewrite of the
+  transcript is inferred as a compaction; the capacity fact is split into a
+  static window fact plus the per-request prompt count with a pure fit
+  verdict; the shortfall relaxation works over a slice. See
+  RAYLINE-ROUTING-ATTRIBUTION.md.
+
+== Raydock (routing policy: prefer-local threshold naming) ==
+
+Source:  https://github.com/rayline-ai/raydock, commit 20f02d5
+         crates/rayline-cli/src/hybrid_profile.rs (lines 597-644)
+License: Apache License, Version 2.0 (LICENSES/Apache-2.0.txt)
+
+From the Raydock NOTICE file:
+
+  Raydock
+  Copyright 2026 Atlas Futures, Inc.
+
+  This product includes software developed by Atlas Futures, Inc.
+
+Atlas files: crates/atlas-route-policy/src/{prefer_local.rs, types.rs}
+Changes: no code copied. The `min_p_pass` name and the choice between a
+  utility policy and a prefer-local policy follow Raydock's hybrid profile;
+  Atlas accepts (0, 1] instead of (0, 1), where 1.0 disables the local
+  shortcut. See RAYLINE-ROUTING-ATTRIBUTION.md.
+
 # @port:notice
