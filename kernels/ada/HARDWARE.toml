@@ -323,5 +323,24 @@ overrides = [
   #                        pairs) and the cp.async/ldmatrix/MMA primitives
   "affine_codes_ada.cuh",
   "affine_n_ada.cu",
+  # marlin_ada.cu and its   ADDITIONS (port sprint L18a). vLLM's Marlin W4A16
+  # six marlin_*_ada.cuh    GEMM (commit 8a36f08, Apache-2.0; Marlin by Elias
+  # headers                 Frantar, IST-DASLab): BF16 activations against GPTQ
+  #                         int4 (kU4B8) or AWQ int4 with zero points (kU4),
+  #                         group 128, m = 1 to 64 per launch, 30 `extern "C"`
+  #                         entries listed in marlin_ada.cu's header. sm_75+
+  #                         code (cp.async, ldmatrix, mma.sync m16n8k16, lop3):
+  #                         no TMA, no wgmma. Looked up only by the
+  #                         `marlin_w4a16` row's host (L18b, off on every
+  #                         target), through try_target_kernel, so a build
+  #                         without the module keeps every current path. See
+  #                         VLLM-MARLIN-ATTRIBUTION.md.
+  "marlin_ada.cu",
+  "marlin_common_ada.cuh",
+  "marlin_dequant_ada.cuh",
+  "marlin_dtypes_ada.cuh",
+  "marlin_mma_ada.cuh",
+  "marlin_scalar_type_ada.cuh",
+  "marlin_template_ada.cuh",
   # @port:overrides
 ]
