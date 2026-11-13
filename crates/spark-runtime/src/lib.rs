@@ -47,6 +47,7 @@ pub mod weights;
 // The port sprint's (`port/consumer-opt`) new top-level modules are inserted
 // immediately before this marker by the coordinator's fragment apply pass.
 pub mod kv_host_tier;
+pub mod kv_select;
 pub mod pinned_pool;
 // @port:mods
 
