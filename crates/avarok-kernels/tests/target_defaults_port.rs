@@ -35,6 +35,7 @@ const DECLARING: &[&str] = &["gb10", "hopper", "b200", "b300", "ada"];
 const PORT_LEVERS: &[&str] = &[
     "conf_summary",
     "mtp_dcut_cost_model",
+    "graph_exec_update",
     "marlin_w4a16",
     "gguf_native_iq4",
     "weights_exl3",
@@ -107,6 +108,10 @@ fn the_baked_port_rows_match_their_own_hardware_tree() {
         baked.port.mtp_dcut_cost_model,
         declared.port.mtp_dcut_cost_model
     );
+    assert_eq!(
+        baked.port.graph_exec_update,
+        declared.port.graph_exec_update
+    );
     assert_eq!(baked.port.marlin_w4a16, declared.port.marlin_w4a16);
     assert_eq!(baked.port.gguf_native_iq4, declared.port.gguf_native_iq4);
     assert_eq!(baked.port.weights_exl3, declared.port.weights_exl3);
@@ -152,6 +157,7 @@ fn ada_port_rows_hold_their_write_time_values() {
     assert_eq!(d.hw, "ada");
     assert_eq!(declared("ada").port.conf_summary, false);
     assert_eq!(declared("ada").port.mtp_dcut_cost_model, false);
+    assert_eq!(declared("ada").port.graph_exec_update, false);
     assert_eq!(declared("ada").port.marlin_w4a16, false);
     assert_eq!(declared("ada").port.gguf_native_iq4, false);
     assert_eq!(declared("ada").port.weights_exl3, false);
@@ -178,6 +184,7 @@ fn non_ada_targets_keep_every_port_row_at_its_baseline() {
         assert_eq!(declared(hw).hw, hw);
         assert!(!declared(hw).port.conf_summary, "{hw}");
         assert!(!declared(hw).port.mtp_dcut_cost_model, "{hw}");
+        assert!(!declared(hw).port.graph_exec_update, "{hw}");
         assert!(!declared(hw).port.marlin_w4a16, "{hw}");
         assert!(!declared(hw).port.gguf_native_iq4, "{hw}");
         assert!(!declared(hw).port.weights_exl3, "{hw}");

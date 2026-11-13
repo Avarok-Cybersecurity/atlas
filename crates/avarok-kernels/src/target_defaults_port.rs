@@ -40,6 +40,12 @@ pub struct PortDefaults {
     /// damped Newton-IRLS (`scheduler/mtp_accept_estimator.rs`, after vLLM
     /// adaptive verification).
     pub mtp_dcut_cost_model: bool,
+    /// When a batched decode or batched verify CUDA-graph cache is full and
+    /// misses, update its least-recently-used executable in place with
+    /// cuGraphExecUpdate when the new capture has the same topology, instead of
+    /// destroying it and instantiating the capture
+    /// (`model/trait_impl/graph_family.rs`).
+    pub graph_exec_update: bool,
     /// When a 4-bit BF16 load route is on (dense_affine4_from_bf16,
     /// gdn_affine4_from_bf16, attn_affine4_from_bf16), every projection the
     /// Marlin kernels serve (N a multiple of 64, K of 128, more than one group)
@@ -181,6 +187,7 @@ pub struct PortDefaults {
 pub const PORT_BASELINE: PortDefaults = PortDefaults {
     conf_summary: false,
     mtp_dcut_cost_model: false,
+    graph_exec_update: false,
     marlin_w4a16: false,
     gguf_native_iq4: false,
     weights_exl3: false,

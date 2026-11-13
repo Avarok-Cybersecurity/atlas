@@ -24,6 +24,7 @@
 pub struct PortFields {
     pub conf_summary: bool,
     pub mtp_dcut_cost_model: bool,
+    pub graph_exec_update: bool,
     pub marlin_w4a16: bool,
     pub gguf_native_iq4: bool,
     pub weights_exl3: bool,
@@ -54,6 +55,7 @@ impl Default for PortFields {
         Self {
             conf_summary: false,
             mtp_dcut_cost_model: false,
+            graph_exec_update: false,
             marlin_w4a16: false,
             gguf_native_iq4: false,
             weights_exl3: false,
@@ -87,6 +89,10 @@ pub fn parse(out: &mut PortFields, key: &str, value: &toml::Value) -> bool {
         }
         "mtp_dcut_cost_model" => {
             out.mtp_dcut_cost_model = boolean(key, value);
+            true
+        }
+        "graph_exec_update" => {
+            out.graph_exec_update = boolean(key, value);
             true
         }
         "marlin_w4a16" => {
@@ -170,6 +176,7 @@ pub fn literal(d: &PortFields) -> String {
         "crate::target_defaults_port::PortDefaults {{\n\
          \x20   conf_summary: {conf_summary},\n\
          \x20   mtp_dcut_cost_model: {mtp_dcut_cost_model},\n\
+         \x20   graph_exec_update: {graph_exec_update},\n\
          \x20   marlin_w4a16: {marlin_w4a16},\n\
          \x20   gguf_native_iq4: {gguf_native_iq4},\n\
          \x20   weights_exl3: {weights_exl3},\n\
@@ -190,6 +197,7 @@ pub fn literal(d: &PortFields) -> String {
          \x20   }}",
         conf_summary = d.conf_summary,
         mtp_dcut_cost_model = d.mtp_dcut_cost_model,
+        graph_exec_update = d.graph_exec_update,
         marlin_w4a16 = d.marlin_w4a16,
         gguf_native_iq4 = d.gguf_native_iq4,
         weights_exl3 = d.weights_exl3,
