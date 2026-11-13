@@ -32,6 +32,7 @@ pub mod kv_window_desk;
 pub mod l2_evict_first_weights;
 pub mod lfm3_fp8_all;
 pub mod marlin_w4a16;
+pub mod model_swap_timing;
 pub mod mtp_dcut_cost_model;
 pub mod mtp_device_accept;
 pub mod mtp_propose_graph;

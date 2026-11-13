@@ -99,6 +99,8 @@ pub struct PortLevers {
     pub kv_window_desk: Resolved<bool>,
     /// Convert an LFM3 checkpoint's projections to 128x128 block-scaled FP8 (E4M3) at load.
     pub lfm3_fp8_all: Resolved<bool>,
+    /// Time every hot-swap by phase and keep the last 8 swap durations per model (observability only).
+    pub model_swap_timing: Resolved<bool>,
     // @port:fields
 }
 
@@ -245,6 +247,10 @@ pub fn resolve(
             d.lfm3_fp8_all,
             var(super::port_rows::lfm3_fp8_all::ENV).as_deref(),
         ),
+        model_swap_timing: super::port_rows::model_swap_timing::resolve(
+            d.model_swap_timing,
+            var(super::port_rows::model_swap_timing::ENV).as_deref(),
+        ),
         // @port:resolve
     }
 }
@@ -317,6 +323,7 @@ pub fn format_port(l: &PortLevers) -> String {
     push(&mut s, "prefill_sparse_attn", &l.prefill_sparse_attn);
     push(&mut s, "kv_window_desk", &l.kv_window_desk);
     push(&mut s, "lfm3_fp8_all", &l.lfm3_fp8_all);
+    push(&mut s, "model_swap_timing", &l.model_swap_timing);
     // @port:boot
     if s.len() == header {
         s.push_str(" none");
