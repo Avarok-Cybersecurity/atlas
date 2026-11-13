@@ -35,6 +35,8 @@ pub struct PortLevers {
     pub hw: &'static str,
     /// Serve every 4-bit BF16 load route's Marlin-servable projection by round-to-nearest int4 at group 128 on vLLM's Marlin W4A16 GEMM.
     pub marlin_w4a16: Resolved<bool>,
+    /// A dense Qwen3.5-family GGUF keeps its IQ4_XS, Q4_K and Q6_K projections as the file's raw super-blocks in VRAM for the sm_89 keep-packed GEMVs and MMQ GEMMs.
+    pub gguf_native_iq4: Resolved<bool>,
     /// Batched sequence swap: gather a swapped-out sequence's image with batched async copies into one reused page-locked staging buffer.
     pub kv_batched_swap: Resolved<bool>,
     /// SSM tier blob store eviction order: a capped host-RAM store gives up the least recently used blob instead of the oldest insert.
@@ -60,6 +62,10 @@ pub fn resolve(
         marlin_w4a16: super::port_rows::marlin_w4a16::resolve(
             d.marlin_w4a16,
             var(super::port_rows::marlin_w4a16::ENV).as_deref(),
+        ),
+        gguf_native_iq4: super::port_rows::gguf_native_iq4::resolve(
+            d.gguf_native_iq4,
+            var(super::port_rows::gguf_native_iq4::ENV).as_deref(),
         ),
         kv_batched_swap: super::port_rows::kv_batched_swap::resolve(
             d.kv_batched_swap,
@@ -109,6 +115,7 @@ pub fn format_port(l: &PortLevers) -> String {
     let mut s = format!("port defaults ({hw}):");
     let header = s.len();
     push(&mut s, "marlin_w4a16", &l.marlin_w4a16);
+    push(&mut s, "gguf_native_iq4", &l.gguf_native_iq4);
     push(&mut s, "kv_batched_swap", &l.kv_batched_swap);
     push(&mut s, "ssm_store_lru", &l.ssm_store_lru);
     push(&mut s, "radix_lru_index", &l.radix_lru_index);

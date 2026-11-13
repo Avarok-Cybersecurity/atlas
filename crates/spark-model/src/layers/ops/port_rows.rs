@@ -10,6 +10,7 @@
 //! inserted immediately BEFORE the marker below by the coordinator's fragment
 //! apply pass.
 
+pub mod gguf_native_iq4;
 pub mod kv_batched_swap;
 pub mod marlin_w4a16;
 pub mod prefix_cow_tail;

@@ -408,6 +408,10 @@ name = "marlin_ada_microtest"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]
+name = "iq4xs_gemv_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
 name = "kv_swap_roundtrip"
 required-features = ["cuda", "gpu-examples"]
 
