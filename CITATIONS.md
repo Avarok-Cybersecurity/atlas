@@ -511,4 +511,10 @@ copied.
   translated from. Files, upstream lines and changes: `LFM3-ATTRIBUTION.md`.
 - llama.cpp `src/models/lfm3.cpp` (MIT, Copyright (c) 2023-2026 The ggml authors): cross-check
   of the tensor map and of the zero-frequency partial RoPE. No source copied.
+
+### Sharp chat template
+
+- **peculiar-ragdoll/Qwen-Sharp-Chat-Templates** (Apache-2.0), `chat_template.jinja`, `template_version qwen3.8-froggeric-v22.5.0`, obtained 2026-11-12: embedded verbatim (plus one header comment) as the opt-in chat template `--chat-template sharp`. Based on **froggeric/Qwen-Fixed-Chat-Templates** v22.5 (Apache-2.0), which is based on the Qwen3.5 chat template (Apache-2.0, Alibaba Cloud / Qwen team). Atlas: `crates/spark-server/assets/chat_templates/qwen-sharp-v22.5.0.jinja`, `SHARP-CHAT-TEMPLATE-ATTRIBUTION.md`.
+- The upstream project's reported gain (fewer thinking tokens per correct answer on 27B-class models) is its own claim, measured by it and not by Atlas. Atlas's own measurement, on the 4B and 0.8B models with thinking on, is `bench/sharp_eval.py`; until that has run, the template is an opt-in answer-style feature and never part of a kernel or decode benchmark.
+- Evaluation sets named by `bench/sharp_eval.py` (question ids only are committed, no dataset text): **MMLU-Pro** (TIGER-Lab/MMLU-Pro, MIT; Wang et al. 2024, arXiv:2406.01574) and **GSM8K** (openai/gsm8k, MIT; Cobbe et al. 2021, arXiv:2110.14168). Statistics: McNemar's exact test and a paired bootstrap, computed by the script itself.
 <!-- @port:citations -->

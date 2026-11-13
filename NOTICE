@@ -617,4 +617,23 @@ per-sequence BF16 [hidden, 6] window, packed-sequence prefill.
 No LFM3 weights are included in Atlas; they are licensed separately under the
 LFM Open License v1.0.
 ------------------------------------------------------------------------------
+Sharp chat template (Qwen3.5/3.6/3.8 chat template with history-reasoning
+retention, a stricter tool-call format and an optional terseness system prompt)
+
+Upstream: https://huggingface.co/peculiar-ragdoll/Qwen-Sharp-Chat-Templates,
+chat_template.jinja, template_version qwen3.8-froggeric-v22.5.0 (obtained
+2026-11-12). Based on froggeric/Qwen-Fixed-Chat-Templates v22.5
+(https://huggingface.co/froggeric/Qwen-Fixed-Chat-Templates), which is based
+on the Qwen3.5 chat template (Alibaba Cloud / Qwen team).
+Copyright: Saga Ishtardottir (peculiar-ragdoll), froggeric, and Alibaba Cloud /
+the Qwen team, each as to their own contribution to the template.
+License: Apache License, Version 2.0 for every link of the chain; see
+LICENSES/Apache-2.0.txt. The upstream repositories carry no NOTICE file.
+Atlas files: crates/spark-server/assets/chat_templates/qwen-sharp-v22.5.0.jinja
+(copied verbatim except one leading comment naming this chain). It is used only
+when the operator selects it with --chat-template sharp or sharp-no-terse.
+Test fixtures that are byte copies of the Qwen3.5-4B and Qwen3.5-0.8B
+chat_template.jinja files (Apache-2.0, Alibaba Cloud / Qwen team) are under
+crates/spark-server/test_data/chat_templates/sharp/. Details and the change
+statement: SHARP-CHAT-TEMPLATE-ATTRIBUTION.md.
 # @port:notice

@@ -91,7 +91,9 @@ tests/all_models_results_pass*/
 
 # Nested scratch / experiment projects
 /tmp/
-/tools/
+/tools/*
+# Port sprint (L39): the chat-template golden oracle is tracked.
+!/tools/chat_template_goldens/
 
 # OS
 .DS_Store
