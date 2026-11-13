@@ -182,6 +182,54 @@ Changes: design only, no code copied; written in Rust for Atlas's paged KV
   page runs that never cross a pinning chunk, and one stamp index serving FIFO
   and LRU orders. See LMCACHE-KV-TRANSFER-ATTRIBUTION.md.
 
+== LMCache, vLLM and Cinference (host-RAM KV tier core) ==
+
+LMCache
+Source:  https://github.com/LMCache/LMCache, commit 3aefae1
+         lmcache/v1/distributed/l1_manager/base.py:132-188 (staging, ready and
+         read-locked object states with expiry),
+         lmcache/v1/distributed/storage_controllers/eviction_controller.py:160-195
+         (watermark batch eviction, 0.8 trigger, 0.2 ratio),
+         lmcache/v1/distributed/storage_controllers/prefetch_controller.py:1114-1160
+         (in-flight admission watermark),
+         lmcache/v1/distributed/eviction_policy/lru.py:72-95 (tail-first order),
+         lmcache/integration/vllm/lazy_offload_policy/eviction_aware.py:60-140
+         (eviction-aware lazy store), lmcache/v1/token_hasher.py:233-262 (chained
+         block keys), lmcache/v1/multiprocess/kv_load_policy.py (decline a load
+         when recompute is cheaper)
+License: Apache License, Version 2.0 (LICENSES/Apache-2.0.txt). LMCache ships
+  no NOTICE file.
+
+vLLM
+Source:  https://github.com/vllm-project/vllm, commit 8a36f08
+         vllm/v1/kv_offload/cpu/gpu_worker.py:543-731 (copy stream, pooled
+         events, completion polling), vllm/v1/kv_offload/cpu/policies/arc.py:28-60
+         (ARC with ghost lists), vllm/v1/simple_kv_offload/manager.py (prompt-only
+         offload, per-step cap; :644-690 store-ahead target)
+Copyright contributors to the vLLM project.
+License: Apache License, Version 2.0 (LICENSES/Apache-2.0.txt).
+
+Cinference
+Source:  https://github.com/satellitedown/cinference, commit 383e5db
+         bench/README.md:103-175 ("Context-cost calibration": held-out p95
+         relative error bound and no ordering inversion before a cost fit is
+         trusted)
+Cinference is derived from NInfer by Neroued and its contributors
+(https://github.com/Neroued/ninfer).
+License: Apache License, Version 2.0 (LICENSES/Apache-2.0.txt).
+
+Atlas files: crates/spark-runtime/src/kv_host_tier/{mod.rs, control.rs,
+  index.rs, policy.rs, policy_arc.rs, writeback.rs, restore.rs, lazy.rs,
+  evict.rs, events.rs, cost.rs, config.rs, cold_store.rs, fingerprint.rs}
+Changes: design translations and ideas only; no code copied. Written in Rust
+  for one in-process tier over a pinned page pool, Atlas paged-KV block regions
+  as the copy unit, one batched copy per call on a dedicated copy stream,
+  admission decoupled from replacement in ARC, and the cost acceptance rule
+  applied online to live rate models. The read-lease and publish-after-write
+  invariants and the heat policy follow the published description of KVMem
+  (arXiv:2609.04852); no KVMem source was read or copied. See
+  KV-HOST-TIER-ATTRIBUTION.md.
+
 LMCache (radix prefix-cache eviction without a full scan; design only)
   Source: https://github.com/LMCache/LMCache, commit 3aefae1
   Files: lmcache/v1/distributed/eviction_policy/isolated_lru.py,

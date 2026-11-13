@@ -301,4 +301,29 @@ Atlas files that carry it. License texts are in `LICENSES/`; notices are in
   `crates/spark-server/src/main_modules/serve_phases/preflight/measured_ceiling.rs`. The bench rows R0 to R12
   of `docs/porting/qwen3.8-27b-ada.md` follow report 77 section 12.5. The weights the target serves are
   Unsloth's GGUF of Qwen3.8-27B (Apache-2.0, Qwen team), downloaded by the owner, never redistributed.
+
+### Host-RAM KV tier core (L26a)
+
+- LMCache (https://github.com/LMCache/LMCache, commit `3aefae1`, Apache-2.0):
+  object states and read locks (`l1_manager/base.py:132-188`), watermark
+  eviction (`eviction_controller.py:160-195`), in-flight admission
+  (`prefetch_controller.py:1114-1160`), tail-first LRU (`lru.py:72-95`),
+  eviction-aware lazy store (`eviction_aware.py:60-140`), chained block keys
+  (`token_hasher.py:233-262`), load-versus-recompute gate (`kv_load_policy.py`).
+  Design only, no code copied.
+- vLLM (https://github.com/vllm-project/vllm, commit `8a36f08`, Apache-2.0):
+  CPU KV offload worker (`vllm/v1/kv_offload/cpu/gpu_worker.py:543-731`), ARC
+  policy (`vllm/v1/kv_offload/cpu/policies/arc.py:28-60`), simple offload
+  manager (`vllm/v1/simple_kv_offload/manager.py`). Design only, no code copied.
+- Cinference (https://github.com/satellitedown/cinference, commit `383e5db`,
+  Apache-2.0, derived from NInfer): the context-cost calibration acceptance rule
+  (`bench/README.md:103-175`), applied to the tier's restore cost gate.
+- KVMem, arXiv:2609.04852: read leases during DMA, publish after the full
+  write, and the heat (selection frequency with periodic halving) policy.
+  Independent implementation from the paper's description; the kvmem
+  repositories carry no license and were not read.
+- N. Megiddo and D. S. Modha, "ARC: A Self-Tuning, Low Overhead Replacement
+  Cache", USENIX FAST 2003 (the ARC policy and the naive reference in the tests).
+- Atlas files: `crates/spark-runtime/src/kv_host_tier/`. See
+  `KV-HOST-TIER-ATTRIBUTION.md`.
 <!-- @port:citations -->
