@@ -12,7 +12,9 @@
 //!   * SPARSE: the GPU output against FP64 attention through the GPU's own masks (normwise and
 //!     pointwise bounds), plus a sentinel tail the launch must not write;
 //!   * IDENTITY (every candidate block kept): the sparse attention kernel against the production dense
-//!     paged kernel (`inferspark_prefill_paged`, `_fp8`) and against FP64 dense attention.
+//!     paged kernel (`inferspark_prefill_paged`, `_fp8`) and against FP64 dense attention. The dense
+//!     kernel is built for head_dim 256 only, so a case at another head dimension is judged against
+//!     FP64 alone (its dense-kernel numbers are printed, not gated).
 //! `AVAROK_BENCH_ITERS=N` adds timings (dense kernel, score, sparse attention) per case, plus two
 //! 32K-key timing cases (BF16 and FP8 KV) that skip the FP64 oracle.
 //!
@@ -37,6 +39,12 @@ const BAND: f64 = 2e-3;
 /// SPARSE and IDENTITY bounds on BF16 outputs (values are convex combinations of V, |V| <= 1).
 const NORMWISE: f64 = 1e-2;
 const POINTWISE: f64 = 3e-2;
+/// The head dimension the production dense paged kernel is compiled for (`HDIM` in
+/// `kernels/gb10/common/prefill_paged_compute.cuh`: its shared-memory tiles and tile counts are
+/// compile-time). At any other `head_dim` its output is not a reference. queue-1 S6.L35 went red on
+/// exactly the two hd128 cells, with the sparse kernel within 1.7e-3 of FP64 dense attention in both
+/// and the dense kernel 0.46 and 0.86 away from it; those cells are judged against FP64 alone.
+const DENSE_KERNEL_HDIM: usize = 256;
 
 fn bytes_of(v: &[u32]) -> &[u8] {
     // SAFETY: u32 is plain old data.
@@ -140,16 +148,26 @@ fn run_case(gpu: &dyn GpuBackend, c: &Case, seed: u64, stream: u64) -> Result<bo
     } else {
         (0.0, 0.0)
     };
+    let dense_is_reference = c.hd == DENSE_KERNEL_HDIM;
     println!(
-        "  identity vs dense kernel normwise {nd:.3e} max {pd:.3e}; vs FP64 normwise {nr:.3e} \
+        "  identity vs dense kernel normwise {nd:.3e} max {pd:.3e}{}; vs FP64 normwise {nr:.3e} \
          max {pr:.3e}{}",
+        if dense_is_reference {
+            ""
+        } else {
+            " (not judged: that kernel is built for head_dim 256)"
+        },
         if c.oracle {
             ""
         } else {
             " (FP64 oracle skipped)"
         }
     );
-    pass &= nd <= NORMWISE && pd <= POINTWISE && nr <= NORMWISE && pr <= POINTWISE;
+    // Every case needs one identity reference: the dense kernel at its own head dimension, FP64
+    // wherever the oracle runs.
+    pass &= dense_is_reference || c.oracle;
+    pass &= !dense_is_reference || (nd <= NORMWISE && pd <= POINTWISE);
+    pass &= nr <= NORMWISE && pr <= POINTWISE;
     if let Some(iters) = std::env::var("AVAROK_BENCH_ITERS")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
