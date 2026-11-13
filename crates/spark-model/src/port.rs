@@ -11,6 +11,9 @@
 /// The affine 4-bit weight route: MLX-affine weights quantized from BF16 at load, served on the Ada
 /// lane GEMV (lanes L17a, L17b, L17c).
 pub mod affine;
+/// The Marlin W4A16 route: GPTQ/AWQ int4 checkpoints and opt-in round-to-nearest int4 from BF16,
+/// repacked on the host and served on vLLM's Marlin GEMM (lane L18b; kernels by lane L18a).
+pub mod marlin;
 /// Per-model state the port lanes add (`ModelPortState`), one field per lane.
 pub mod state;
 /// The packed-weight linear contract (`W4Linear`, master plan 3.7.2), its

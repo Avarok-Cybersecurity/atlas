@@ -33,6 +33,8 @@ pub use super::target_defaults::{Resolved, Source};
 pub struct PortLevers {
     /// `kernels/<hw>` this binary was compiled from, for the log line only.
     pub hw: &'static str,
+    /// Serve every 4-bit BF16 load route's Marlin-servable projection by round-to-nearest int4 at group 128 on vLLM's Marlin W4A16 GEMM.
+    pub marlin_w4a16: Resolved<bool>,
     /// Batched sequence swap: gather a swapped-out sequence's image with batched async copies into one reused page-locked staging buffer.
     pub kv_batched_swap: Resolved<bool>,
     /// SSM tier blob store eviction order: a capped host-RAM store gives up the least recently used blob instead of the oldest insert.
@@ -55,6 +57,10 @@ pub fn resolve(
     let d = &defaults.port;
     PortLevers {
         hw: defaults.hw,
+        marlin_w4a16: super::port_rows::marlin_w4a16::resolve(
+            d.marlin_w4a16,
+            var(super::port_rows::marlin_w4a16::ENV).as_deref(),
+        ),
         kv_batched_swap: super::port_rows::kv_batched_swap::resolve(
             d.kv_batched_swap,
             var(super::port_rows::kv_batched_swap::ENV).as_deref(),
@@ -102,6 +108,7 @@ pub fn format_port(l: &PortLevers) -> String {
     let hw = if l.hw.is_empty() { "unknown" } else { l.hw };
     let mut s = format!("port defaults ({hw}):");
     let header = s.len();
+    push(&mut s, "marlin_w4a16", &l.marlin_w4a16);
     push(&mut s, "kv_batched_swap", &l.kv_batched_swap);
     push(&mut s, "ssm_store_lru", &l.ssm_store_lru);
     push(&mut s, "radix_lru_index", &l.radix_lru_index);
