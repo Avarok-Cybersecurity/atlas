@@ -392,6 +392,10 @@ name = "gpu_ext_selftest"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]
+name = "affine_ada_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
 name = "kv_swap_roundtrip"
 required-features = ["cuda", "gpu-examples"]
 

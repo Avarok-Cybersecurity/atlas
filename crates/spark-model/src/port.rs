@@ -8,6 +8,9 @@
 //! here; lines are inserted immediately BEFORE the marker below by the
 //! coordinator's fragment apply pass.
 
+/// The affine 4-bit weight route: MLX-affine weights quantized from BF16 at load, served on the Ada
+/// lane GEMV (lanes L17a, L17b, L17c).
+pub mod affine;
 /// Per-model state the port lanes add (`ModelPortState`), one field per lane.
 pub mod state;
 /// The packed-weight linear contract (`W4Linear`, master plan 3.7.2), its
