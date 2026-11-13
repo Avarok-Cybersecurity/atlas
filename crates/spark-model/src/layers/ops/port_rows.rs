@@ -11,5 +11,7 @@
 //! apply pass.
 
 pub mod kv_batched_swap;
+pub mod prefix_cow_tail;
+pub mod radix_lru_index;
 pub mod ssm_store_lru;
 // @port:mods

@@ -37,6 +37,10 @@ pub struct PortLevers {
     pub kv_batched_swap: Resolved<bool>,
     /// SSM tier blob store eviction order: a capped host-RAM store gives up the least recently used blob instead of the oldest insert.
     pub ssm_store_lru: Resolved<bool>,
+    /// Radix prefix-cache eviction takes its victim from an ordered (last_access, node id) index of evictable leaves instead of scanning every node.
+    pub radix_lru_index: Resolved<bool>,
+    /// A prefix-cache hit may end inside a KV block: the chunked prefill copies that block into a private block instead of sharing the donor's writable tail.
+    pub prefix_cow_tail: Resolved<bool>,
     // @port:fields
 }
 
@@ -58,6 +62,14 @@ pub fn resolve(
         ssm_store_lru: super::port_rows::ssm_store_lru::resolve(
             d.ssm_store_lru,
             var(super::port_rows::ssm_store_lru::ENV).as_deref(),
+        ),
+        radix_lru_index: super::port_rows::radix_lru_index::resolve(
+            d.radix_lru_index,
+            var(super::port_rows::radix_lru_index::ENV).as_deref(),
+        ),
+        prefix_cow_tail: super::port_rows::prefix_cow_tail::resolve(
+            d.prefix_cow_tail,
+            var(super::port_rows::prefix_cow_tail::ENV).as_deref(),
         ),
         // @port:resolve
     }
@@ -92,6 +104,8 @@ pub fn format_port(l: &PortLevers) -> String {
     let header = s.len();
     push(&mut s, "kv_batched_swap", &l.kv_batched_swap);
     push(&mut s, "ssm_store_lru", &l.ssm_store_lru);
+    push(&mut s, "radix_lru_index", &l.radix_lru_index);
+    push(&mut s, "prefix_cow_tail", &l.prefix_cow_tail);
     // @port:boot
     if s.len() == header {
         s.push_str(" none");
