@@ -39,6 +39,14 @@ pub struct PortLevers {
     pub gguf_native_iq4: Resolved<bool>,
     /// EXL3 trellis matrices are served from their packed codes on sm_89.
     pub weights_exl3: Resolved<bool>,
+    /// On a plain-BF16 dense Qwen3.5 checkpoint, quantize the dense FFN's gate, up and down once at load into MLX affine codes and serve them through W4Linear.
+    pub dense_affine4_from_bf16: Resolved<bool>,
+    /// On a plain-BF16 dense Qwen3.5 checkpoint, quantize each GDN layer's in-projection and out_proj once at load to MLX affine codes.
+    pub gdn_affine4_from_bf16: Resolved<bool>,
+    /// On a plain-BF16 dense Qwen3.5 checkpoint, quantize each full-attention layer's q, k, v and o once at load to MLX affine codes.
+    pub attn_affine4_from_bf16: Resolved<bool>,
+    /// The affine routes' prompt GEMM quantizes the activation rows to int8 per group and runs the W4A8 int8 tensor-core GEMM over the same 4-bit codes.
+    pub affine4_prefill_int8: Resolved<bool>,
     /// On a plain-BF16 dense Qwen3.5 checkpoint, quantize the dense FFN's gate, up and down once at load with the NVFP4 quantizer and serve them through W4Linear.
     pub dense_nvfp4_from_bf16: Resolved<bool>,
     /// Batched sequence swap: gather a swapped-out sequence's image with batched async copies into one reused page-locked staging buffer.
@@ -74,6 +82,22 @@ pub fn resolve(
         weights_exl3: super::port_rows::weights_exl3::resolve(
             d.weights_exl3,
             var(super::port_rows::weights_exl3::ENV).as_deref(),
+        ),
+        dense_affine4_from_bf16: super::port_rows::dense_affine4_from_bf16::resolve(
+            d.dense_affine4_from_bf16,
+            var(super::port_rows::dense_affine4_from_bf16::ENV).as_deref(),
+        ),
+        gdn_affine4_from_bf16: super::port_rows::gdn_affine4_from_bf16::resolve(
+            d.gdn_affine4_from_bf16,
+            var(super::port_rows::gdn_affine4_from_bf16::ENV).as_deref(),
+        ),
+        attn_affine4_from_bf16: super::port_rows::attn_affine4_from_bf16::resolve(
+            d.attn_affine4_from_bf16,
+            var(super::port_rows::attn_affine4_from_bf16::ENV).as_deref(),
+        ),
+        affine4_prefill_int8: super::port_rows::affine4_prefill_int8::resolve(
+            d.affine4_prefill_int8,
+            var(super::port_rows::affine4_prefill_int8::ENV).as_deref(),
         ),
         dense_nvfp4_from_bf16: super::port_rows::dense_nvfp4_from_bf16::resolve(
             d.dense_nvfp4_from_bf16,
@@ -129,6 +153,14 @@ pub fn format_port(l: &PortLevers) -> String {
     push(&mut s, "marlin_w4a16", &l.marlin_w4a16);
     push(&mut s, "gguf_native_iq4", &l.gguf_native_iq4);
     push(&mut s, "weights_exl3", &l.weights_exl3);
+    push(
+        &mut s,
+        "dense_affine4_from_bf16",
+        &l.dense_affine4_from_bf16,
+    );
+    push(&mut s, "gdn_affine4_from_bf16", &l.gdn_affine4_from_bf16);
+    push(&mut s, "attn_affine4_from_bf16", &l.attn_affine4_from_bf16);
+    push(&mut s, "affine4_prefill_int8", &l.affine4_prefill_int8);
     push(&mut s, "dense_nvfp4_from_bf16", &l.dense_nvfp4_from_bf16);
     push(&mut s, "kv_batched_swap", &l.kv_batched_swap);
     push(&mut s, "ssm_store_lru", &l.ssm_store_lru);

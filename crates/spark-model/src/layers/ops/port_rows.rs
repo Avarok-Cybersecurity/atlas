@@ -10,7 +10,11 @@
 //! inserted immediately BEFORE the marker below by the coordinator's fragment
 //! apply pass.
 
+pub mod affine4_prefill_int8;
+pub mod attn_affine4_from_bf16;
+pub mod dense_affine4_from_bf16;
 pub mod dense_nvfp4_from_bf16;
+pub mod gdn_affine4_from_bf16;
 pub mod gguf_native_iq4;
 pub mod kv_batched_swap;
 pub mod marlin_w4a16;
