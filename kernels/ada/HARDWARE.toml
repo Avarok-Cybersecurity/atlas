@@ -282,5 +282,17 @@ overrides = [
   "prefill_paged_compute.cuh",
   "prefill_paged_compute_asym.cuh",
   "swiglu_quant_fp8_ada.cu",
+  # Affine 4-bit route (port lane L17a; TensorFold lane GEMV, Apache-2.0, see
+  # TENSORFOLD-ATTRIBUTION.md). ADDITIONS, no gb10 counterpart. Looked up only
+  # through try_target_kernel when an affine route row is on
+  # (crates/spark-model/src/port/affine/kernels.rs).
+  #   affine4_lane_ada.cu  decode/verify GEMV, M = 1..16, groups 32/64/128,
+  #                        single, split-K ticket, seg and many forms
+  #   affine_frag_ada.cuh  include-only cp.async, ldmatrix, MMA, code pairs
+  #   affine_pack_ada.cu   BF16 -> MLX quantizer, tile pack, scale transpose,
+  #                        group sums, BF16 dequant
+  "affine4_lane_ada.cu",
+  "affine_frag_ada.cuh",
+  "affine_pack_ada.cu",
   # @port:overrides
 ]
