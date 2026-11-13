@@ -14,6 +14,7 @@ use crate::cli;
 
 mod consumer_pools;
 mod decode_ring;
+mod dflash_fit;
 mod gpu_backend;
 mod headroom;
 mod measured_ceiling;
@@ -34,6 +35,10 @@ pub(crate) struct ReservePreflight {
     pub(crate) gdn_two_phase_bytes: usize,
     pub(crate) ssm_prefill_chunk: usize,
     pub(crate) max_batch_tokens_pre: usize,
+    /// Row `AVAROK_DFLASH_FIT`: the verify width the fit chose when
+    /// `--dflash-gamma` was not given and the default did not fit. The caller
+    /// pins it into `args.dflash_gamma`. `None` with the row off, always.
+    pub(crate) dflash_gamma: Option<usize>,
 }
 
 pub(crate) fn preflight_reserve(
@@ -98,10 +103,18 @@ pub(crate) fn preflight_reserve(
     // remote checkpoint falls back to `resolved_dflash_gamma`'s 16 ceiling —
     // the same unknown-γ fallback the pool allocation uses (`γ+1 = 17`), so
     // the miss direction is over-reserve, never under.
+    //
+    // Row `AVAROK_DFLASH_FIT`: an explicit `--dflash-gamma` is the gamma the
+    // head and `SsmStatePool::new` use (`DflashBuildArgs::gamma`), so the
+    // pools are reserved at it; without the row they are reserved at the
+    // drafter's default whatever the flag says (`dflash_fit.rs`).
     let pool_num_drafts = if args.dflash {
-        peek_dflash_block_size(args.draft_model.as_deref())
-            .map(spark_model::layers::qwen3_ssm::default_dflash_gamma)
-            .unwrap_or_else(|| args.resolved_dflash_gamma(None))
+        match args.dflash_gamma.filter(|_| dflash_fit::enabled()) {
+            Some(g) => g,
+            None => peek_dflash_block_size(args.draft_model.as_deref())
+                .map(spark_model::layers::qwen3_ssm::default_dflash_gamma)
+                .unwrap_or_else(|| args.resolved_dflash_gamma(None)),
+        }
     } else {
         args.resolved_num_drafts()
     };
@@ -321,7 +334,32 @@ pub(crate) fn preflight_reserve(
         tracing::warn!("SSM decode-rollback ring auto-fit — {}", warning);
     }
     let ssm_snapshot_bytes = marconi_bytes + fit.slots * ring_slot_bytes;
-    let inference_reserve: usize = fixed_reserve + fit.slots * ring_slot_bytes;
+    let mut inference_reserve: usize = fixed_reserve + fit.slots * ring_slot_bytes;
+    // Row `AVAROK_DFLASH_FIT` (`dflash_fit.rs`): a narrower verify width swaps
+    // its pools and headroom into the reserve. Row off: no plan, nothing moves.
+    let (mut ssm_pool_bytes, mut cuda_headroom) = (ssm_pool_bytes, cuda_headroom);
+    let dflash_plan = dflash_fit::plan(
+        args,
+        config,
+        &dflash_fit::PlanInputs {
+            beside_weights,
+            kv_floor: headroom::kv_floor_bytes(args, config, post_load.kv_dtype),
+            arena: buffer_arena_bytes,
+            fixed: inference_reserve - ssm_pool_bytes - cuda_headroom,
+            h_blob: config.num_ssm_layers() * h_state_bytes,
+            conv_blob: config.num_ssm_layers() * conv_state_bytes,
+            mtp_state_slots,
+            h_f16_pool: spark_model::layers::qwen3_ssm::ssm_h_f16_pool_enabled(),
+            rollback: spark_model::ssm_reserve::ssm_rollback_mode(),
+            default_gamma: pool_num_drafts,
+        },
+    );
+    if let Some(p) = &dflash_plan {
+        inference_reserve =
+            inference_reserve - ssm_pool_bytes - cuda_headroom + p.ssm_pool_bytes + p.cuda_headroom;
+        ssm_pool_bytes = p.ssm_pool_bytes;
+        cuda_headroom = p.cuda_headroom;
+    }
     let total_reserve = inference_reserve + buffer_arena_bytes;
     if total_reserve > free_mem {
         return Err(refusal::reserve_refusal(
@@ -389,6 +427,7 @@ pub(crate) fn preflight_reserve(
         gdn_two_phase_bytes,
         ssm_prefill_chunk,
         max_batch_tokens_pre,
+        dflash_gamma: dflash_plan.map(|p| p.gamma),
     })
 }
 

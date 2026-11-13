@@ -199,7 +199,29 @@ pub(super) fn dflash_pool_dummy_bytes(args: &cli::ServeArgs, config: &ModelConfi
 /// smaller of `--max-seq-len` and the head's ctx cap. Allocated lazily as
 /// requests arrive (`alloc_state_windowed`), long after any pool is sized.
 pub(super) fn dflash_ctx_accumulator_bytes(args: &cli::ServeArgs, config: &ModelConfig) -> usize {
-    let window = args.max_seq_len.min(DFLASH_CTX_CAP);
+    dflash_ctx_accumulator_bytes_with_cap(args, config, ctx_window_cap())
+}
+
+/// The window cap the accumulators are priced at: the head's compiled-in
+/// default, or with `AVAROK_DFLASH_FIT` on the head's own
+/// `AVAROK_DFLASH_CTX_CAP` (`0` = uncapped), so the reserve prices the window
+/// the head will really allocate.
+fn ctx_window_cap() -> usize {
+    if super::dflash_fit::enabled() {
+        super::dflash_fit::head_ctx_cap()
+    } else {
+        DFLASH_CTX_CAP
+    }
+}
+
+/// [`dflash_ctx_accumulator_bytes`] at an explicit window cap (a CPU test
+/// drives the opt-in's pricing without the process environment).
+pub(super) fn dflash_ctx_accumulator_bytes_with_cap(
+    args: &cli::ServeArgs,
+    config: &ModelConfig,
+    cap: usize,
+) -> usize {
+    let window = args.max_seq_len.min(cap);
     args.max_batch_size
         .max(1)
         .saturating_mul(window)
@@ -211,8 +233,17 @@ pub(super) fn dflash_ctx_accumulator_bytes(args: &cli::ServeArgs, config: &Model
 /// The priced DFlash headroom and its boot-log reason. Clamped to the flat
 /// 4 GiB: pricing never reserves more than every target always has.
 fn dflash_headroom(args: &cli::ServeArgs, config: &ModelConfig) -> (usize, String) {
+    dflash_headroom_with_cap(args, config, ctx_window_cap())
+}
+
+/// [`dflash_headroom`] at an explicit accumulator window cap.
+pub(super) fn dflash_headroom_with_cap(
+    args: &cli::ServeArgs,
+    config: &ModelConfig,
+    cap: usize,
+) -> (usize, String) {
     let dummy = dflash_pool_dummy_bytes(args, config);
-    let acc = dflash_ctx_accumulator_bytes(args, config);
+    let acc = dflash_ctx_accumulator_bytes_with_cap(args, config, cap);
     let sum = BASE_HEADROOM
         .saturating_add(dummy)
         .saturating_add(acc)

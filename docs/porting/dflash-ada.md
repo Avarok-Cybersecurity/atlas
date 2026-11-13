@@ -91,6 +91,38 @@ and 3 MiB conv per sequence). The accumulators are
 request. **UNMEASURED**: whether the margin is enough is the first GPU receipt.
 `AVAROK_SPEC_HEADROOM_FULL` restores the flat reserve.
 
+### Eight streams on the 16 GB card: `AVAROK_DFLASH_FIT=1` (opt-in, off by default)
+
+The default boot at `--max-batch-size 8` is refused ("only 8.08 GB remains but
+13.32 GB is needed", `s4-l14-df-c8.log`). The 13.32 GiB is exactly 6,960 MiB of
+SSM pools (8 base blobs of 51 MiB, then 8 verify slots of 819 MiB each: 15 h
+snapshots x 48 MiB + 16 conv x 3 MiB + a 51 MiB checkpoint, uniform because every
+slot verifies the whole block) + 4,096 MiB of CUDA headroom (clamped from 5,017,
+2,560 of it ctx accumulators priced at the worst-case window) + 258 MiB of GDN
+prefill + 2,327 MiB of buffer arena. The pools alone are 6.8 GiB of the 8.08 GiB.
+
+`AVAROK_DFLASH_FIT=1` prices the serve by what it allocates and picks a width:
+
+1. the pool width follows `--dflash-gamma` (the preflight used to size the pools
+   at the drafter's default whatever the flag said);
+2. the accumulators are priced at `AVAROK_DFLASH_CTX_CAP` (the head reads that
+   env; the preflight did not), `0` = uncapped;
+3. with no `--dflash-gamma`, the widest gamma (down to 3, verify width 4) whose
+   pools, headroom, arena, the drafter's weights and post-sizing allocations and
+   the 4,096-token KV floor all fit beside the resident weights is chosen and
+   pinned as if `--dflash-gamma` had been given (the gamma resolver is then off).
+   The boot log prints every term ("DFlash fit: gamma N instead of 15 ...").
+
+At 8 streams with `AVAROK_DFLASH_CTX_CAP=1024 --max-prefill-tokens 1024` (arena
+394 MiB) the CPU sizing test (`preflight/dflash_fit_tests.rs`) finds gamma 3: 2,064
+pools + 2,114 headroom + 32 GDN + 394 arena + 2,407 drafter + 1,024 KV floor + 256
+margin = 8,291 MiB against 8,469 MiB beside the weights (the default gamma 15
+needs 13,799). That leaves about 1.2 GiB of real KV after the drafter's
+allocations. A narrower verify width lowers the tokens one verify step can take
+and nothing else (the verify is exact). If no width fits, the log says what even
+gamma 3 needs and the default stays. UNMEASURED on the card until the `dfflash8`
+row of `bench/rows.fix3` runs.
+
 ## How to run
 
 ```

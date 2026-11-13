@@ -489,7 +489,14 @@ pub(crate) fn load_model(
         gdn_two_phase_bytes,
         ssm_prefill_chunk,
         max_batch_tokens_pre,
+        dflash_gamma,
     } = serve_phases::preflight_reserve(&args, &config, free_mem, &post_load_inputs)?;
+    // Row `AVAROK_DFLASH_FIT`: the verify width the fit chose is pinned like
+    // `--dflash-gamma`, before the drafter, the pools and the scheduler read it.
+    // `None` with the row off, so nothing is written.
+    if dflash_gamma.is_some() {
+        args.dflash_gamma = dflash_gamma;
+    }
     let total_reserve = inference_reserve + buffer_arena_bytes;
 
     // 2a-2. OOM watchdog: background async task that polls GPU memory every 2s.
