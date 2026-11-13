@@ -16,6 +16,10 @@
 //! propose comes from ([`K4Hidden`]): the live verify row (single-seq path,
 //! `save_hidden_for_mtp`) or the pre-propose stash slot (batched path, whose
 //! phase-3 proposes have already clobbered the live rows).
+//!
+//! Also the pure helper the batched step's write-on-accept hook uses (lane
+//! L10): the per-sequence fold widths, derived with the verdict's own clamp
+//! so the GDN fold and the verdict commit the same prefix.
 
 use super::*;
 
@@ -206,4 +210,40 @@ pub(super) fn k4_apply_verdict(
         );
     }
     crate::scheduler::verify_k4_step::stats::k4_record_outcome(sched, na, a.seq.seq_len);
+}
+
+/// Rows each sequence's GDN state must fold after a batched write-on-accept
+/// verify (`Model::gdn_fold_accepted`): the accepted drafts plus the
+/// always-committed first row, clamped exactly as [`k4_apply_verdict`]
+/// clamps (`na <= nd = ks[i] - 1`), so the fold commits the same prefix the
+/// verdict emits. `accepted[i]` is sequence i's raw accepted-draft count.
+pub(super) fn woa_fold_rows(accepted: &[usize], ks: &[usize]) -> Vec<u32> {
+    accepted
+        .iter()
+        .zip(ks)
+        .map(|(&na, &k)| (na.min(k.saturating_sub(1)) + 1) as u32)
+        .collect()
+}
+
+#[cfg(test)]
+mod woa_tests {
+    use super::woa_fold_rows;
+
+    /// The fold commits the first row plus every accepted draft: a full
+    /// reject folds 1 row, a full accept of 3 drafts folds all 4.
+    #[test]
+    fn fold_rows_are_the_committed_prefix() {
+        assert_eq!(woa_fold_rows(&[0, 1, 2, 3], &[4, 4, 4, 4]), [1, 2, 3, 4]);
+        assert_eq!(woa_fold_rows(&[0, 1], &[2, 2]), [1, 2]);
+        assert_eq!(woa_fold_rows(&[2, 0, 2], &[3, 3, 3]), [3, 1, 3]);
+    }
+
+    /// An accepted count above the verified drafts is clamped the way the
+    /// verdict clamps it, so the fold can never commit a row the verdict
+    /// rewound.
+    #[test]
+    fn fold_rows_clamp_like_the_verdict() {
+        assert_eq!(woa_fold_rows(&[7], &[4]), [4]);
+        assert_eq!(woa_fold_rows(&[5, 9], &[2, 3]), [2, 3]);
+    }
 }
