@@ -223,6 +223,9 @@ pub fn build_model(
     mem.mark("load_final_norm");
     let lm_head = loader.load_lm_head(&store, &config, gpu.as_ref())?;
     mem.mark("load_lm_head");
+    // Port lane L24: with `--lm-head-packed` the store's Q6_K head must not
+    // reach a BF16 reader (the MTP drafter, a head requantization).
+    crate::port::packed_head::check_load(&store, &config, use_speculative)?;
     let mtp_weights = loader.load_mtp_weights_multi(&store, &config, gpu.as_ref())?;
     mem.mark("load_mtp_weights_multi");
 
@@ -428,6 +431,10 @@ pub fn build_model(
     // computed a few lines below, so it has to happen HERE — after every
     // `load_*` reader above, before `BufferArena::new` and `gpu.free_memory()`.
     loader.prune_after_load(&mut store, &config, gpu.as_ref())?;
+    // Port lane L24 (row `embed_host_offload`): free the device copy of an
+    // embedding table now served from mapped host memory; a refused mapping
+    // fails a speculative start. Nothing to do with the row off.
+    crate::port::embed_host::after_load(&mut store, gpu.as_ref(), use_speculative)?;
     mem.mark("prune_after_load");
     tracing::info!(
         "WeightStore after prune: {} tensors, {:.3} GiB still resident",

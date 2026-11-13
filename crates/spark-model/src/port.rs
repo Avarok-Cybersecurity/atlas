@@ -14,6 +14,9 @@ pub mod affine;
 /// The load-time BF16 -> affine routes' serve options (bits, group, clip
 /// search, int8 prompt GEMM). Lane L23a.
 pub mod affine_opts;
+/// The input embedding table in mapped host memory (row
+/// `embed_host_offload`). Lane L24.
+pub mod embed_host;
 /// The EXL3 trellis weight route: ExLlamaV3-format matrices served from their packed codes on the Ada
 /// decode-row linear through `W4Linear` (lane L20b, row `weights_exl3`).
 pub mod exl3;
@@ -23,6 +26,9 @@ pub mod gguf_q4;
 /// The Marlin W4A16 route: GPTQ/AWQ int4 checkpoints and opt-in round-to-nearest int4 from BF16,
 /// repacked on the host and served on vLLM's Marlin GEMM (lane L18b; kernels by lane L18a).
 pub mod marlin;
+/// The GGUF Q6_K output head served through `W4Linear` where `kquant_moe` is
+/// absent (`--lm-head-packed`). Lane L24.
+pub mod packed_head;
 /// Per-model state the port lanes add (`ModelPortState`), one field per lane.
 pub mod state;
 /// The packed-weight linear contract (`W4Linear`, master plan 3.7.2), its

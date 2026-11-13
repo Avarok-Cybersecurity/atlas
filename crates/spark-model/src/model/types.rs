@@ -702,6 +702,13 @@ impl TransformerModel {
         // Every pointer freed above has already left the ledger, so this
         // cannot double-free — it only ever sees what was missed.
         let swept = gpu.sweep_unreleased();
+        // Port lane L24: the embedding table in mapped host memory, if the
+        // `embed_host_offload` row put it there (host memory, so the sweep
+        // above never sees it).
+        attempt(
+            "embedding host table",
+            crate::port::embed_host::release_view(gpu, self.embed_tokens.weight),
+        );
         if swept > 0 {
             tracing::warn!(
                 "teardown swept {swept} allocation(s) that no ModelResource \

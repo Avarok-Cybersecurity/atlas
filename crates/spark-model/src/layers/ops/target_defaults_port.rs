@@ -49,6 +49,8 @@ pub struct PortLevers {
     pub affine4_prefill_int8: Resolved<bool>,
     /// On a plain-BF16 dense Qwen3.5 checkpoint, quantize the dense FFN's gate, up and down once at load with the NVFP4 quantizer and serve them through W4Linear.
     pub dense_nvfp4_from_bf16: Resolved<bool>,
+    /// The input embedding table is copied once at load into page-locked host memory and read through the region's device-visible alias.
+    pub embed_host_offload: Resolved<bool>,
     /// Batched sequence swap: gather a swapped-out sequence's image with batched async copies into one reused page-locked staging buffer.
     pub kv_batched_swap: Resolved<bool>,
     /// SSM tier blob store eviction order: a capped host-RAM store gives up the least recently used blob instead of the oldest insert.
@@ -102,6 +104,10 @@ pub fn resolve(
         dense_nvfp4_from_bf16: super::port_rows::dense_nvfp4_from_bf16::resolve(
             d.dense_nvfp4_from_bf16,
             var(super::port_rows::dense_nvfp4_from_bf16::ENV).as_deref(),
+        ),
+        embed_host_offload: super::port_rows::embed_host_offload::resolve(
+            d.embed_host_offload,
+            var(super::port_rows::embed_host_offload::ENV).as_deref(),
         ),
         kv_batched_swap: super::port_rows::kv_batched_swap::resolve(
             d.kv_batched_swap,
@@ -162,6 +168,7 @@ pub fn format_port(l: &PortLevers) -> String {
     push(&mut s, "attn_affine4_from_bf16", &l.attn_affine4_from_bf16);
     push(&mut s, "affine4_prefill_int8", &l.affine4_prefill_int8);
     push(&mut s, "dense_nvfp4_from_bf16", &l.dense_nvfp4_from_bf16);
+    push(&mut s, "embed_host_offload", &l.embed_host_offload);
     push(&mut s, "kv_batched_swap", &l.kv_batched_swap);
     push(&mut s, "ssm_store_lru", &l.ssm_store_lru);
     push(&mut s, "radix_lru_index", &l.radix_lru_index);
