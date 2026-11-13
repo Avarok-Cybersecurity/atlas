@@ -27,6 +27,39 @@ Cinference (CUDA Graph topology signature)
     NInfer is distributed under the Apache License, Version 2.0. The original
     LICENSE is retained unchanged in this distribution.
 
+== TensorFold (affine 4-bit route) ==
+
+Source:  https://github.com/ashhart/TensorFold, commit 3885dce
+License: Apache License, Version 2.0 (LICENSES/Apache-2.0.txt); code written
+         before TensorFold 0.6.0 is also available under the MIT License
+         (LICENSES/TensorFold-pre0.6-MIT.txt)
+
+TensorFold's NOTICE file reads:
+
+  TensorFold
+  Copyright 2026 TensorFold contributors
+  https://github.com/ashhart/TensorFold
+
+  TensorFold is licensed under the Apache License, Version 2.0 (LICENSE) from 0.6.0.
+  Releases up to 0.5.0 were MIT-licensed, and code written before 0.6.0 keeps its
+  MIT notice in LICENSES/MIT.txt. Third-party code and its licenses are listed in
+  THIRD_PARTY_NOTICES.md.
+
+Atlas copies and adapts TensorFold's MLX-affine CUDA kernels (the lane MMA
+GEMV, its split-K and multi-projection forms, the tile pack, the group sums,
+the prompt GEMMs and the 2/3/5/6/8-bit forms) and translates its Zig host
+code (the MLX quantizer, the tiled layout and split rule, the launchers) into
+Rust. The files that carry it are listed, with the upstream paths and line
+ranges and the changes made, in TENSORFOLD-ATTRIBUTION.md:
+  kernels/ada/common/affine_frag_ada.cuh, affine4_lane_ada.cu,
+         affine_pack_ada.cu (lane L17a)
+  kernels/ada/common/affine_prefill_ada.cu, affine_swiglu_sums_ada.cu
+         (lane L17b)
+  kernels/ada/common/affine_n_ada.cu, affine_codes_ada.cuh (lane L17c)
+  crates/spark-model/src/port/affine/ (the host side of all three lanes)
+The affine format itself (per-group bf16 scale and bias, value = s * q + b)
+is MLX's (Apple, MIT); see CITATIONS.md.
+
 == LMCache (KV block transfer, pinned host pool, LRU blob store) ==
 
 Source:  https://github.com/LMCache/LMCache, commit 3aefae1

@@ -216,4 +216,24 @@ Atlas files that carry it. License texts are in `LICENSES/`; notices are in
   resolution and the per-copy fallback; no code copied. Atlas file:
   `crates/spark-runtime/src/cuda_backend/gpu_impl_batch_copy.rs`.
 - See `GPU-BACKEND-EXT-ATTRIBUTION.md`.
+
+### Affine 4-bit route: TensorFold and the MLX format (L17a, L17b, L17c)
+
+- TensorFold (https://github.com/ashhart/TensorFold, commit 3885dce), Copyright
+  2026 TensorFold contributors, Apache-2.0 (code written before 0.6.0 also MIT).
+  Source of the Ada affine kernels (`kernels/ada/common/affine_frag_ada.cuh`,
+  `affine4_lane_ada.cu`, `affine_pack_ada.cu`, `affine_prefill_ada.cu`,
+  `affine_swiglu_sums_ada.cu`, `affine_n_ada.cu`, `affine_codes_ada.cuh`) and of
+  the host code translated into `crates/spark-model/src/port/affine/`. The
+  microtest gates (float64 bound, five-run byte repeat, planted controls,
+  distinct weight copies for DRAM-bound timing) follow its
+  `docs/kernel-contract.md` and recipes. Files, line ranges and changes:
+  `TENSORFOLD-ATTRIBUTION.md`. TensorFold reports no lane-GEMV number on sm_89;
+  Atlas's numbers come from `examples/affine_ada_microtest.rs` on the card.
+- MLX affine quantization (https://github.com/ml-explore/mlx, Apple, MIT): the
+  weight format the route stores (groups of 32, 64 or 128 inputs, a bf16 scale
+  and bias per group, value = scale * code + bias, 4-bit codes packed eight to a
+  u32, low nibble first) and the quantizer's rounding rules, as TensorFold
+  implements them (`zig/src/core/affine4_host.zig`). Credited for the format;
+  no MLX source is copied.
 <!-- @port:citations -->
