@@ -35,6 +35,7 @@ const DECLARING: &[&str] = &["gb10", "hopper", "b200", "b300", "ada"];
 const PORT_LEVERS: &[&str] = &[
     "marlin_w4a16",
     "gguf_native_iq4",
+    "weights_exl3",
     "kv_batched_swap",
     "ssm_store_lru",
     "radix_lru_index",
@@ -92,6 +93,7 @@ fn the_baked_port_rows_match_their_own_hardware_tree() {
     assert_eq!(baked.hw, declared.hw);
     assert_eq!(baked.port.marlin_w4a16, declared.port.marlin_w4a16);
     assert_eq!(baked.port.gguf_native_iq4, declared.port.gguf_native_iq4);
+    assert_eq!(baked.port.weights_exl3, declared.port.weights_exl3);
     assert_eq!(baked.port.kv_batched_swap, declared.port.kv_batched_swap);
     assert_eq!(baked.port.ssm_store_lru, declared.port.ssm_store_lru);
     assert_eq!(baked.port.radix_lru_index, declared.port.radix_lru_index);
@@ -107,6 +109,7 @@ fn ada_port_rows_hold_their_write_time_values() {
     assert_eq!(d.hw, "ada");
     assert_eq!(declared("ada").port.marlin_w4a16, false);
     assert_eq!(declared("ada").port.gguf_native_iq4, false);
+    assert_eq!(declared("ada").port.weights_exl3, false);
     assert_eq!(declared("ada").port.kv_batched_swap, false);
     assert_eq!(declared("ada").port.ssm_store_lru, false);
     assert_eq!(declared("ada").port.radix_lru_index, false);
@@ -121,6 +124,7 @@ fn non_ada_targets_keep_every_port_row_at_its_baseline() {
         assert_eq!(declared(hw).hw, hw);
         assert!(!declared(hw).port.marlin_w4a16, "{hw}");
         assert!(!declared(hw).port.gguf_native_iq4, "{hw}");
+        assert!(!declared(hw).port.weights_exl3, "{hw}");
         assert!(!declared(hw).port.kv_batched_swap, "{hw}");
         assert!(!declared(hw).port.ssm_store_lru, "{hw}");
         assert!(!declared(hw).port.radix_lru_index, "{hw}");

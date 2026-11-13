@@ -47,6 +47,15 @@ pub struct PortDefaults {
     /// engine; host port/gguf_q4/), instead of expanding them to BF16 at 2 bytes
     /// a weight.
     pub gguf_native_iq4: bool,
+    /// EXL3 trellis matrices (ExLlamaV3's QTIP-style codes, 1 to 8 bits a weight
+    /// with mul1 half-bit steps, read by spark-runtime's weights/exl3 reader) are
+    /// served from their packed codes on sm_89: the input rotated into the
+    /// Hadamard domain (exl3_hadamard_ada.cu), the decode-row linear decoding
+    /// each 16 x 16 tile straight into mma fragments for 1 to 128 rows with
+    /// split-K partials (exl3_linear_ada.cu), and longer prefills declined to the
+    /// BF16 dequant and the caller's GEMM (host port/exl3/, after ExLlamaV3 MIT
+    /// via TensorFold Apache-2.0).
+    pub weights_exl3: bool,
     /// Batched sequence swap
     /// (`spark-model/src/model/trait_impl/sequence/state_io.rs`,
     /// `spark-runtime/src/kv_cache/block_io.rs`): a swapped-out sequence's image
@@ -87,6 +96,7 @@ pub struct PortDefaults {
 pub const PORT_BASELINE: PortDefaults = PortDefaults {
     marlin_w4a16: false,
     gguf_native_iq4: false,
+    weights_exl3: false,
     kv_batched_swap: false,
     ssm_store_lru: false,
     radix_lru_index: false,

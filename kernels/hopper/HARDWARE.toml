@@ -421,6 +421,22 @@ marlin_w4a16 = false
 # R3 bars (M = 1 at 85% of 288 GB/s, M = 8 within 25% of M = 1), and a KL
 # check against BF16 on a Qwen3.5-4B or Qwen3.8-27B IQ4_XS GGUF.
 gguf_native_iq4 = false
+# EXL3 trellis matrices (ExLlamaV3's QTIP-style codes, 1 to 8 bits a weight
+# with mul1 half-bit steps, read by spark-runtime's weights/exl3 reader) are
+# served from their packed codes on sm_89: the input rotated into the Hadamard
+# domain (exl3_hadamard_ada.cu), the decode-row linear decoding each 16 x 16
+# tile straight into mma fragments for 1 to 128 rows with split-K partials
+# (exl3_linear_ada.cu), and longer prefills declined to the BF16 dequant and
+# the caller's GEMM (host port/exl3/, after ExLlamaV3 MIT via TensorFold
+# Apache-2.0). Off: port::exl3::from_exl3_tensors refuses and route_enabled is
+# false, so no loader builds an EXL3 weight and every target is unchanged. Off
+# until the receipt: examples/exl3_microtest.rs all PASS (dequant byte-equal
+# to the host mirror at every width, the linear within the float64 bound at M
+# = 1..128, row invariance, the five-run repeat), one real tensor of
+# turboderp/Qwen3.8-27B-exl3 dequantized byte for byte (--real-dir), and a KL
+# check of the 27B at 3.0 / 3.5 bpw against its BF16 source once a loader
+# route installs EXL3 weights.
+weights_exl3 = false
 # Batched sequence swap
 # (`spark-model/src/model/trait_impl/sequence/state_io.rs`,
 # `spark-runtime/src/kv_cache/block_io.rs`): a swapped-out sequence's image
