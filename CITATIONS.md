@@ -482,4 +482,12 @@ copied.
   Inference via Vector Retrieval", arXiv 2409.10516 (NeurIPS 2025): the
   out-of-distribution query argument and the partial-softmax merge the
   estimation zone generalizes. No code from it (the repository has none for it).
+- **XAttention** (R. Xu, G. Xiao, H. Huang, J. Guo, S. Han, "XAttention: Block Sparse Attention with Antidiagonal
+  Scoring", arXiv:2503.16428, 2025): antidiagonal scoring of attention blocks with a stride, and block selection by a
+  cumulative softmax-mass threshold, for block-sparse prefill. The reference repository has no detected license, so it
+  was not read and no code was copied: an independent implementation from the paper's description in
+  `kernels/ada/common/prefill_block_sparse_ada.cu` and `crates/spark-model/src/port/sparse_prefill/` (row
+  `prefill_sparse_attn`, APPROXIMATE, off on every target). Atlas's choices: 128-token blocks on absolute positions,
+  the strided logit as the mean of its S products, forced sink, diagonal and previous blocks, and a cut found by a
+  deterministic binary search on the FP32 mass.
 <!-- @port:citations -->
