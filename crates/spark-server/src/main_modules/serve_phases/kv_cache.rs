@@ -341,11 +341,38 @@ pub(crate) fn resolve_kv_cache_config(
     } else {
         None
     };
+    validate_sparse_seam(args, config, kv_dtype, &layer_dtypes)?;
     Ok(KvCacheConfig {
         effective_kv_dtype_str,
         kv_dtype,
         layer_dtypes,
         hss_cache_blocks_per_seq,
+    })
+}
+
+/// Sparse-attention seam (port lane L29) startup refusals, run here because
+/// this is the first point that knows the resolved KV dtypes and runs after
+/// `port_apply` registered any selector, still before the weight load: a KV
+/// dtype other than BF16/FP8, `--high-speed-swap`, or a vision checkpoint
+/// served without `--no-vision`. Ok when no selector is registered. The
+/// selector's device reservation is charged to the KV-block budget where the
+/// budget is computed (`spark_model::factory::build`).
+fn validate_sparse_seam(
+    args: &cli::ServeArgs,
+    config: &ModelConfig,
+    kv_dtype: spark_runtime::kv_cache::KvCacheDtype,
+    layer_dtypes: &[spark_runtime::kv_cache::KvCacheDtype],
+) -> Result<()> {
+    use spark_model::layers::qwen3_attention::sparse_seam;
+    if sparse_seam::active().is_none() {
+        return Ok(());
+    }
+    let mut kv_dtypes = vec![kv_dtype];
+    kv_dtypes.extend_from_slice(layer_dtypes);
+    sparse_seam::validate_serve(&sparse_seam::ServeFacts {
+        kv_dtypes: &kv_dtypes,
+        high_speed_swap: args.high_speed_swap,
+        vision_input: config.vision.is_some() && !args.no_vision,
     })
 }
 

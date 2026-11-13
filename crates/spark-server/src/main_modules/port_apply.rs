@@ -40,6 +40,7 @@ pub(crate) fn apply(args: &PortArgs) -> anyhow::Result<()> {
     spark_runtime::radix_tree::set_cow_tail_enabled(
         spark_model::layers::ops::port_rows::prefix_cow_tail::row(),
     );
+    spark_model::layers::qwen3_attention::sparse_seam::identity::register_from_env()?;
     // @port:apply
     Ok(())
 }
