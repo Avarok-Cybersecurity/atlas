@@ -320,6 +320,23 @@ copied.
   with block 16, 2.61x at concurrency 32 with block 8); those numbers are the
   upstream's, on another card and engine, and are not Atlas measurements.
 
+### Cinference: L2 cache-policy hints and the fused RMSNorm FP8 producer (L15)
+
+- Source: Cinference, https://github.com/satellitedown/cinference, commit
+  `383e5db`, derived from NInfer (https://github.com/Neroued/ninfer).
+  Apache-2.0.
+- Used: the `createpolicy.fractional.L2::evict_first` weight-load policy and
+  its CUDA 13.1 ptxas caveat (`src/ops/common/memory.cuh:72-99`), small
+  snippet adapted, in the `_l2ef` entry points of
+  `kernels/ada/common/fp8_gemv_ada.cu` and `fp8_gemv_ada_batchm.cu`; the idea
+  of an RMSNorm that hands the FP8 GEMM its quantized input
+  (`src/ops/linear/fp8/fp8_rmsnorm_quantize.cu:1-98`), implemented
+  independently for Atlas's 1x128 groups in
+  `kernels/ada/common/rmsnorm_quant_fp8_ada.cu`.
+- Rows: `l2_evict_first_weights`, `rmsnorm_fp8_quant_fused` (both off). The
+  batch-M verify GEMV (`ffn_fp8_verify_gemv`) is Atlas-native.
+- Notice: `NOTICE`; notes: `CINFERENCE-L2-HINT-ATTRIBUTION.md`.
+
 ### Affine 4-bit route: TensorFold and the MLX format (L17a, L17b, L17c)
 
 - TensorFold (https://github.com/ashhart/TensorFold, commit 3885dce), Copyright

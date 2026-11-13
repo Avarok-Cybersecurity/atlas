@@ -152,6 +152,36 @@ Atlas's drafter head is its own implementation (see CITATIONS.md).
 Atlas change: none to the fixture; the loader tests in loader_tests.rs pin the
 values it carries.
 
+------------------------------------------------------------------------------
+Cinference and NInfer: L2 evict-first weight loads for the Ada FP8 GEMVs
+
+Upstream: Cinference, https://github.com/satellitedown/cinference, commit
+383e5db, derived from NInfer, https://github.com/Neroued/ninfer.
+Copyright: Neroued and the NInfer contributors; modifications by satellitedown
+for Cinference. The upstream LICENSE carries no further copyright line.
+License: Apache License, Version 2.0; see LICENSES/Apache-2.0.txt.
+Source: src/ops/common/memory.cuh lines 72-99 (the
+`createpolicy.fractional.L2::evict_first` policy for weights read once, and the
+CUDA 13.1 ptxas caveat on cache-hint operands).
+Atlas files: kernels/ada/common/fp8_gemv_ada.cu (the `_l2ef` twins only) and
+kernels/ada/common/fp8_gemv_ada_batchm.cu (the `_l2ef_` entries), where the
+policy feeds `ld.global.nc.L1::no_allocate.L2::cache_hint` loads instead of
+`cp.async`. kernels/ada/common/rmsnorm_quant_fp8_ada.cu follows the idea of
+Cinference's src/ops/linear/fp8/fp8_rmsnorm_quantize.cu; no code was copied.
+Notes: CINFERENCE-L2-HINT-ATTRIBUTION.md.
+
+From the Cinference NOTICE file:
+
+    Cinference
+    https://github.com/satellitedown/cinference
+
+    Cinference is derived from NInfer by Neroued and its contributors:
+    https://github.com/Neroued/ninfer
+    NInfer is distributed under the Apache License, Version 2.0. The original
+    LICENSE is retained unchanged in this distribution.
+
+------------------------------------------------------------------------------
+
 == TensorFold (affine 4-bit route) ==
 
 Source:  https://github.com/ashhart/TensorFold, commit 3885dce
