@@ -122,5 +122,23 @@ pub struct PortArgs {
     /// window, from a page boundary), 1 to 1048576 (default 2048).
     #[arg(long = "attn-sparse-recent-tokens", value_name = "TOKENS")]
     pub attn_sparse_recent_tokens: Option<u32>,
+    /// Bounded KV view (lane L32, APPROXIMATE attention): tokens each user
+    /// turn's view keeps (sink + recent window + the best blocks). Absent or
+    /// 0: off. Serves only with the `kv_view_selection` row on
+    /// (`AVAROK_KV_VIEW=1`), on Ada.
+    #[arg(long = "kv-view-budget-tokens", value_name = "TOKENS")]
+    pub kv_view_budget_tokens: Option<u32>,
+    /// Bounded KV view: leading tokens always kept, the attention sinks
+    /// (default 128).
+    #[arg(long = "kv-view-sink-tokens", value_name = "TOKENS")]
+    pub kv_view_sink_tokens: Option<u32>,
+    /// Bounded KV view: newest tokens kept in full at each selection (default
+    /// 2048).
+    #[arg(long = "kv-view-recent-tokens", value_name = "TOKENS")]
+    pub kv_view_recent_tokens: Option<u32>,
+    /// Bounded KV view: query rows taken from the end of the final user
+    /// message to score the blocks (default 512, at most 2048).
+    #[arg(long = "kv-view-query-tokens", value_name = "TOKENS")]
+    pub kv_view_query_tokens: Option<u32>,
     // @port:fields
 }

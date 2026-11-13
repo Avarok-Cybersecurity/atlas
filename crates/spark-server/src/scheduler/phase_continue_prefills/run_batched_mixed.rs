@@ -17,6 +17,7 @@ use spark_runtime::gpu::DevicePtr;
 use std::time::Instant;
 
 use super::super::decode_logits_step::process_decode_logits;
+use super::super::kv_view::{self, ChunkEnd};
 use super::super::types::{ActiveSeq, PrefillInProgress};
 use super::super::{FirstTokenPolicy, sample_first_token};
 
@@ -94,6 +95,14 @@ pub(super) fn run_batched_mixed_step(
     }
     let decode_tokens: Vec<u32> = active.iter().map(|a| a.last_token).collect();
 
+    // Bounded KV view (port L32): arm and name the prefill streams. Inert
+    // unless `kv_view_selection` is on with a budget.
+    let view_hook = kv_view::begin(
+        model,
+        &sched.limits,
+        &kv_view::streams_of(prefilling, &chunk_lens),
+    );
+
     // Build slices in a temporary scope so the &mut borrows on prefilling
     // and active drop before we re-borrow active mutably for
     // `process_decode_logits`.
@@ -125,6 +134,9 @@ pub(super) fn run_batched_mixed_step(
             tracing::error!(
                 "Mixed-batch forward error (n_decode={n_decode}, n_prefill={n_prefill}): {e:#}",
             );
+            for p in prefilling.iter() {
+                view_hook.finish(&p.prompt_tokens, &p.seq, ChunkEnd::Failed, prefill_stream);
+            }
             for i in 0..n_prefill {
                 completed_indices.push((i, None));
             }
@@ -140,6 +152,9 @@ pub(super) fn run_batched_mixed_step(
     debug_assert_eq!(result.prefill_logits.len(), n_prefill);
     for (i, p) in prefilling.iter_mut().enumerate() {
         p.chunk_offset += chunk_lens[i];
+        let got = result.prefill_logits.get(i).copied();
+        let end = ChunkEnd::of(is_last_flags[i], got.is_some_and(|l| l != DevicePtr::NULL));
+        view_hook.finish(&p.prompt_tokens, &p.seq, end, prefill_stream);
         if !is_last_flags[i] {
             continue;
         }

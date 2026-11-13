@@ -71,6 +71,8 @@ pub mod port_gauges;
 // The merged copy drafter and the speculative round plan seam (L13).
 pub(crate) mod copy_draft;
 pub(crate) mod spec_round_plan;
+// The bounded KV view's scheduler side (port L32, row `kv_view_selection`).
+pub(crate) mod kv_view;
 mod preempt;
 #[cfg(test)]
 mod preempt_tests;

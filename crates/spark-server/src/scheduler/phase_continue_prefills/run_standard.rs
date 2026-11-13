@@ -11,6 +11,7 @@ use spark_model::traits::{Model, SequenceState};
 use std::time::Instant;
 
 use super::super::decode_logits_step::process_decode_logits;
+use super::super::kv_view::{self, ChunkEnd};
 use super::super::lifecycle::send_error;
 use super::super::types::{ActiveSeq, PrefillInProgress};
 use super::super::{FirstTokenPolicy, sample_first_token};
@@ -157,6 +158,8 @@ pub(super) fn run_standard_chunk_loop(
         let mut decode_refs: Vec<&mut SequenceState> =
             active.iter_mut().map(|a| &mut a.seq).collect();
         let t0_mixed = Instant::now();
+        // Bounded KV view (port L32): arm and name the prefill stream.
+        let view_hook = kv_view::begin(model, &sched.limits, &[kv_view::Stream::of(p, chunk_len)]);
 
         match model.mixed_forward(
             &decode_tokens,
@@ -170,6 +173,12 @@ pub(super) fn run_standard_chunk_loop(
         ) {
             Ok(result) => {
                 p.chunk_offset += chunk_len;
+                view_hook.finish(
+                    &p.prompt_tokens,
+                    &p.seq,
+                    ChunkEnd::of(is_last, true),
+                    prefill_stream,
+                );
                 tracing::info!(
                     "Mixed forward: prefill {}/{} tokens + {} decode",
                     p.chunk_offset,
@@ -239,6 +248,7 @@ pub(super) fn run_standard_chunk_loop(
             }
             Err(e) => {
                 tracing::error!("Mixed forward error: {e:#}");
+                view_hook.finish(&p.prompt_tokens, &p.seq, ChunkEnd::Failed, prefill_stream);
                 completed_indices.push((idx, None));
             }
         }
@@ -277,6 +287,8 @@ pub(super) fn run_standard_chunk_loop(
     // admission control (largest block_table, grammar-active excluded, since
     // their state is not reconstructible). Falls through to the original
     // fail-this-sequence behavior when nothing can be evicted.
+    // Bounded KV view (port L32): arm and name the stream (inert when off).
+    let view_hook = kv_view::begin(model, &sched.limits, &[kv_view::Stream::of(p, chunk_len)]);
     let mut chunk_res = model.prefill_chunk(
         &p.prompt_tokens,
         &mut p.seq,
@@ -324,6 +336,12 @@ pub(super) fn run_standard_chunk_loop(
     match chunk_res {
         Ok(logits) => {
             p.chunk_offset += chunk_len;
+            view_hook.finish(
+                &p.prompt_tokens,
+                &p.seq,
+                ChunkEnd::of(is_last, true),
+                prefill_stream,
+            );
             tracing::info!(
                 "Prefill chunk {}/{} tokens",
                 p.chunk_offset,
@@ -370,6 +388,7 @@ pub(super) fn run_standard_chunk_loop(
         }
         Err(e) => {
             tracing::error!("Prefill chunk error: {e:#}");
+            view_hook.finish(&p.prompt_tokens, &p.seq, ChunkEnd::Failed, prefill_stream);
             completed_indices.push((idx, None));
         }
     }

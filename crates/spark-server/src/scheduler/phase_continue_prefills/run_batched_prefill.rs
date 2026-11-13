@@ -14,6 +14,7 @@ use spark_model::traits::{Model, PrefillSlice};
 use spark_runtime::gpu::DevicePtr;
 use std::time::Instant;
 
+use super::super::kv_view::{self, ChunkEnd};
 use super::super::types::PrefillInProgress;
 use super::super::{FirstTokenPolicy, sample_first_token};
 use super::prefill_waves::{WaveGeom, plan_prefill_waves};
@@ -144,6 +145,14 @@ pub(super) fn run_batched_prefill_step(
         for &i in &wave {
             in_wave[i] = true;
         }
+        // Bounded KV view (port L32): arm and name this wave's streams, in
+        // slice order. Inert unless `kv_view_selection` is on with a budget.
+        let streams: Vec<kv_view::Stream<'_>> = (0..n)
+            .filter(|&i| in_wave[i])
+            .map(|i| kv_view::Stream::of(&prefilling[i], chunk_lens[i]))
+            .collect();
+        let view_hook = kv_view::begin(model, &sched.limits, &streams);
+        drop(streams);
         let mut slices: Vec<PrefillSlice<'_>> = prefilling
             .iter_mut()
             .enumerate()
@@ -168,7 +177,10 @@ pub(super) fn run_batched_prefill_step(
                 // `promote_completed_prefills`). Later waves are left
                 // untouched — they have not advanced this tick and retry
                 // next tick rather than dispatching after a failed forward.
+                drop(slices);
                 for &i in &wave {
+                    let p = &prefilling[i];
+                    view_hook.finish(&p.prompt_tokens, &p.seq, ChunkEnd::Failed, prefill_stream);
                     completed_indices.push((i, None));
                 }
                 return;
@@ -193,6 +205,11 @@ pub(super) fn run_batched_prefill_step(
         for (k, &i) in wave.iter().enumerate() {
             let p = &mut prefilling[i];
             p.chunk_offset += chunk_lens[i];
+            let ok = logits_per_stream
+                .get(k)
+                .is_some_and(|&l| l != DevicePtr::NULL);
+            let end = ChunkEnd::of(is_last_flags[i], ok);
+            view_hook.finish(&p.prompt_tokens, &p.seq, end, prefill_stream);
             if !is_last_flags[i] {
                 continue;
             }

@@ -65,6 +65,7 @@ pub(crate) fn apply(args: &PortArgs) -> anyhow::Result<()> {
         sink_pages: args.attn_sparse_sink_pages,
         recent_tokens: args.attn_sparse_recent_tokens,
     })?;
+    crate::scheduler::kv_view::apply_args(args)?;
     // @port:apply
     Ok(())
 }
@@ -105,6 +106,7 @@ pub(crate) fn validate(args: &PortArgs) -> anyhow::Result<()> {
         sink_pages: args.attn_sparse_sink_pages,
         recent_tokens: args.attn_sparse_recent_tokens,
     })?;
+    crate::scheduler::kv_view::validate_args(args)?;
     // @port:validate
     Ok(())
 }

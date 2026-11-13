@@ -267,7 +267,27 @@ pub fn prefill_request(
         // either side splices. See `prefill_a/vision_sync.rs`.
         model.ep_sync_vision_embeds(&prompt_tokens)?;
 
-        let logits = model.prefill(&prompt_tokens, &mut seq, 0)?;
+        // Bounded KV view (port L32; inert unless `kv_view_selection` is on).
+        let view = super::kv_view::begin(
+            model,
+            &sched.limits,
+            &[super::kv_view::Stream {
+                slot: seq.slot_idx,
+                session: seq.session_hash,
+                prompt: &prompt_tokens,
+                chunk_start: 0,
+                chunk_len: prompt_tokens.len(),
+            }],
+        );
+        let logits = model.prefill(&prompt_tokens, &mut seq, 0);
+        view.finish(
+            &prompt_tokens,
+            &seq,
+            super::kv_view::ChunkEnd::of(true, logits.is_ok()),
+            0,
+        );
+        drop(view);
+        let logits = logits?;
         // #131: constrain the FIRST token with the grammar too (and advance
         // the matcher). The plain decode loop only masks/accepts tokens 2..N,
         // so without this a leading prose token escapes before the grammar's

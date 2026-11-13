@@ -396,6 +396,18 @@ pub fn start_chunked_prefill(
         // No collective runs in between, so the pairing holds.
         model.ep_sync_vision_embeds(&prompt_tokens)?;
         let _pt0 = std::time::Instant::now();
+        // Bounded KV view (port L32; inert unless `kv_view_selection` is on).
+        let view = super::kv_view::begin(
+            model,
+            &sched.limits,
+            &[super::kv_view::Stream {
+                slot: seq.slot_idx,
+                session: seq.session_hash,
+                prompt: &prompt_tokens,
+                chunk_start: 0,
+                chunk_len,
+            }],
+        );
         let chunk_res = model.prefill_chunk(
             &prompt_tokens,
             &mut seq,
@@ -404,6 +416,13 @@ pub fn start_chunked_prefill(
             is_last,
             prefill_stream,
         );
+        view.finish(
+            &prompt_tokens,
+            &seq,
+            super::kv_view::ChunkEnd::of(is_last, chunk_res.is_ok()),
+            prefill_stream,
+        );
+        drop(view);
         if sched.levers.vision_timing {
             let _ = model.synchronize(prefill_stream);
             tracing::info!(
