@@ -54,6 +54,11 @@ pub mod ffn_bf16_cublas;
 mod fp8_act_quant;
 #[path = "ops/gdn_batched_gemm.rs"]
 pub mod gdn_batched_gemm;
+// The `gdn_verify_gemv` port row: the same verify projections on the batched
+// BF16 GEMV, bit-identical to the decode GEMV (off on every target;
+// `AVAROK_GDN_VERIFY_GEMV`).
+#[path = "ops/gdn_verify_gemv.rs"]
+pub mod gdn_verify_gemv;
 // The `attn_gated_bf16_batchm` target row: gated dense-BF16 Q/K/V on the
 // batched GEMV in multi-seq decode (ada: on, bit-identical).
 #[path = "ops/attn_gated_bf16_batchm.rs"]

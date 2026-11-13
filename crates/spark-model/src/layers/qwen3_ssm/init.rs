@@ -29,6 +29,10 @@ impl Qwen3SsmLayer {
         // and a field initializer cannot read a sibling field.
         let gdn_tc_spine = gdn_prefill_tc_kernel(gpu);
         let woa = super::woa::woa_kernels(gpu);
+        // Row `gdn_verify_gemv` (off by default): its batched GEMV has no
+        // field on this layer, so the lookup is made here, on the eager build
+        // path, and the verify forward reads the op cache. Off: no lookup.
+        crate::layers::ops::gdn_verify_gemv::prime(gpu);
 
         Ok(Self {
             // mHC is attached later by the loader, and only for models that

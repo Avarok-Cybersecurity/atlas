@@ -205,6 +205,26 @@ impl Qwen3SsmLayer {
                 )?;
             }
         } else if self.gdn_qkvz_bf16_only()
+            && ops::gdn_verify_gemv::qkvz_claims(ctx.gpu, num_tokens, h)
+        {
+            // `gdn_verify_gemv` row (off on every target): a BF16-only QKVZ at
+            // 3+ rows on `dense_gemv_bf16_batchm`, 16 rows a weight pass,
+            // instead of one `dense_gemv` per row (3, 4) or the scalar
+            // `dense_gemm` (5+). Every row is the M=1 decode GEMV's bits
+            // (`ops/gdn_verify_gemv.rs`). Ahead of the cuBLASLt row on
+            // purpose: where both are on, this one keeps decode arithmetic.
+            ops::gdn_verify_gemv::launch_rows(
+                ctx.gpu,
+                ops::gdn_verify_gemv::kernel(ctx.gpu),
+                normed,
+                &self.ssm.in_proj_qkvz,
+                proj_dst,
+                num_tokens,
+                qkvz_size as u32,
+                h as u32,
+                stream,
+            )?;
+        } else if self.gdn_qkvz_bf16_only()
             && ops::gdn_batched_gemm::qkvz_arm(ops::gdn_batched_gemm::row(), num_tokens)
                 == ops::gdn_batched_gemm::QkvzArm::Cublas
         {
@@ -977,7 +997,22 @@ impl Qwen3SsmLayer {
         if self.w4_proj.is_some() {
             self.w4_out_rows(ctx, normed_out_buf, out_proj_buf, num_tokens, stream)?;
         } else if let Some(ref dense_out) = self.out_proj_dense {
-            if ops::gdn_batched_gemm::out_proj_arm(ops::gdn_batched_gemm::row(), num_tokens)
+            if ops::gdn_verify_gemv::out_proj_claims(ctx.gpu, num_tokens, value_dim) {
+                // `gdn_verify_gemv` row: the scalar `dense_gemm` replaced by
+                // the batched GEMV, each row the M=1 decode GEMV's bits
+                // (`ssm_forward.rs` runs this projection on `dense_gemv`).
+                ops::gdn_verify_gemv::launch_rows(
+                    ctx.gpu,
+                    ops::gdn_verify_gemv::kernel(ctx.gpu),
+                    normed_out_buf,
+                    dense_out,
+                    out_proj_buf,
+                    num_tokens,
+                    h as u32,
+                    value_dim as u32,
+                    stream,
+                )?;
+            } else if ops::gdn_batched_gemm::out_proj_arm(ops::gdn_batched_gemm::row(), num_tokens)
                 == ops::gdn_batched_gemm::OutProjArm::Cublas
             {
                 // `gdn_batched_gemm` row: the scalar `dense_gemm` (about
