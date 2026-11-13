@@ -79,6 +79,11 @@ pub(crate) fn apply(args: &PortArgs) -> anyhow::Result<()> {
         shadow: args.retro_shadow,
         index_cache_mb: args.retro_index_cache_mb,
     })?;
+    spark_model::port::sparse_prefill::apply_flags(
+        args.prefill_sparse_min_tokens,
+        args.prefill_sparse_threshold,
+        args.prefill_sparse_stride,
+    );
     // @port:apply
     Ok(())
 }
@@ -133,6 +138,15 @@ pub(crate) fn validate(args: &PortArgs) -> anyhow::Result<()> {
         shadow: args.retro_shadow,
         index_cache_mb: args.retro_index_cache_mb,
     })?;
+    spark_model::port::sparse_prefill::validate_flags(
+        args.prefill_sparse_min_tokens,
+        args.prefill_sparse_threshold,
+        args.prefill_sparse_stride,
+    )?;
+    spark_model::port::kv_window::validate_flags(
+        args.kv_window_tokens,
+        args.kv_window_head_tokens,
+    )?;
     // @port:validate
     Ok(())
 }

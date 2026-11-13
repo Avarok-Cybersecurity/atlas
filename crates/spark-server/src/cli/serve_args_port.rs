@@ -188,5 +188,19 @@ pub struct PortArgs {
     /// to the KV-block budget while retro attention is on.
     #[arg(long = "retro-index-cache-mb", value_name = "MIB")]
     pub retro_index_cache_mb: Option<u32>,
+    /// Block-sparse prefill (lane L35, APPROXIMATE; only with the `prefill_sparse_attn` row on,
+    /// `AVAROK_PREFILL_SPARSE_ATTN=1`): a prefill chunk goes sparse when it attends to at least this
+    /// many keys. Absent: `AVAROK_PREFILL_SPARSE_MIN_TOKENS`, else 32768.
+    #[arg(long = "prefill-sparse-min-tokens", value_name = "N")]
+    pub prefill_sparse_min_tokens: Option<u32>,
+    /// Block-sparse prefill: the share of each query block's softmax mass the kept key blocks must
+    /// hold, in (0, 1]; 1.0 keeps every block and serves through the dense kernel (the identity gate).
+    /// Absent: `AVAROK_PREFILL_SPARSE_THRESHOLD`, else 0.9.
+    #[arg(long = "prefill-sparse-threshold", value_name = "X")]
+    pub prefill_sparse_threshold: Option<f32>,
+    /// Block-sparse prefill: the antidiagonal stride of the block scoring, 4, 8 or 16. Absent:
+    /// `AVAROK_PREFILL_SPARSE_STRIDE`, else 8.
+    #[arg(long = "prefill-sparse-stride", value_name = "S")]
+    pub prefill_sparse_stride: Option<u32>,
     // @port:fields
 }
