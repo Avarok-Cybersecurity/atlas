@@ -1,4 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+// Portions derived from Cinference (https://github.com/satellitedown/cinference, commit 383e5db), itself
+// derived from NInfer by Neroued and contributors (https://github.com/Neroued/ninfer), Apache License 2.0.
+// Source: src/ops/common/memory.cuh:72-99 (the `createpolicy.fractional.L2::evict_first` policy for
+// weights read once, and the CUDA 13.1 ptxas caveat on cache-hint operands). Changes: the policy feeds
+// `ld.global.nc.L1::no_allocate.L2::cache_hint` vector loads (not `cp.async`), only in the three
+// `_l2ef` twins at the end of this file, by Atlas contributors. The other entry points are unchanged.
 
 // Ada (sm_89) FP8-E4M3 W8A16 decode GEMVs, register dequant.
 //
@@ -7,6 +13,11 @@
 //   fp8_gemv_ada             == w8a16_gemv             (w8a16_gemv.cu)
 //   fp8_gemv_ada_dual        == w8a16_gemv_dual        (w8a16_gemv_fused.cu)
 //   fp8_gemv_ada_silu_input  == w8a16_gemv_silu_input  (w8a16_gemv_fused.cu)
+//
+// plus their L2 evict-first twins `fp8_gemv_ada_l2ef`, `fp8_gemv_ada_l2ef_dual`
+// and `fp8_gemv_ada_l2ef_silu_input` (port row `l2_evict_first_weights`, off by
+// default; see "L2 EVICT-FIRST TWINS" at the end of this file). The twins
+// differ from the three above in the cache policy of the weight loads only.
 //
 // SAME arguments, SAME launch geometry (grid ceil(N/4) x 1 x {1,2}, 256
 // threads), SAME weight format: B[N, K] E4M3 bytes and the 128x128 FP32 block
@@ -261,4 +272,148 @@ extern "C" __global__ void __launch_bounds__(FGA_BLOCK)
                             __nv_bfloat16* __restrict__ C, unsigned int N, unsigned int K) {
     const FgaActSilu act{gate_out, up_out};
     fga_gemv(act, B, block_scale, C, N, K);
+}
+
+// ── L2 EVICT-FIRST TWINS (port row `l2_evict_first_weights`) ─────────────
+//
+// The same three GEMVs with ONE difference: each 16-byte weight load carries
+// an explicit L2 cache policy, `createpolicy.fractional.L2::evict_first` over
+// the whole line, and skips L1 allocation (`L1::no_allocate`), instead of the
+// `__ldcs` streaming hint above. Decode reads every weight byte exactly once
+// per token and a 4B model's FFN is far larger than the 32 MB L2, so marking
+// the weight lines first-to-go is meant to keep what IS reused resident across
+// the layer: the activation row, the block scales, and the next layer's GDN
+// state and attention KV that the surrounding kernels touch. `__ldcs` already
+// asks for streaming; the policy form states the L2 priority explicitly and is
+// what Cinference measured (bundled with other changes, not isolated).
+//
+// NUMERICS: identical to the entry points above by construction. Only the
+// load instruction's cache operands change; the loaded bytes, the decode, the
+// FMA-free multiply/add order, the reduction and the final round are the same
+// code (`fga_chunk`, `fga_reduce_store`). `examples/fp8_ada_l2hint_microtest.rs`
+// byte-compares every twin against its base entry.
+//
+// TOOLCHAIN CAVEAT. Cinference reports that CUDA 13.1's ptxas left the
+// cache-hint operand of some hinted loads uninitialized (an illegal instruction
+// at run time) and only issues the hint from CUDA 13.4. Atlas builds with CUDA
+// 13.3, which nobody has validated either way. The hint is therefore compiled
+// out on 13.0 and 13.1 (the twins then load exactly as the base kernels do),
+// and on 13.2+ the SASS must be inspected before any timing is trusted:
+// `cuobjdump -sass` of this module, where every weight `LDG` in the `_l2ef`
+// functions must carry a cache-policy descriptor operand that a preceding
+// instruction writes (the exact command is in the port sprint's L15 bench
+// snippet, `pass_L15_sass`). The row is off on every target until that check
+// and a byte-parity run pass.
+
+#if defined(__CUDACC_VER_MAJOR__) && (__CUDACC_VER_MAJOR__ == 13) && (__CUDACC_VER_MINOR__ < 2)
+#define FGA_L2_HINT 0
+#else
+#define FGA_L2_HINT 1
+#endif
+
+// An evict-first L2 policy covering the whole accessed line (fraction 1.0).
+__device__ __forceinline__ unsigned long long fga_l2_evict_first_policy() {
+    unsigned long long policy = 0ull;
+#if FGA_L2_HINT
+    asm("createpolicy.fractional.L2::evict_first.b64 %0, 1.0;" : "=l"(policy));
+#endif
+    return policy;
+}
+
+// One 16-byte weight load under `policy`, not allocated in L1.
+__device__ __forceinline__ uint4 fga_ld_l2ef(const uint4* p, unsigned long long policy) {
+#if FGA_L2_HINT
+    uint4 v;
+    asm("ld.global.nc.L1::no_allocate.L2::cache_hint.v4.u32 {%0, %1, %2, %3}, [%4], %5;"
+        : "=r"(v.x), "=r"(v.y), "=r"(v.z), "=r"(v.w)
+        : "l"(p), "l"(policy));
+    return v;
+#else
+    (void)policy;
+    return __ldcs(p);
+#endif
+}
+
+// `fga_row` with the hinted weight load: the same lane walk, the same unroll
+// (it moves loads only), the same chunk arithmetic in the same order.
+template <typename Act>
+__device__ __forceinline__ float fga_row_l2ef(const unsigned char* __restrict__ b_row,
+                                              const float* __restrict__ scale_row, const Act& act,
+                                              unsigned int k16_count, unsigned int lane,
+                                              unsigned long long policy) {
+    const uint4* b4 = reinterpret_cast<const uint4*>(b_row);
+    float acc = 0.0f;
+    unsigned int k16 = lane;
+    for (; k16 + (FGA_UNROLL - 1) * FGA_LANES < k16_count; k16 += FGA_UNROLL * FGA_LANES) {
+        uint4 b[FGA_UNROLL];
+        float s[FGA_UNROLL];
+#pragma unroll
+        for (int u = 0; u < FGA_UNROLL; u++) {
+            const unsigned int c = k16 + u * FGA_LANES;
+            b[u] = fga_ld_l2ef(b4 + c, policy);
+            s[u] = __ldg(scale_row + c / FGA_CHUNKS_PER_SCALE);
+        }
+#pragma unroll
+        for (int u = 0; u < FGA_UNROLL; u++) {
+            acc = fga_chunk(acc, b[u], s[u], act, k16 + u * FGA_LANES);
+        }
+    }
+    for (; k16 < k16_count; k16 += FGA_LANES) {
+        acc = fga_chunk(acc, fga_ld_l2ef(b4 + k16, policy), __ldg(scale_row + k16 / FGA_CHUNKS_PER_SCALE), act,
+                        k16);
+    }
+    return acc;
+}
+
+template <typename Act>
+__device__ __forceinline__ void fga_gemv_l2ef(const Act& act, const unsigned char* __restrict__ B,
+                                              const float* __restrict__ block_scale, __nv_bfloat16* __restrict__ C,
+                                              unsigned int N, unsigned int K) {
+    const unsigned int local_out = threadIdx.x / FGA_LANES;
+    const unsigned int lane = threadIdx.x % FGA_LANES;
+    const unsigned int n = blockIdx.x * FGA_N_PER_BLOCK + local_out;
+    const bool live = n < N;
+    float acc = 0.0f;
+    if (live) {
+        const unsigned long long policy = fga_l2_evict_first_policy();
+        const unsigned int k_blocks = (K + FGA_FP8_BLOCK - 1) / FGA_FP8_BLOCK;
+        acc = fga_row_l2ef(B + (unsigned long long)n * K,
+                           block_scale + (unsigned long long)(n / FGA_FP8_BLOCK) * k_blocks, act, K / FGA_CHUNK,
+                           lane, policy);
+    }
+    fga_reduce_store(acc, live, local_out, lane, C, n);
+}
+
+// `fp8_gemv_ada` with evict-first weight loads. Same arguments and grid.
+extern "C" __global__ void __launch_bounds__(FGA_BLOCK) fp8_gemv_ada_l2ef(const __nv_bfloat16* __restrict__ A,
+                                                                         const unsigned char* __restrict__ B,
+                                                                         const float* __restrict__ block_scale,
+                                                                         __nv_bfloat16* __restrict__ C,
+                                                                         unsigned int N, unsigned int K) {
+    const FgaActRow act{A};
+    fga_gemv_l2ef(act, B, block_scale, C, N, K);
+}
+
+// `fp8_gemv_ada_dual` with evict-first weight loads. Grid (ceil(N/4), 1, 2).
+extern "C" __global__ void __launch_bounds__(FGA_BLOCK)
+    fp8_gemv_ada_l2ef_dual(const __nv_bfloat16* __restrict__ A, const unsigned char* __restrict__ B1,
+                           const float* __restrict__ B1_scale, __nv_bfloat16* __restrict__ C1,
+                           const unsigned char* __restrict__ B2, const float* __restrict__ B2_scale,
+                           __nv_bfloat16* __restrict__ C2, unsigned int N, unsigned int K) {
+    const FgaActRow act{A};
+    if (blockIdx.z == 0) {
+        fga_gemv_l2ef(act, B1, B1_scale, C1, N, K);
+    } else {
+        fga_gemv_l2ef(act, B2, B2_scale, C2, N, K);
+    }
+}
+
+// `fp8_gemv_ada_silu_input` with evict-first weight loads.
+extern "C" __global__ void __launch_bounds__(FGA_BLOCK)
+    fp8_gemv_ada_l2ef_silu_input(const __nv_bfloat16* __restrict__ gate_out,
+                                 const __nv_bfloat16* __restrict__ up_out, const unsigned char* __restrict__ B,
+                                 const float* __restrict__ block_scale, __nv_bfloat16* __restrict__ C,
+                                 unsigned int N, unsigned int K) {
+    const FgaActSilu act{gate_out, up_out};
+    fga_gemv_l2ef(act, B, block_scale, C, N, K);
 }

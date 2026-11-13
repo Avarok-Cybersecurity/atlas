@@ -67,6 +67,27 @@ pub struct PortDefaults {
     /// backward match extension, period continuation) proposes the tokens that
     /// followed an earlier copy of the context.
     pub copy_draft: &'static str,
+    /// The dense FFN's FP8 speculative-verify rows (M = 2..8) on the sm_89
+    /// batch-M GEMVs (kernels/ada/common/fp8_gemv_ada_batchm.cu,
+    /// layers/dense_ffn_ada_kernels/verify.rs): one pass over each FP8 weight for
+    /// all M rows, through the same down arm the M=1 decode forward takes,
+    /// instead of the prefill ladder (w8a16_gemv_batch4 at M <= 4, the padded
+    /// tile GEMMs or the lossy W8A8 arm at M 5..8).
+    pub ffn_fp8_verify_gemv: bool,
+    /// The sm_89 FP8 decode and verify GEMVs load their weights with an explicit
+    /// evict-first L2 policy (createpolicy.fractional.L2::evict_first on
+    /// ld.global.nc.L1::no_allocate.L2::cache_hint; the _l2ef twins in
+    /// kernels/ada/common/fp8_gemv_ada.cu and fp8_gemv_ada_batchm.cu, after
+    /// Cinference, Apache-2.0), so the once-read weight stream stops displacing
+    /// the activations, scales and the next layer's GDN state from the 32 MB L2.
+    pub l2_evict_first_weights: bool,
+    /// The prefill FFN-norm of a Qwen3 / Qwen3.5 layer (residual add + offset
+    /// RMSNorm) also writes the dense FFN's W8A8 gate/up activation, E4M3 codes
+    /// and 1x128 FP32 scales, in the same launch
+    /// (kernels/ada/common/rmsnorm_quant_fp8_ada.cu,
+    /// layers/dense_ffn_w8a8_prefill/norm_fused.rs), so per_token_group_quant_fp8
+    /// and its re-read of the normed rows go.
+    pub rmsnorm_fp8_quant_fused: bool,
     /// When a 4-bit BF16 load route is on (dense_affine4_from_bf16,
     /// gdn_affine4_from_bf16, attn_affine4_from_bf16), every projection the
     /// Marlin kernels serve (N a multiple of 64, K of 128, more than one group)
@@ -214,6 +235,9 @@ pub const PORT_BASELINE: PortDefaults = PortDefaults {
     mtp_propose_graph: false,
     mtp_device_accept: false,
     copy_draft: "off",
+    ffn_fp8_verify_gemv: false,
+    l2_evict_first_weights: false,
+    rmsnorm_fp8_quant_fused: false,
     marlin_w4a16: false,
     gguf_native_iq4: false,
     weights_exl3: false,

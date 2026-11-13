@@ -41,6 +41,9 @@ const PORT_LEVERS: &[&str] = &[
     "mtp_propose_graph",
     "mtp_device_accept",
     "copy_draft",
+    "ffn_fp8_verify_gemv",
+    "l2_evict_first_weights",
+    "rmsnorm_fp8_quant_fused",
     "marlin_w4a16",
     "gguf_native_iq4",
     "weights_exl3",
@@ -128,6 +131,18 @@ fn the_baked_port_rows_match_their_own_hardware_tree() {
         declared.port.mtp_device_accept
     );
     assert_eq!(baked.port.copy_draft, declared.port.copy_draft);
+    assert_eq!(
+        baked.port.ffn_fp8_verify_gemv,
+        declared.port.ffn_fp8_verify_gemv
+    );
+    assert_eq!(
+        baked.port.l2_evict_first_weights,
+        declared.port.l2_evict_first_weights
+    );
+    assert_eq!(
+        baked.port.rmsnorm_fp8_quant_fused,
+        declared.port.rmsnorm_fp8_quant_fused
+    );
     assert_eq!(baked.port.marlin_w4a16, declared.port.marlin_w4a16);
     assert_eq!(baked.port.gguf_native_iq4, declared.port.gguf_native_iq4);
     assert_eq!(baked.port.weights_exl3, declared.port.weights_exl3);
@@ -179,6 +194,9 @@ fn ada_port_rows_hold_their_write_time_values() {
     assert_eq!(declared("ada").port.mtp_propose_graph, false);
     assert_eq!(declared("ada").port.mtp_device_accept, false);
     assert_eq!(declared("ada").port.copy_draft, "off");
+    assert_eq!(declared("ada").port.ffn_fp8_verify_gemv, false);
+    assert_eq!(declared("ada").port.l2_evict_first_weights, false);
+    assert_eq!(declared("ada").port.rmsnorm_fp8_quant_fused, false);
     assert_eq!(declared("ada").port.marlin_w4a16, false);
     assert_eq!(declared("ada").port.gguf_native_iq4, false);
     assert_eq!(declared("ada").port.weights_exl3, false);
@@ -211,6 +229,9 @@ fn non_ada_targets_keep_every_port_row_at_its_baseline() {
         assert!(!declared(hw).port.mtp_propose_graph, "{hw}");
         assert!(!declared(hw).port.mtp_device_accept, "{hw}");
         assert_eq!(declared(hw).port.copy_draft, "off", "{hw}");
+        assert!(!declared(hw).port.ffn_fp8_verify_gemv, "{hw}");
+        assert!(!declared(hw).port.l2_evict_first_weights, "{hw}");
+        assert!(!declared(hw).port.rmsnorm_fp8_quant_fused, "{hw}");
         assert!(!declared(hw).port.marlin_w4a16, "{hw}");
         assert!(!declared(hw).port.gguf_native_iq4, "{hw}");
         assert!(!declared(hw).port.weights_exl3, "{hw}");

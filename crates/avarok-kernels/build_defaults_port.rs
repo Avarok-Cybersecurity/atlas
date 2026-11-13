@@ -30,6 +30,9 @@ pub struct PortFields {
     pub mtp_propose_graph: bool,
     pub mtp_device_accept: bool,
     pub copy_draft: String,
+    pub ffn_fp8_verify_gemv: bool,
+    pub l2_evict_first_weights: bool,
+    pub rmsnorm_fp8_quant_fused: bool,
     pub marlin_w4a16: bool,
     pub gguf_native_iq4: bool,
     pub weights_exl3: bool,
@@ -66,6 +69,9 @@ impl Default for PortFields {
             mtp_propose_graph: false,
             mtp_device_accept: false,
             copy_draft: "off".to_string(),
+            ffn_fp8_verify_gemv: false,
+            l2_evict_first_weights: false,
+            rmsnorm_fp8_quant_fused: false,
             marlin_w4a16: false,
             gguf_native_iq4: false,
             weights_exl3: false,
@@ -123,6 +129,18 @@ pub fn parse(out: &mut PortFields, key: &str, value: &toml::Value) -> bool {
         }
         "copy_draft" => {
             out.copy_draft = string(key, value);
+            true
+        }
+        "ffn_fp8_verify_gemv" => {
+            out.ffn_fp8_verify_gemv = boolean(key, value);
+            true
+        }
+        "l2_evict_first_weights" => {
+            out.l2_evict_first_weights = boolean(key, value);
+            true
+        }
+        "rmsnorm_fp8_quant_fused" => {
+            out.rmsnorm_fp8_quant_fused = boolean(key, value);
             true
         }
         "marlin_w4a16" => {
@@ -212,6 +230,9 @@ pub fn literal(d: &PortFields) -> String {
          \x20   mtp_propose_graph: {mtp_propose_graph},\n\
          \x20   mtp_device_accept: {mtp_device_accept},\n\
          \x20   copy_draft: \"{copy_draft}\",\n\
+         \x20   ffn_fp8_verify_gemv: {ffn_fp8_verify_gemv},\n\
+         \x20   l2_evict_first_weights: {l2_evict_first_weights},\n\
+         \x20   rmsnorm_fp8_quant_fused: {rmsnorm_fp8_quant_fused},\n\
          \x20   marlin_w4a16: {marlin_w4a16},\n\
          \x20   gguf_native_iq4: {gguf_native_iq4},\n\
          \x20   weights_exl3: {weights_exl3},\n\
@@ -238,6 +259,9 @@ pub fn literal(d: &PortFields) -> String {
         mtp_propose_graph = d.mtp_propose_graph,
         mtp_device_accept = d.mtp_device_accept,
         copy_draft = d.copy_draft,
+        ffn_fp8_verify_gemv = d.ffn_fp8_verify_gemv,
+        l2_evict_first_weights = d.l2_evict_first_weights,
+        rmsnorm_fp8_quant_fused = d.rmsnorm_fp8_quant_fused,
         marlin_w4a16 = d.marlin_w4a16,
         gguf_native_iq4 = d.gguf_native_iq4,
         weights_exl3 = d.weights_exl3,
