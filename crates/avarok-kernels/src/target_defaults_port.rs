@@ -305,6 +305,14 @@ pub struct PortDefaults {
     /// becomes the device argmax's, as for a request without a floor, so an
     /// exact top tie can resolve differently from the row off.
     pub min_tokens_gpu_argmax: bool,
+    /// A native-FP8 dense FFN over 5 to 16 rows (a decode step of 5 to 8
+    /// streams, a speculative verify of up to 16 rows) on the sm_89 16-row
+    /// tensor-core GEMM (kernels/ada/common/fp8_gemm_ada_m16.cu): BF16
+    /// activations, E4M3 weights widened in registers, one weight pass per
+    /// projection (layers/dense_ffn/fp8_m16_tc.rs). It reassociates the K
+    /// reduction, so a row is within 2 BF16 ULP of the decode GEMV, not
+    /// bit-identical to it.
+    pub ffn_fp8_m16_tc: bool,
     // @port:fields
 }
 
@@ -353,5 +361,6 @@ pub const PORT_BASELINE: PortDefaults = PortDefaults {
     gdn_verify_gemv: false,
     lm_head_verify_gemv: false,
     min_tokens_gpu_argmax: false,
+    ffn_fp8_m16_tc: false,
     // @port:baseline
 };

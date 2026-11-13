@@ -668,4 +668,34 @@ lm_head_verify_gemv = false
 # 8 agreement prompts with min_tokens below their natural length), and steady
 # tok/s no lower. AVAROK_MIN_TOKENS_GPU_ARGMAX=1 is the A/B.
 min_tokens_gpu_argmax = false
+# A native-FP8 dense FFN over 5 to 16 rows (a decode step of 5 to 8 streams, a
+# speculative verify of up to 16 rows) on the sm_89 16-row tensor-core GEMM
+# (kernels/ada/common/fp8_gemm_ada_m16.cu): gate and up in one launch, the
+# layer's activation multiply, then down, each weight read once
+# (layers/dense_ffn/fp8_m16_tc.rs). It replaces what those widths run today:
+# the W8A8 arm, which quantizes the activations to E4M3 and costs 143 us a
+# projection at every width from 1 to 64 rows on the RTX 4060 Ti 16 GB (L07
+# sweep, 4B gate/up, 23.6 MB, against a 91 us floor at the measured 260 GB/s),
+# or, with ffn_fp8_verify_gemv or ffn_fp8_decode_gemv on, the batch-M GEMV,
+# which holds the floor to 4 rows, is compute bound above them (97 us at M=4,
+# 184 at M=8) and stops at 8. The kernel keeps the activations BF16 and widens
+# the E4M3 weights in registers (exact), one m16n8k16 per 128 weight bytes,
+# with the weights streamed global-to-register the way the decode GEMV streams
+# them. An FP8 mma would need E4M3 activations, which is the W8A8 arithmetic
+# this row exists to leave. Numerics: the kernel REASSOCIATES the K reduction (16
+# products per MMA, one block-scale fold per 128 K on an FP32 accumulator), so
+# a row is not bit-identical to the M=1 decode GEMV; the contract is the M16
+# tensor-core one (at most 2 BF16 ULP, or under the FP32 accumulation floor
+# for a cancelled output), and a row's bits do not depend on how many rows
+# share the launch. Rows 2..4 keep w8a16_gemv_batch4, which is bit-exact and
+# already at the floor (AVAROK_FFN_FP8_M16_TC_MIN_ROWS=2 lowers the bound for
+# a measurement); above 16 rows nothing changes; a prompt pass never takes
+# it. With this row on it is asked before ffn_fp8_verify_gemv and
+# ffn_fp8_decode_gemv at the widths it takes. Only targets that compile the
+# module can take it (no lookup elsewhere). Off until the receipt:
+# examples/fp8_ada_m16_tc_microtest.rs all PASS with memcheck clean, a conc
+# gain at C=8 without --speculative beyond the ABBA bound with top-20 KL
+# against the row off inside the bar, and with --speculative at C=8 the verify
+# time (AVAROK_MTP_TIMING) down. AVAROK_FFN_FP8_M16_TC=1 is the A/B.
+ffn_fp8_m16_tc = false
 # @port:defaults

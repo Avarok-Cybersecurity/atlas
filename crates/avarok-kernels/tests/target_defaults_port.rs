@@ -72,6 +72,7 @@ const PORT_LEVERS: &[&str] = &[
     "gdn_verify_gemv",
     "lm_head_verify_gemv",
     "min_tokens_gpu_argmax",
+    "ffn_fp8_m16_tc",
     // @port:levers
 ];
 
@@ -219,6 +220,7 @@ fn the_baked_port_rows_match_their_own_hardware_tree() {
         baked.port.min_tokens_gpu_argmax,
         declared.port.min_tokens_gpu_argmax
     );
+    assert_eq!(baked.port.ffn_fp8_m16_tc, declared.port.ffn_fp8_m16_tc);
     // @port:baked-eq
 }
 
@@ -267,6 +269,7 @@ fn ada_port_rows_hold_their_write_time_values() {
     assert_eq!(declared("ada").port.gdn_verify_gemv, false);
     assert_eq!(declared("ada").port.lm_head_verify_gemv, false);
     assert_eq!(declared("ada").port.min_tokens_gpu_argmax, false);
+    assert_eq!(declared("ada").port.ffn_fp8_m16_tc, false);
     // @port:ada
 }
 
@@ -314,6 +317,7 @@ fn non_ada_targets_keep_every_port_row_at_its_baseline() {
         assert!(!declared(hw).port.gdn_verify_gemv, "{hw}");
         assert!(!declared(hw).port.lm_head_verify_gemv, "{hw}");
         assert!(!declared(hw).port.min_tokens_gpu_argmax, "{hw}");
+        assert!(!declared(hw).port.ffn_fp8_m16_tc, "{hw}");
         // @port:non-ada
     }
 }

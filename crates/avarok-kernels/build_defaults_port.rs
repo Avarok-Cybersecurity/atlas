@@ -61,6 +61,7 @@ pub struct PortFields {
     pub gdn_verify_gemv: bool,
     pub lm_head_verify_gemv: bool,
     pub min_tokens_gpu_argmax: bool,
+    pub ffn_fp8_m16_tc: bool,
     // @port:struct
 }
 
@@ -112,6 +113,7 @@ impl Default for PortFields {
             gdn_verify_gemv: false,
             lm_head_verify_gemv: false,
             min_tokens_gpu_argmax: false,
+            ffn_fp8_m16_tc: false,
             // @port:default
         }
     }
@@ -279,6 +281,10 @@ pub fn parse(out: &mut PortFields, key: &str, value: &toml::Value) -> bool {
             out.min_tokens_gpu_argmax = boolean(key, value);
             true
         }
+        "ffn_fp8_m16_tc" => {
+            out.ffn_fp8_m16_tc = boolean(key, value);
+            true
+        }
         // @port:parse
         _ => false,
     }
@@ -333,6 +339,7 @@ pub fn literal(d: &PortFields) -> String {
          \x20   gdn_verify_gemv: {gdn_verify_gemv},\n\
          \x20   lm_head_verify_gemv: {lm_head_verify_gemv},\n\
          \x20   min_tokens_gpu_argmax: {min_tokens_gpu_argmax},\n\
+         \x20   ffn_fp8_m16_tc: {ffn_fp8_m16_tc},\n\
          // @port:literal-fmt\n\
          \x20   }}",
         conf_summary = d.conf_summary,
@@ -374,6 +381,7 @@ pub fn literal(d: &PortFields) -> String {
         gdn_verify_gemv = d.gdn_verify_gemv,
         lm_head_verify_gemv = d.lm_head_verify_gemv,
         min_tokens_gpu_argmax = d.min_tokens_gpu_argmax,
+        ffn_fp8_m16_tc = d.ffn_fp8_m16_tc,
         // @port:literal-args
     )
 }
