@@ -291,4 +291,14 @@ Atlas files that carry it. License texts are in `LICENSES/`; notices are in
   and Incoherence Processing" (NeurIPS 2024; arXiv:2406.11235, cited from
   memory, check before publishing). The trellis-coded, Hadamard-incoherent
   quantization method EXL3 follows. Cited for the method; no code.
+
+- **Qwen3.8-27B on a 16 GB card: the arczhi RTX 5060 Ti recipe and the MiaAI one-click kit** (sprint report
+  77, sections 2, 7.1 and 12). Cited as evidence only, nothing copied: the recipe's measured memory budget and
+  its `-ot token_embd.weight=CPU` placement (the embedding table read off the device) motivate the
+  `embed_host_offload` row (`crates/spark-model/src/port/embed_host/`, an independent mapped-memory design);
+  the MiaAI planner's rule that a measured ceiling overrides the formula only downward (`tools/profiles.py`,
+  MIT, Copyright (c) 2026 Mia'a AI Lab; idea only) is the rule of
+  `crates/spark-server/src/main_modules/serve_phases/preflight/measured_ceiling.rs`. The bench rows R0 to R12
+  of `docs/porting/qwen3.8-27b-ada.md` follow report 77 section 12.5. The weights the target serves are
+  Unsloth's GGUF of Qwen3.8-27B (Apache-2.0, Qwen team), downloaded by the owner, never redistributed.
 <!-- @port:citations -->
