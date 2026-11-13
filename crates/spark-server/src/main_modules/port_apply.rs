@@ -21,6 +21,7 @@ use crate::cli::serve_args_port::PortArgs;
 /// Publish every port flag and row value. Empty until a lane adds a line.
 #[allow(unused_variables)]
 pub(crate) fn apply(args: &PortArgs) -> anyhow::Result<()> {
+    spark_runtime::pinned_pool::set_default_chunk_mb(args.pinned_pool_chunk_mb);
     // @port:apply
     Ok(())
 }
@@ -29,6 +30,7 @@ pub(crate) fn apply(args: &PortArgs) -> anyhow::Result<()> {
 /// row value, a contradictory flag pair). Empty until a lane adds a line.
 #[allow(unused_variables)]
 pub(crate) fn validate(args: &PortArgs) -> anyhow::Result<()> {
+    spark_runtime::pinned_pool::validate_chunk_mb(args.pinned_pool_chunk_mb)?;
     // @port:validate
     Ok(())
 }
