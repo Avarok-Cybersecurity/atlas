@@ -25,6 +25,7 @@ pub struct PortFields {
     pub conf_summary: bool,
     pub mtp_dcut_cost_model: bool,
     pub graph_exec_update: bool,
+    pub gdn_woa_mtp: bool,
     pub marlin_w4a16: bool,
     pub gguf_native_iq4: bool,
     pub weights_exl3: bool,
@@ -56,6 +57,7 @@ impl Default for PortFields {
             conf_summary: false,
             mtp_dcut_cost_model: false,
             graph_exec_update: false,
+            gdn_woa_mtp: false,
             marlin_w4a16: false,
             gguf_native_iq4: false,
             weights_exl3: false,
@@ -93,6 +95,10 @@ pub fn parse(out: &mut PortFields, key: &str, value: &toml::Value) -> bool {
         }
         "graph_exec_update" => {
             out.graph_exec_update = boolean(key, value);
+            true
+        }
+        "gdn_woa_mtp" => {
+            out.gdn_woa_mtp = boolean(key, value);
             true
         }
         "marlin_w4a16" => {
@@ -177,6 +183,7 @@ pub fn literal(d: &PortFields) -> String {
          \x20   conf_summary: {conf_summary},\n\
          \x20   mtp_dcut_cost_model: {mtp_dcut_cost_model},\n\
          \x20   graph_exec_update: {graph_exec_update},\n\
+         \x20   gdn_woa_mtp: {gdn_woa_mtp},\n\
          \x20   marlin_w4a16: {marlin_w4a16},\n\
          \x20   gguf_native_iq4: {gguf_native_iq4},\n\
          \x20   weights_exl3: {weights_exl3},\n\
@@ -198,6 +205,7 @@ pub fn literal(d: &PortFields) -> String {
         conf_summary = d.conf_summary,
         mtp_dcut_cost_model = d.mtp_dcut_cost_model,
         graph_exec_update = d.graph_exec_update,
+        gdn_woa_mtp = d.gdn_woa_mtp,
         marlin_w4a16 = d.marlin_w4a16,
         gguf_native_iq4 = d.gguf_native_iq4,
         weights_exl3 = d.weights_exl3,
