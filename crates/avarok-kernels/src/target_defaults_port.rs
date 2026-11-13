@@ -96,6 +96,13 @@ pub struct PortDefaults {
     /// _batch3 / _batchN (row invariant by construction), prompts on w4a16_gemm
     /// or a BF16 dequant plus cuBLASLt.
     pub dense_nvfp4_from_bf16: bool,
+    /// The input embedding table (one row read per token) is copied once at load
+    /// into page-locked host memory and the model reads it through the region's
+    /// device-visible alias, so every existing gather, the MTP head's device-side
+    /// embed_from_argmax included, keeps working over PCIe, and the device copy
+    /// is freed after the loader's prune step
+    /// (crates/spark-model/src/port/embed_host/).
+    pub embed_host_offload: bool,
     /// Batched sequence swap
     /// (`spark-model/src/model/trait_impl/sequence/state_io.rs`,
     /// `spark-runtime/src/kv_cache/block_io.rs`): a swapped-out sequence's image
@@ -142,6 +149,7 @@ pub const PORT_BASELINE: PortDefaults = PortDefaults {
     attn_affine4_from_bf16: false,
     affine4_prefill_int8: false,
     dense_nvfp4_from_bf16: false,
+    embed_host_offload: false,
     kv_batched_swap: false,
     ssm_store_lru: false,
     radix_lru_index: false,

@@ -30,6 +30,7 @@ pub struct PortFields {
     pub attn_affine4_from_bf16: bool,
     pub affine4_prefill_int8: bool,
     pub dense_nvfp4_from_bf16: bool,
+    pub embed_host_offload: bool,
     pub kv_batched_swap: bool,
     pub ssm_store_lru: bool,
     pub radix_lru_index: bool,
@@ -54,6 +55,7 @@ impl Default for PortFields {
             attn_affine4_from_bf16: false,
             affine4_prefill_int8: false,
             dense_nvfp4_from_bf16: false,
+            embed_host_offload: false,
             kv_batched_swap: false,
             ssm_store_lru: false,
             radix_lru_index: false,
@@ -101,6 +103,10 @@ pub fn parse(out: &mut PortFields, key: &str, value: &toml::Value) -> bool {
             out.dense_nvfp4_from_bf16 = boolean(key, value);
             true
         }
+        "embed_host_offload" => {
+            out.embed_host_offload = boolean(key, value);
+            true
+        }
         "kv_batched_swap" => {
             out.kv_batched_swap = boolean(key, value);
             true
@@ -140,6 +146,7 @@ pub fn literal(d: &PortFields) -> String {
          \x20   attn_affine4_from_bf16: {attn_affine4_from_bf16},\n\
          \x20   affine4_prefill_int8: {affine4_prefill_int8},\n\
          \x20   dense_nvfp4_from_bf16: {dense_nvfp4_from_bf16},\n\
+         \x20   embed_host_offload: {embed_host_offload},\n\
          \x20   kv_batched_swap: {kv_batched_swap},\n\
          \x20   ssm_store_lru: {ssm_store_lru},\n\
          \x20   radix_lru_index: {radix_lru_index},\n\
@@ -154,6 +161,7 @@ pub fn literal(d: &PortFields) -> String {
         attn_affine4_from_bf16 = d.attn_affine4_from_bf16,
         affine4_prefill_int8 = d.affine4_prefill_int8,
         dense_nvfp4_from_bf16 = d.dense_nvfp4_from_bf16,
+        embed_host_offload = d.embed_host_offload,
         kv_batched_swap = d.kv_batched_swap,
         ssm_store_lru = d.ssm_store_lru,
         radix_lru_index = d.radix_lru_index,

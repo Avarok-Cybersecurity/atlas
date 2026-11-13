@@ -168,6 +168,20 @@ affine4_prefill_int8 = false
 # (teacher-forced NLL delta at most twice the FP8 FFN route's, full-vocabulary
 # KL, coherence, recall).
 dense_nvfp4_from_bf16 = false
+# The input embedding table (one row read per token) is copied once at load into
+# page-locked host memory and the model reads it through the region's
+# device-visible alias, so every existing gather, the MTP head's device-side
+# embed_from_argmax included, keeps working over PCIe, and the device copy is
+# freed after the loader's prune step (crates/spark-model/src/port/embed_host/).
+# The central single-row embed copies the row from the host table. Same bytes,
+# so it is bit-identical by construction; it frees 2.37 GiB of VRAM on
+# Qwen3.8-27B, which is what lets the 27B fit a 16 GB card. It declines for a
+# tied LM head, a table that is not BF16, or a backend that refuses mapped
+# memory (Metal, and possibly WSL2 for a region this large), and a refusal fails
+# a --speculative start. Off until the receipt: greedy token SHA equal with the
+# row off and on, solo and at C=8, and the freed VRAM in the boot ledger
+# (bench/pass.d/L24.sh).
+embed_host_offload = false
 # Batched sequence swap
 # (`spark-model/src/model/trait_impl/sequence/state_io.rs`,
 # `spark-runtime/src/kv_cache/block_io.rs`): a swapped-out sequence's image

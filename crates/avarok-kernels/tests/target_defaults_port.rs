@@ -41,6 +41,7 @@ const PORT_LEVERS: &[&str] = &[
     "attn_affine4_from_bf16",
     "affine4_prefill_int8",
     "dense_nvfp4_from_bf16",
+    "embed_host_offload",
     "kv_batched_swap",
     "ssm_store_lru",
     "radix_lru_index",
@@ -119,6 +120,10 @@ fn the_baked_port_rows_match_their_own_hardware_tree() {
         baked.port.dense_nvfp4_from_bf16,
         declared.port.dense_nvfp4_from_bf16
     );
+    assert_eq!(
+        baked.port.embed_host_offload,
+        declared.port.embed_host_offload
+    );
     assert_eq!(baked.port.kv_batched_swap, declared.port.kv_batched_swap);
     assert_eq!(baked.port.ssm_store_lru, declared.port.ssm_store_lru);
     assert_eq!(baked.port.radix_lru_index, declared.port.radix_lru_index);
@@ -140,6 +145,7 @@ fn ada_port_rows_hold_their_write_time_values() {
     assert_eq!(declared("ada").port.attn_affine4_from_bf16, false);
     assert_eq!(declared("ada").port.affine4_prefill_int8, false);
     assert_eq!(declared("ada").port.dense_nvfp4_from_bf16, false);
+    assert_eq!(declared("ada").port.embed_host_offload, false);
     assert_eq!(declared("ada").port.kv_batched_swap, false);
     assert_eq!(declared("ada").port.ssm_store_lru, false);
     assert_eq!(declared("ada").port.radix_lru_index, false);
@@ -160,6 +166,7 @@ fn non_ada_targets_keep_every_port_row_at_its_baseline() {
         assert!(!declared(hw).port.attn_affine4_from_bf16, "{hw}");
         assert!(!declared(hw).port.affine4_prefill_int8, "{hw}");
         assert!(!declared(hw).port.dense_nvfp4_from_bf16, "{hw}");
+        assert!(!declared(hw).port.embed_host_offload, "{hw}");
         assert!(!declared(hw).port.kv_batched_swap, "{hw}");
         assert!(!declared(hw).port.ssm_store_lru, "{hw}");
         assert!(!declared(hw).port.radix_lru_index, "{hw}");
