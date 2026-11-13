@@ -11,6 +11,9 @@
 /// The affine 4-bit weight route: MLX-affine weights quantized from BF16 at load, served on the Ada
 /// lane GEMV (lanes L17a, L17b, L17c).
 pub mod affine;
+/// The EXL3 trellis weight route: ExLlamaV3-format matrices served from their packed codes on the Ada
+/// decode-row linear through `W4Linear` (lane L20b, row `weights_exl3`).
+pub mod exl3;
 /// The keep-packed GGUF IQ4_XS / Q4_K / Q6_K route: the file's raw super-blocks served on the Ada mmvq
 /// and MMQ kernels through `W4Linear` (lane L19, row `gguf_native_iq4`).
 pub mod gguf_q4;

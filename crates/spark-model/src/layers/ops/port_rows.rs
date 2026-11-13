@@ -16,4 +16,5 @@ pub mod marlin_w4a16;
 pub mod prefix_cow_tail;
 pub mod radix_lru_index;
 pub mod ssm_store_lru;
+pub mod weights_exl3;
 // @port:mods
