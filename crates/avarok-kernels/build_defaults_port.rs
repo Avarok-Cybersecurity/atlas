@@ -33,6 +33,7 @@ pub struct PortFields {
     pub embed_host_offload: bool,
     pub kv_batched_swap: bool,
     pub ssm_store_lru: bool,
+    pub kv_host_tier: bool,
     pub radix_lru_index: bool,
     pub prefix_cow_tail: bool,
     // @port:struct
@@ -58,6 +59,7 @@ impl Default for PortFields {
             embed_host_offload: false,
             kv_batched_swap: false,
             ssm_store_lru: false,
+            kv_host_tier: false,
             radix_lru_index: false,
             prefix_cow_tail: false,
             // @port:default
@@ -115,6 +117,10 @@ pub fn parse(out: &mut PortFields, key: &str, value: &toml::Value) -> bool {
             out.ssm_store_lru = boolean(key, value);
             true
         }
+        "kv_host_tier" => {
+            out.kv_host_tier = boolean(key, value);
+            true
+        }
         "radix_lru_index" => {
             out.radix_lru_index = boolean(key, value);
             true
@@ -149,6 +155,7 @@ pub fn literal(d: &PortFields) -> String {
          \x20   embed_host_offload: {embed_host_offload},\n\
          \x20   kv_batched_swap: {kv_batched_swap},\n\
          \x20   ssm_store_lru: {ssm_store_lru},\n\
+         \x20   kv_host_tier: {kv_host_tier},\n\
          \x20   radix_lru_index: {radix_lru_index},\n\
          \x20   prefix_cow_tail: {prefix_cow_tail},\n\
          // @port:literal-fmt\n\
@@ -164,6 +171,7 @@ pub fn literal(d: &PortFields) -> String {
         embed_host_offload = d.embed_host_offload,
         kv_batched_swap = d.kv_batched_swap,
         ssm_store_lru = d.ssm_store_lru,
+        kv_host_tier = d.kv_host_tier,
         radix_lru_index = d.radix_lru_index,
         prefix_cow_tail = d.prefix_cow_tail,
         // @port:literal-args

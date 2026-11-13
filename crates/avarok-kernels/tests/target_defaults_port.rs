@@ -44,6 +44,7 @@ const PORT_LEVERS: &[&str] = &[
     "embed_host_offload",
     "kv_batched_swap",
     "ssm_store_lru",
+    "kv_host_tier",
     "radix_lru_index",
     "prefix_cow_tail",
     // @port:levers
@@ -126,6 +127,7 @@ fn the_baked_port_rows_match_their_own_hardware_tree() {
     );
     assert_eq!(baked.port.kv_batched_swap, declared.port.kv_batched_swap);
     assert_eq!(baked.port.ssm_store_lru, declared.port.ssm_store_lru);
+    assert_eq!(baked.port.kv_host_tier, declared.port.kv_host_tier);
     assert_eq!(baked.port.radix_lru_index, declared.port.radix_lru_index);
     assert_eq!(baked.port.prefix_cow_tail, declared.port.prefix_cow_tail);
     // @port:baked-eq
@@ -148,6 +150,7 @@ fn ada_port_rows_hold_their_write_time_values() {
     assert_eq!(declared("ada").port.embed_host_offload, false);
     assert_eq!(declared("ada").port.kv_batched_swap, false);
     assert_eq!(declared("ada").port.ssm_store_lru, false);
+    assert_eq!(declared("ada").port.kv_host_tier, false);
     assert_eq!(declared("ada").port.radix_lru_index, false);
     assert_eq!(declared("ada").port.prefix_cow_tail, false);
     // @port:ada
@@ -169,6 +172,7 @@ fn non_ada_targets_keep_every_port_row_at_its_baseline() {
         assert!(!declared(hw).port.embed_host_offload, "{hw}");
         assert!(!declared(hw).port.kv_batched_swap, "{hw}");
         assert!(!declared(hw).port.ssm_store_lru, "{hw}");
+        assert!(!declared(hw).port.kv_host_tier, "{hw}");
         assert!(!declared(hw).port.radix_lru_index, "{hw}");
         assert!(!declared(hw).port.prefix_cow_tail, "{hw}");
         // @port:non-ada

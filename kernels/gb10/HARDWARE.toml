@@ -420,6 +420,27 @@ kv_batched_swap = false
 # either way: a missing blob is a recompute.
 ssm_store_lru = false
 
+# Host-RAM KV tier (`spark-runtime/src/kv_host_tier/`, glue
+# `spark-model/src/model/kv_tier_glue.rs`): every full prompt block the prefix
+# cache newly holds is copied to a pinned host pool on a dedicated copy stream
+# (one extra block reference keeps the block alive until its D2H completed),
+# and a later prompt whose prefix the GPU cache already evicted restores those
+# blocks by one batched H2D into fresh blocks that re-enter the radix tree, so
+# its prefill sees an ordinary GPU hit. On a hybrid model the restore ends at
+# the block holding an SSM snapshot past the GPU match and loads nothing
+# without one. It serves only with this row on AND a `--kv-host-tier-gb`
+# budget AND the prefix cache on (`--hermetic` closes it), so the row alone
+# changes nothing. OFF until the receipt on this card: a multi-turn run with a
+# shrunk KV pool shows tier hits, restored tokens about equal to the evicted
+# prefix, greedy output and top-5 logprobs equal to a never-evicted HBM-hit
+# run, TTFT within 3x of the HBM hit and at least 10x better than recompute,
+# and 4-stream decode within 2% of the tier off. `AVAROK_KV_HOST_TIER=1` plus
+# `--kv-host-tier-gb N` is the A/B; the `atlas_kv_tier_*` series show
+# residency, hits, restores and gate declines.
+kv_host_tier = false
+
+
+
 # Radix prefix-cache eviction takes its victim from an ordered (last_access,
 # node id) index of evictable leaves, maintained at every transition of the
 # victim predicate, instead of scanning every node once per evicted block
@@ -445,5 +466,6 @@ radix_lru_index = false
 # cross-stream identity at 0.7, and prefix-repetition TTFT no worse.
 # `AVAROK_PREFIX_COW_TAIL=1` is the A/B.
 prefix_cow_tail = false
+
 # @port:defaults
 

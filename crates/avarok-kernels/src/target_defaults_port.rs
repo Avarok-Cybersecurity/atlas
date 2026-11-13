@@ -121,6 +121,14 @@ pub struct PortDefaults {
     /// re-homes a spilled prefix or the tail sweep drops one
     /// (`spark-runtime/src/radix_tree/snapshot_insert.rs`).
     pub ssm_store_lru: bool,
+    /// Host-RAM KV tier (`spark-runtime/src/kv_host_tier/`, glue
+    /// `spark-model/src/model/kv_tier_glue.rs`): every full prompt block the
+    /// prefix cache newly holds is copied to a pinned host pool on a dedicated
+    /// copy stream (one extra block reference keeps the block alive until its D2H
+    /// completed), and a later prompt whose prefix the GPU cache already evicted
+    /// restores those blocks by one batched H2D into fresh blocks that re-enter
+    /// the radix tree, so its prefill sees an ordinary GPU hit.
+    pub kv_host_tier: bool,
     /// Radix prefix-cache eviction takes its victim from an ordered (last_access,
     /// node id) index of evictable leaves, maintained at every transition of the
     /// victim predicate, instead of scanning every node once per evicted block
@@ -152,6 +160,7 @@ pub const PORT_BASELINE: PortDefaults = PortDefaults {
     embed_host_offload: false,
     kv_batched_swap: false,
     ssm_store_lru: false,
+    kv_host_tier: false,
     radix_lru_index: false,
     prefix_cow_tail: false,
     // @port:baseline
