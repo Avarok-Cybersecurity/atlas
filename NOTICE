@@ -86,6 +86,55 @@ Cinference / NInfer (device-side speculative acceptance)
     NInfer is distributed under the Apache License, Version 2.0. The original
     LICENSE is retained unchanged in this distribution.
 
+== Cinference / NInfer (copy drafter: prompt lookup and lookup rounds) ==
+
+Source:  https://github.com/satellitedown/cinference, commit 383e5db
+         src/models/qwen3_5/program/speculative/prompt_lookup.{h,cpp}
+License: Apache License, Version 2.0 (LICENSES/Apache-2.0.txt)
+
+From the Cinference NOTICE file:
+
+  Cinference
+  https://github.com/satellitedown/cinference
+
+  Cinference is derived from NInfer by Neroued and its contributors:
+  https://github.com/Neroued/ninfer
+  NInfer is distributed under the Apache License, Version 2.0. The original
+  LICENSE is retained unchanged in this distribution.
+
+Atlas files: crates/spark-server/src/scheduler/copy_draft/{mod.rs, index.rs,
+  estimator.rs, policy.rs}
+Changes: translated from C++ to Rust; a 16-token window added; exact-content
+  collision chains; a bounded index; the per-window estimate scored lazily
+  against the committed stream; lookup rounds routed through Atlas's
+  variable-width verify. See COPY-DRAFT-ATTRIBUTION.md.
+
+== TensorFold (copy drafter: copy index and legacy n-gram index) ==
+
+Source:  https://github.com/ashhart/TensorFold, commit 3885dce
+         zig/src/core/copy_index.zig
+License: Apache License, Version 2.0 (LICENSES/Apache-2.0.txt); code written
+  before TensorFold 0.6.0 is also available under the MIT License
+  (LICENSES/TensorFold-pre0.6-MIT.txt)
+
+From the TensorFold NOTICE file:
+
+  TensorFold
+  Copyright 2026 TensorFold contributors
+  https://github.com/ashhart/TensorFold
+
+  TensorFold is licensed under the Apache License, Version 2.0 (LICENSE) from
+  0.6.0. Releases up to 0.5.0 were MIT-licensed, and code written before 0.6.0
+  keeps its MIT notice in LICENSES/MIT.txt. Third-party code and its licenses
+  are listed in THIRD_PARTY_NOTICES.md.
+
+Atlas files: crates/spark-server/src/scheduler/copy_draft/{mod.rs, index.rs,
+  legacy.rs}
+Changes: translated from Zig to Rust; the latest-earlier-occurrence contract
+  kept over hashed windows; the legacy n-gram index walks per-bigram position
+  lists earliest first so it returns the token Atlas's earlier scan returns.
+  See COPY-DRAFT-ATTRIBUTION.md.
+
 == TensorFold (affine 4-bit route) ==
 
 Source:  https://github.com/ashhart/TensorFold, commit 3885dce

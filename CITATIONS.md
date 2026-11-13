@@ -291,6 +291,21 @@ copied.
   Sampling" (arXiv:2302.01318). The acceptance rule (accept a draft with probability min(1, p/q), else sample the
   normalized residual) whose one-hot-q case the device path implements.
 
+- **Cinference prompt lookup** (Apache-2.0, satellitedown/cinference commit 383e5db, derived from Neroued/ninfer),
+  `src/models/qwen3_5/program/speculative/prompt_lookup.{h,cpp}`: hashed 8/4/2-token suffix windows, period
+  continuation, the decayed per-window acceptance estimate with its long-match floor, and lookup rounds (a near-certain
+  copy verified alone). Translated for `scheduler/copy_draft/{index.rs, estimator.rs, policy.rs}` (row `copy_draft`).
+  Attribution: `COPY-DRAFT-ATTRIBUTION.md`.
+- **TensorFold copy index** (Apache-2.0; pre-0.6.0 code also MIT, ashhart/TensorFold commit 3885dce),
+  `zig/src/core/copy_index.zig`: the latest-earlier-occurrence copy contract and its plain-scan oracle, and filling the
+  MTP verify chain from a copy. Translated for `scheduler/copy_draft/{index.rs, legacy.rs}`.
+- **KVMem** (arXiv:2609.04852; repository carries no license, idea only, no source read): 16-token copy windows,
+  backward match extension, the source cursor kept across accepted rounds, and the per-request yield gate (EWMA 0.25,
+  advantage 1.3, two cold rounds, a probe after eight refusals). Independent implementation in
+  `scheduler/copy_draft/{estimator.rs, policy.rs}`.
+- **Prompt lookup decoding** (A. Saxena, 2023, https://github.com/apoorvumang/prompt-lookup-decoding): the public
+  technique behind Atlas's `--ngram-speculative` proposer (`ngram.rs`), which the copy drafter's legacy index serves.
+
 ### Affine 4-bit route: TensorFold and the MLX format (L17a, L17b, L17c)
 
 - TensorFold (https://github.com/ashhart/TensorFold, commit 3885dce), Copyright
