@@ -250,4 +250,22 @@ Atlas files that carry it. License texts are in `LICENSES/`; notices are in
   "MARLIN: Mixed-Precision Auto-Regressive Parallel Inference on Large Language
   Models", arXiv:2408.11743.
 - See `VLLM-MARLIN-ATTRIBUTION.md`.
+
+### llama.cpp / ggml quant engine and the keep-packed GGUF route (L19)
+
+- llama.cpp (https://github.com/ggml-org/llama.cpp, MIT, Copyright (c)
+  2023-2026 The ggml authors; text in `LICENSES/llama.cpp-MIT.txt`): the CUDA
+  quant engine vendored in `kernels/gb10/qwen3.6-27b/nvfp4/q4k_vendor/`
+  (`ggml-common.h` block layouts and `kvalues_iq4nl`, `vecdotq.cuh`,
+  `mmq.cuh`, `quantize_impl.cuh`), and `ggml/src/ggml-quants.c`
+  (`dequantize_row_iq4_xs`, `dequantize_row_iq4_nl`, `dequantize_row_q5_K`)
+  and `ggml/src/ggml-cuda/{mmvq.cu, quantize.cu, convert.cu}`, translated
+  for the Ada keep-packed IQ4_XS / Q4_K / Q6_K route:
+  `kernels/ada/common/{kquant_q8_1_ada.cu, kquant_mmvq_q4_ada.cu,
+  iq4_xs_mmq_ada.cu, dequant_iq4xs_q5k_bf16_ada.cu}`,
+  `crates/spark-runtime/src/weights/gguf/dequant_cpu/iq4.rs` and
+  `crates/spark-model/src/port/gguf_q4/`.
+- The GGUF format and the IQ4_XS, Q4_K, Q5_K and Q6_K quantization types
+  are llama.cpp's (`docs/` and `gguf-py/` of the same repository).
+- See `GGUF-IQ4-ATTRIBUTION.md`.
 <!-- @port:citations -->

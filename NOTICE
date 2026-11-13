@@ -103,6 +103,29 @@ vLLM Marlin W4A16 host logic (translated to Rust)
   the CPU; a row-invariant decode policy; Atlas's W4Linear contract. See
   VLLM-MARLIN-HOST-ATTRIBUTION.md.
 
+llama.cpp / ggml (CUDA quant engine and GGUF block formats)
+  Source: https://github.com/ggml-org/llama.cpp
+  Copyright (c) 2023-2026 The ggml authors.
+  Licensed under the MIT License (LICENSES/llama.cpp-MIT.txt).
+  Vendored copies (pre-existing, unmodified except where their own comments
+  say so): kernels/gb10/qwen3.6-27b/nvfp4/q4k_vendor/ (ggml-common.h,
+  ggml.h, ggml-impl.h, ggml-alloc.h, ggml-backend.h, ggml-cuda.h, gguf.h,
+  common.cuh, mma.cuh, mmq.cuh, vecdotq.cuh, quantize.cuh,
+  quantize_impl.cuh, vendors/cuda.h). The pre-existing kernels that include
+  them are covered by this notice: kernels/gb10/qwen3.6-27b/nvfp4/q4k_mmq.cu,
+  q2_0_mmq.cu, nvfp4_mmq.cu, kernels/gb10/deepseek-v4-flash/nvfp4/kquant_moe.cu.
+  Atlas files translated from llama.cpp or built on the vendored engine:
+         kernels/ada/common/kquant_q8_1_ada.cu, kquant_mmvq_q4_ada.cu,
+         iq4_xs_mmq_ada.cu, dequant_iq4xs_q5k_bf16_ada.cu,
+         crates/spark-runtime/src/weights/gguf/dequant_cpu/iq4.rs,
+         crates/spark-runtime/src/weights/gguf/dequant_cpu/iq4_tests.rs,
+         crates/spark-model/src/port/gguf_q4/launch.rs,
+         crates/spark-model/src/port/gguf_q4/reference.rs
+  Changes: Ada (sm_89) entry points for IQ4_XS, Q4_K and Q6_K decode GEMVs
+  and MMQ prefill GEMMs, bf16 activations and outputs, an IQ4 / Q5_K dequant,
+  and Rust translations of the block decoders and launch geometry. See
+  GGUF-IQ4-ATTRIBUTION.md.
+
 == LMCache (KV block transfer, pinned host pool, LRU blob store) ==
 
 Source:  https://github.com/LMCache/LMCache, commit 3aefae1
