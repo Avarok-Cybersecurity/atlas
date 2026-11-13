@@ -268,6 +268,13 @@ pub struct PortDefaults {
     /// BF16 is freed) and the gated short convolution's in_proj and out_proj
     /// (E4M3 decode copies; the BF16 stays for prefill, +0.22 GB).
     pub lfm3_fp8_all: bool,
+    /// Time every hot-swap by phase (drain, teardown, load, total) and keep the
+    /// last 8 swap durations per model, feed the atlas_model_swap_seconds{phase},
+    /// atlas_model_swap_total{outcome}, atlas_model_swap_estimate_seconds{model}
+    /// and atlas_model_resident_bytes series on /metrics, and add x_atlas
+    /// (resident, resident_bytes, swap_seconds_estimate) to the /v1/models list
+    /// and to a retrieved model.
+    pub model_swap_timing: bool,
     // @port:fields
 }
 
@@ -310,5 +317,6 @@ pub const PORT_BASELINE: PortDefaults = PortDefaults {
     prefill_sparse_attn: false,
     kv_window_desk: false,
     lfm3_fp8_all: false,
+    model_swap_timing: false,
     // @port:baseline
 };

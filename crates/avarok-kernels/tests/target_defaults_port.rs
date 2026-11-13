@@ -66,6 +66,7 @@ const PORT_LEVERS: &[&str] = &[
     "prefill_sparse_attn",
     "kv_window_desk",
     "lfm3_fp8_all",
+    "model_swap_timing",
     // @port:levers
 ];
 
@@ -195,6 +196,10 @@ fn the_baked_port_rows_match_their_own_hardware_tree() {
     );
     assert_eq!(baked.port.kv_window_desk, declared.port.kv_window_desk);
     assert_eq!(baked.port.lfm3_fp8_all, declared.port.lfm3_fp8_all);
+    assert_eq!(
+        baked.port.model_swap_timing,
+        declared.port.model_swap_timing
+    );
     // @port:baked-eq
 }
 
@@ -237,6 +242,7 @@ fn ada_port_rows_hold_their_write_time_values() {
     assert_eq!(declared("ada").port.prefill_sparse_attn, false);
     assert_eq!(declared("ada").port.kv_window_desk, false);
     assert_eq!(declared("ada").port.lfm3_fp8_all, false);
+    assert_eq!(declared("ada").port.model_swap_timing, false);
     // @port:ada
 }
 
@@ -278,6 +284,7 @@ fn non_ada_targets_keep_every_port_row_at_its_baseline() {
         assert!(!declared(hw).port.prefill_sparse_attn, "{hw}");
         assert!(!declared(hw).port.kv_window_desk, "{hw}");
         assert!(!declared(hw).port.lfm3_fp8_all, "{hw}");
+        assert!(!declared(hw).port.model_swap_timing, "{hw}");
         // @port:non-ada
     }
 }
