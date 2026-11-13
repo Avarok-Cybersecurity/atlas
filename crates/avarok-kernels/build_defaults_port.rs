@@ -29,6 +29,7 @@ pub struct PortFields {
     pub mtp_vocab_rank: String,
     pub mtp_propose_graph: bool,
     pub mtp_device_accept: bool,
+    pub copy_draft: String,
     pub marlin_w4a16: bool,
     pub gguf_native_iq4: bool,
     pub weights_exl3: bool,
@@ -64,6 +65,7 @@ impl Default for PortFields {
             mtp_vocab_rank: "id".to_string(),
             mtp_propose_graph: false,
             mtp_device_accept: false,
+            copy_draft: "off".to_string(),
             marlin_w4a16: false,
             gguf_native_iq4: false,
             weights_exl3: false,
@@ -117,6 +119,10 @@ pub fn parse(out: &mut PortFields, key: &str, value: &toml::Value) -> bool {
         }
         "mtp_device_accept" => {
             out.mtp_device_accept = boolean(key, value);
+            true
+        }
+        "copy_draft" => {
+            out.copy_draft = string(key, value);
             true
         }
         "marlin_w4a16" => {
@@ -205,6 +211,7 @@ pub fn literal(d: &PortFields) -> String {
          \x20   mtp_vocab_rank: \"{mtp_vocab_rank}\",\n\
          \x20   mtp_propose_graph: {mtp_propose_graph},\n\
          \x20   mtp_device_accept: {mtp_device_accept},\n\
+         \x20   copy_draft: \"{copy_draft}\",\n\
          \x20   marlin_w4a16: {marlin_w4a16},\n\
          \x20   gguf_native_iq4: {gguf_native_iq4},\n\
          \x20   weights_exl3: {weights_exl3},\n\
@@ -230,6 +237,7 @@ pub fn literal(d: &PortFields) -> String {
         mtp_vocab_rank = d.mtp_vocab_rank,
         mtp_propose_graph = d.mtp_propose_graph,
         mtp_device_accept = d.mtp_device_accept,
+        copy_draft = d.copy_draft,
         marlin_w4a16 = d.marlin_w4a16,
         gguf_native_iq4 = d.gguf_native_iq4,
         weights_exl3 = d.weights_exl3,

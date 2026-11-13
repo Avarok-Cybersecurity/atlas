@@ -61,6 +61,12 @@ pub struct PortDefaults {
     /// copying the `[K, vocab]` BF16 verify logits to the host and running the
     /// pre-sample pipeline there.
     pub mtp_device_accept: bool,
+    /// Copy drafter for MTP speculative rounds
+    /// (`spark-server/src/scheduler/copy_draft/`): a per-sequence index over
+    /// committed tokens (16/8/4/2-token windows, latest earlier occurrence,
+    /// backward match extension, period continuation) proposes the tokens that
+    /// followed an earlier copy of the context.
+    pub copy_draft: &'static str,
     /// When a 4-bit BF16 load route is on (dense_affine4_from_bf16,
     /// gdn_affine4_from_bf16, attn_affine4_from_bf16), every projection the
     /// Marlin kernels serve (N a multiple of 64, K of 128, more than one group)
@@ -207,6 +213,7 @@ pub const PORT_BASELINE: PortDefaults = PortDefaults {
     mtp_vocab_rank: "id",
     mtp_propose_graph: false,
     mtp_device_accept: false,
+    copy_draft: "off",
     marlin_w4a16: false,
     gguf_native_iq4: false,
     weights_exl3: false,

@@ -484,6 +484,26 @@ mtp_propose_graph = false
 # chi-square), qual.py top-20 KL and a sampled-pick chi-square against the
 # host, and steady C=8 sampled waves no slower.
 mtp_device_accept = false
+# Copy drafter for MTP speculative rounds
+# (`spark-server/src/scheduler/copy_draft/`): a per-sequence index over
+# committed tokens (16/8/4/2-token windows, latest earlier occurrence,
+# backward match extension, period continuation) proposes the tokens that
+# followed an earlier copy of the context. `chain` replaces the MTP verify
+# chain with the copy chain of the same width when the source agrees on at
+# least --copy-draft-min-match tokens (8) and the per-request yield gate says
+# it pays; `rounds` verifies a confident copy (per-window estimate >= 0.96) of
+# up to --copy-draft-max-len tokens (15) alone through the variable-width
+# verify, single sequence only; `auto` does both; with the row on, the legacy
+# --ngram-speculative mode also answers from an incremental index that returns
+# the token its scan returns. The target verifies every copied token through
+# the same pipeline, so outputs stay the target's own, and grammar-constrained
+# rows never take a copy plan. OFF until the receipt on this card: greedy
+# token SHA equal to off on the 8 agreement prompts and the copy fixture, a
+# gain on the copy cell, and no code, chat or long-context cell slower than
+# off beyond its spread. `AVAROK_COPY_DRAFT=chain|rounds|auto` is the A/B; the
+# `atlas_copy_*` series show how often a copy ran and how much of it was
+# accepted.
+copy_draft = "off"
 # When a 4-bit BF16 load route is on (dense_affine4_from_bf16,
 # gdn_affine4_from_bf16, attn_affine4_from_bf16), every projection the Marlin
 # kernels serve (N a multiple of 64, K of 128, more than one group) is
