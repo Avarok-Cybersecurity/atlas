@@ -223,6 +223,36 @@ their code is copied; the entries record the task definitions, protocols and dat
 - **D-Cut** (arXiv 2607.14647): adaptive verification-depth pruning by survival score, the v1 policy that D-Cut v2
   extends (`scheduler/mtp_dcut.rs`).
 
+### Microbench examples (L07)
+
+Methods only; every file is Atlas-native (SPDX line only) and no source was
+copied.
+
+- Cinference (https://github.com/satellitedown/cinference, commit `383e5db`,
+  Apache-2.0, derived from NInfer by Neroued and contributors): the per-T linear
+  sweep and its `T1_lin_x` metric (`bench/README.md`, "Linear Op benchmark";
+  `docs/maintainer/linear-tuning.md` sections 1 to 4), the measured bandwidth
+  ceiling probe (`tools/hbm_bandwidth_probe.cu`), the oracle discipline
+  (`docs/maintainer/op-development.md` sections 6.1 to 6.3) and the profiler
+  boundary (`--profile-measured`). Atlas files:
+  `crates/spark-model/examples/{linear_t_sweep,hbm_bandwidth_probe}.rs` and
+  `examples/common/{sweep_report,hbm_ptx,profiler}.rs`.
+- TensorFold (https://github.com/ashhart/TensorFold, commit `3885dce`,
+  Apache-2.0): distinct weight copies in GEMV microbenchmarks
+  (`docs/recipes/qwen3.8-27b.md:84-86`), rotated and interleaved arm order
+  (`zig/src/cuda/qmmf.md`, "Device checks and timing") and planted controls
+  (`docs/kernel-contract.md:1-10`). Atlas files:
+  `examples/common/{cold_l2,planted}.rs`.
+- vLLM (https://github.com/vllm-project/vllm, commit `8a36f08`, Apache-2.0):
+  the kernel-microbenchmark skill (`.agents/skills/kernel-microbenchmark/SKILL.md:26-31,121-127`,
+  rotating buffers larger than the L2) and the pinned-memory regression gate
+  (`benchmarks/benchmark_pin_memory.py:1-40`, one fresh process per arm).
+  Atlas files: `examples/common/{cold_l2,pinned_arms}.rs`.
+- LMCache (https://github.com/LMCache/LMCache, commit `3aefae1`, Apache-2.0):
+  the pinned pool brief's measurement (pin 1, 4 and 16 GiB one call against 64 MB
+  chunks, whether WSL2 refuses; `lmcache/v1/memory_allocators/lazy_memory_allocator.py:80-200`).
+  Atlas file: `examples/pinned_probe.rs`.
+
 ### GPU backend extensions (L08)
 
 - Cinference (https://github.com/satellitedown/cinference, commit `383e5db`,
