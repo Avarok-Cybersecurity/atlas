@@ -169,9 +169,14 @@ impl Qwen3SsmLayer {
         }
 
         // ── 11. Batched residual + post-norm + MoE ──
-        // residual_add_rms_norm already supports num_tokens via grid.x
-        ops::residual_add_rms_norm(
-            ctx.gpu,
+        // residual_add_rms_norm already supports num_tokens via grid.x.
+        // Port row `rmsnorm_fp8_quant_fused` (off by default): the same norm,
+        // plus the dense FFN's W8A8 input quant in the same launch; the scope
+        // is held across the FFN call only (`dense_ffn_w8a8_prefill/norm_fused.rs`).
+        let prequant = crate::layers::dense_ffn::w8a8_prefill::norm_fused::residual_add_rms_norm(
+            &self.ffn,
+            true,
+            ctx,
             self.residual_add_rms_norm_k,
             hidden,
             out_proj_buf,
@@ -186,6 +191,7 @@ impl Qwen3SsmLayer {
         // Batched MoE: 5 kernel launches for all N tokens
         self.ffn
             .forward_prefill(ctx.buffers.norm_output(), num_tokens, ctx, stream)?;
+        drop(prequant);
         // AVAROK_GDN_DUMP hook: MoE output — KEY drift attribution test.
         // If this matches HF byte-perfectly, MoE quant is not the source.
         // If it drifts, MoE expert quantization is the confirmed cause.

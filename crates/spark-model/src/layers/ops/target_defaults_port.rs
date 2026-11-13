@@ -49,6 +49,12 @@ pub struct PortLevers {
     pub mtp_device_accept: Resolved<bool>,
     /// Copy drafter for MTP speculative rounds: which copy-drafter plans may be used (`off`, `chain`, `rounds`, `auto`).
     pub copy_draft: Resolved<&'static str>,
+    /// The dense FFN's FP8 speculative-verify rows (M = 2..8) on the sm_89 batch-M GEMVs: one pass over each FP8 weight for all M rows.
+    pub ffn_fp8_verify_gemv: Resolved<bool>,
+    /// The sm_89 FP8 decode and verify GEMVs load their weights with an explicit evict-first L2 policy.
+    pub l2_evict_first_weights: Resolved<bool>,
+    /// The prefill FFN-norm of a Qwen3 / Qwen3.5 layer also writes the dense FFN's W8A8 gate/up activation (E4M3 codes and scales) in the same launch.
+    pub rmsnorm_fp8_quant_fused: Resolved<bool>,
     /// Serve every 4-bit BF16 load route's Marlin-servable projection by round-to-nearest int4 at group 128 on vLLM's Marlin W4A16 GEMM.
     pub marlin_w4a16: Resolved<bool>,
     /// A dense Qwen3.5-family GGUF keeps its IQ4_XS, Q4_K and Q6_K projections as the file's raw super-blocks in VRAM for the sm_89 keep-packed GEMVs and MMQ GEMMs.
@@ -126,6 +132,18 @@ pub fn resolve(
         copy_draft: super::port_rows::copy_draft::resolve(
             d.copy_draft,
             var(super::port_rows::copy_draft::ENV).as_deref(),
+        ),
+        ffn_fp8_verify_gemv: super::port_rows::ffn_fp8_verify_gemv::resolve(
+            d.ffn_fp8_verify_gemv,
+            var(super::port_rows::ffn_fp8_verify_gemv::ENV).as_deref(),
+        ),
+        l2_evict_first_weights: super::port_rows::l2_evict_first_weights::resolve(
+            d.l2_evict_first_weights,
+            var(super::port_rows::l2_evict_first_weights::ENV).as_deref(),
+        ),
+        rmsnorm_fp8_quant_fused: super::port_rows::rmsnorm_fp8_quant_fused::resolve(
+            d.rmsnorm_fp8_quant_fused,
+            var(super::port_rows::rmsnorm_fp8_quant_fused::ENV).as_deref(),
         ),
         marlin_w4a16: super::port_rows::marlin_w4a16::resolve(
             d.marlin_w4a16,
@@ -230,6 +248,13 @@ pub fn format_port(l: &PortLevers) -> String {
     push(&mut s, "mtp_propose_graph", &l.mtp_propose_graph);
     push(&mut s, "mtp_device_accept", &l.mtp_device_accept);
     push(&mut s, "copy_draft", &l.copy_draft);
+    push(&mut s, "ffn_fp8_verify_gemv", &l.ffn_fp8_verify_gemv);
+    push(&mut s, "l2_evict_first_weights", &l.l2_evict_first_weights);
+    push(
+        &mut s,
+        "rmsnorm_fp8_quant_fused",
+        &l.rmsnorm_fp8_quant_fused,
+    );
     push(&mut s, "marlin_w4a16", &l.marlin_w4a16);
     push(&mut s, "gguf_native_iq4", &l.gguf_native_iq4);
     push(&mut s, "weights_exl3", &l.weights_exl3);

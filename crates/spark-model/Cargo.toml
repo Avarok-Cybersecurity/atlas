@@ -423,6 +423,18 @@ name = "spec_accept_oracle"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]
+name = "fp8_ada_batchm_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "fp8_ada_l2hint_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "rmsnorm_quant_fp8_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
 name = "affine_ada_microtest"
 required-features = ["cuda", "gpu-examples"]
 
