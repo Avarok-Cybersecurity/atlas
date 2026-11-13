@@ -106,9 +106,12 @@ impl TransformerLayer for Qwen3AttentionLayer {
 
     /// QSA selection does a host top-k per step — never capturable, and a
     /// graph captured on the dense path would replay wrong attention once
-    /// selection activates.
+    /// selection activates. The RetroInfer selector (port L33, opt-in,
+    /// approximate) keeps per-sequence index state on the host and runs its
+    /// decode eagerly; it vetoes graphs only while it is registered (false on
+    /// every serve without `retro_attn` or `--retro-shadow`).
     fn decode_graph_unsupported(&self) -> bool {
-        self.qsa.is_some()
+        self.qsa.is_some() || crate::port::retro::api::vetoes_decode_graphs()
     }
 
     fn has_aux_state(&self) -> bool {

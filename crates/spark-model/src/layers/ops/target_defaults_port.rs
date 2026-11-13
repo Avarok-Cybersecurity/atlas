@@ -91,6 +91,8 @@ pub struct PortLevers {
     pub attn_page_sparse: Resolved<bool>,
     /// Bounded KV view (APPROXIMATE): once per user turn, score the context's blocks against the final user message and attend only to the selected view.
     pub kv_view_selection: Resolved<bool>,
+    /// RetroInfer retrieval attention (APPROXIMATE): attend exactly to the sink, the recent tail and the top-scoring clusters of a k-means index over the keys.
+    pub retro_attn: Resolved<bool>,
     // @port:fields
 }
 
@@ -221,6 +223,10 @@ pub fn resolve(
             d.kv_view_selection,
             var(super::port_rows::kv_view_selection::ENV).as_deref(),
         ),
+        retro_attn: super::port_rows::retro_attn::resolve(
+            d.retro_attn,
+            var(super::port_rows::retro_attn::ENV).as_deref(),
+        ),
         // @port:resolve
     }
 }
@@ -289,6 +295,7 @@ pub fn format_port(l: &PortLevers) -> String {
     push(&mut s, "prefix_cow_tail", &l.prefix_cow_tail);
     push(&mut s, "attn_page_sparse", &l.attn_page_sparse);
     push(&mut s, "kv_view_selection", &l.kv_view_selection);
+    push(&mut s, "retro_attn", &l.retro_attn);
     // @port:boot
     if s.len() == header {
         s.push_str(" none");

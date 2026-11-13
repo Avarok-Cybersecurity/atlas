@@ -36,6 +36,7 @@ pub mod mtp_propose_graph;
 pub mod mtp_vocab_rank;
 pub mod prefix_cow_tail;
 pub mod radix_lru_index;
+pub mod retro_attn;
 pub mod rmsnorm_fp8_quant_fused;
 pub mod ssm_store_lru;
 pub mod weights_exl3;
