@@ -48,5 +48,20 @@ impl ModelPortExt for TransformerModel {
     fn kv_tier_observe_prefill(&self, tokens: usize, secs: f64) {
         self.tier_observe_prefill(tokens, secs)
     }
+
+    fn kv_restore_begin(
+        &self,
+        tokens: &[u32],
+        adapter: u32,
+    ) -> anyhow::Result<Option<spark_runtime::kv_host_tier::RestoreTicket>> {
+        self.restore_begin(tokens, adapter)
+    }
+
+    fn kv_restore_poll(
+        &self,
+        t: &spark_runtime::kv_host_tier::RestoreTicket,
+    ) -> anyhow::Result<spark_runtime::kv_host_tier::RestoreState> {
+        self.restore_poll(t)
+    }
     // @port:impls
 }

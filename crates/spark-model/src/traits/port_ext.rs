@@ -57,5 +57,30 @@ pub trait ModelPortExt {
     /// Host KV tier (L26b): one measured prefill (`tokens` computed in `secs`) for the restore
     /// cost model. Default: ignored.
     fn kv_tier_observe_prefill(&self, _tokens: usize, _secs: f64) {}
+
+    /// Start an asynchronous host-tier KV restore of the prefix of `tokens` for
+    /// `adapter` (lane L27, row `kv_restore_async`; `TransformerModel` delegates
+    /// to lane L26b's `model/kv_tier_glue.rs`). `Ok(None)` = nothing to restore.
+    /// The caller parks the request (`scheduler/restore_queue.rs`) and polls
+    /// [`Self::kv_restore_poll`]. Default: no host tier, nothing to restore.
+    fn kv_restore_begin(
+        &self,
+        _tokens: &[u32],
+        _adapter: u32,
+    ) -> anyhow::Result<Option<spark_runtime::kv_host_tier::RestoreTicket>> {
+        Ok(None)
+    }
+
+    /// Non-blocking state of a restore from [`Self::kv_restore_begin`] (lane
+    /// L27). `Ready`: the restored blocks are in the prefix cache, so the
+    /// request's admission finds them as an HBM hit. `Failed`: nothing was
+    /// restored and every block it allocated is free again. Default: `Failed`
+    /// (no tier issued the ticket), so the caller recomputes.
+    fn kv_restore_poll(
+        &self,
+        _t: &spark_runtime::kv_host_tier::RestoreTicket,
+    ) -> anyhow::Result<spark_runtime::kv_host_tier::RestoreState> {
+        Ok(spark_runtime::kv_host_tier::RestoreState::Failed)
+    }
     // @port:methods
 }

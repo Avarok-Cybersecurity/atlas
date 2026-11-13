@@ -57,6 +57,10 @@ pub struct PortLevers {
     pub ssm_store_lru: Resolved<bool>,
     /// Host-RAM KV tier: copy every full prompt block the prefix cache newly holds to a pinned host pool and restore evicted prefix blocks from it.
     pub kv_host_tier: Resolved<bool>,
+    /// Asynchronous host-tier KV restore: park a restoring request outside the batch while its host-to-device copy runs.
+    pub kv_restore_async: Resolved<bool>,
+    /// Disk tier and warm restart for the host KV tier: demote evicted host blocks to one record file each and adopt a previous run's records.
+    pub kv_tier_disk: Resolved<bool>,
     /// Radix prefix-cache eviction takes its victim from an ordered (last_access, node id) index of evictable leaves instead of scanning every node.
     pub radix_lru_index: Resolved<bool>,
     /// A prefix-cache hit may end inside a KV block: the chunked prefill copies that block into a private block instead of sharing the donor's writable tail.
@@ -123,6 +127,14 @@ pub fn resolve(
             d.kv_host_tier,
             var(super::port_rows::kv_host_tier::ENV).as_deref(),
         ),
+        kv_restore_async: super::port_rows::kv_restore_async::resolve(
+            d.kv_restore_async,
+            var(super::port_rows::kv_restore_async::ENV).as_deref(),
+        ),
+        kv_tier_disk: super::port_rows::kv_tier_disk::resolve(
+            d.kv_tier_disk,
+            var(super::port_rows::kv_tier_disk::ENV).as_deref(),
+        ),
         radix_lru_index: super::port_rows::radix_lru_index::resolve(
             d.radix_lru_index,
             var(super::port_rows::radix_lru_index::ENV).as_deref(),
@@ -178,6 +190,8 @@ pub fn format_port(l: &PortLevers) -> String {
     push(&mut s, "kv_batched_swap", &l.kv_batched_swap);
     push(&mut s, "ssm_store_lru", &l.ssm_store_lru);
     push(&mut s, "kv_host_tier", &l.kv_host_tier);
+    push(&mut s, "kv_restore_async", &l.kv_restore_async);
+    push(&mut s, "kv_tier_disk", &l.kv_tier_disk);
     push(&mut s, "radix_lru_index", &l.radix_lru_index);
     push(&mut s, "prefix_cow_tail", &l.prefix_cow_tail);
     // @port:boot
