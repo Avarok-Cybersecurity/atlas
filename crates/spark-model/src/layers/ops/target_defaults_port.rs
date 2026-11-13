@@ -33,6 +33,8 @@ pub use super::target_defaults::{Resolved, Source};
 pub struct PortLevers {
     /// `kernels/<hw>` this binary was compiled from, for the log line only.
     pub hw: &'static str,
+    /// Collect the per-request logprob confidence summary for every chat request and feed the `atlas_conf_*` series on /metrics.
+    pub conf_summary: Resolved<bool>,
     /// Serve every 4-bit BF16 load route's Marlin-servable projection by round-to-nearest int4 at group 128 on vLLM's Marlin W4A16 GEMM.
     pub marlin_w4a16: Resolved<bool>,
     /// A dense Qwen3.5-family GGUF keeps its IQ4_XS, Q4_K and Q6_K projections as the file's raw super-blocks in VRAM for the sm_89 keep-packed GEMVs and MMQ GEMMs.
@@ -79,6 +81,10 @@ pub fn resolve(
     let d = &defaults.port;
     PortLevers {
         hw: defaults.hw,
+        conf_summary: super::port_rows::conf_summary::resolve(
+            d.conf_summary,
+            var(super::port_rows::conf_summary::ENV).as_deref(),
+        ),
         marlin_w4a16: super::port_rows::marlin_w4a16::resolve(
             d.marlin_w4a16,
             var(super::port_rows::marlin_w4a16::ENV).as_deref(),
@@ -174,6 +180,7 @@ pub fn format_port(l: &PortLevers) -> String {
     let hw = if l.hw.is_empty() { "unknown" } else { l.hw };
     let mut s = format!("port defaults ({hw}):");
     let header = s.len();
+    push(&mut s, "conf_summary", &l.conf_summary);
     push(&mut s, "marlin_w4a16", &l.marlin_w4a16);
     push(&mut s, "gguf_native_iq4", &l.gguf_native_iq4);
     push(&mut s, "weights_exl3", &l.weights_exl3);
