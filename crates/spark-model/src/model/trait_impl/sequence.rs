@@ -101,6 +101,8 @@ impl TransformerModel {
                 // returning an in-use block to the free list to be handed out
                 // again. Reporting the blocks keeps ref lifetime == node lifetime.
                 super::super::block_mgmt::cache_acquires_refs(&acquired, &mut self.kv_cache.lock());
+                // Port L25 (row `ssm_store_lru`): drop tier blobs the inserts orphaned.
+                self.reap_orphaned_ssm_blobs();
             }
         }
     }
@@ -190,6 +192,15 @@ impl TransformerModel {
             self.kv_cache.lock().block_size(),
             seq.adapter_id,
         );
+        // Port L32 (row `kv_view_selection`): drop the bounded view bound to this sequence's blocks.
+        crate::port::kv_view::release_sequence(
+            self.gpu.as_ref(),
+            seq.slot_idx as u64,
+            &seq.block_table,
+            seq.seq_len as u32,
+        );
+        // Port L36 (row `kv_window_desk`): drop the window desk's host pages of this sequence.
+        crate::port::kv_window::on_free_sequence(&seq.block_table, self.gpu.as_ref());
         if !seq.block_table.is_empty() {
             self.kv_cache.lock().free_blocks(&seq.block_table);
             seq.block_table.clear();

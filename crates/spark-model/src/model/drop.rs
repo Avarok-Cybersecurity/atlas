@@ -35,5 +35,7 @@ impl Drop for TransformerModel {
         // same ownership shape as `drop_pinned_staging`. No-op when the tier
         // never ran (the buffer is allocated on first spill).
         self.ssm_snapshots.free_staging(self.gpu.as_ref());
+        // Port L25: the batched swap's page-locked staging (no-op if never used).
+        self.port.kv_swap.free(self.gpu.as_ref());
     }
 }

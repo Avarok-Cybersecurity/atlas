@@ -33,6 +33,10 @@ pub use super::target_defaults::{Resolved, Source};
 pub struct PortLevers {
     /// `kernels/<hw>` this binary was compiled from, for the log line only.
     pub hw: &'static str,
+    /// Batched sequence swap: gather a swapped-out sequence's image with batched async copies into one reused page-locked staging buffer.
+    pub kv_batched_swap: Resolved<bool>,
+    /// SSM tier blob store eviction order: a capped host-RAM store gives up the least recently used blob instead of the oldest insert.
+    pub ssm_store_lru: Resolved<bool>,
     // @port:fields
 }
 
@@ -47,6 +51,14 @@ pub fn resolve(
     let d = &defaults.port;
     PortLevers {
         hw: defaults.hw,
+        kv_batched_swap: super::port_rows::kv_batched_swap::resolve(
+            d.kv_batched_swap,
+            var(super::port_rows::kv_batched_swap::ENV).as_deref(),
+        ),
+        ssm_store_lru: super::port_rows::ssm_store_lru::resolve(
+            d.ssm_store_lru,
+            var(super::port_rows::ssm_store_lru::ENV).as_deref(),
+        ),
         // @port:resolve
     }
 }
@@ -78,6 +90,8 @@ pub fn format_port(l: &PortLevers) -> String {
     let hw = if l.hw.is_empty() { "unknown" } else { l.hw };
     let mut s = format!("port defaults ({hw}):");
     let header = s.len();
+    push(&mut s, "kv_batched_swap", &l.kv_batched_swap);
+    push(&mut s, "ssm_store_lru", &l.ssm_store_lru);
     // @port:boot
     if s.len() == header {
         s.push_str(" none");

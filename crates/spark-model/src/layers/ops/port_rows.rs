@@ -10,4 +10,6 @@
 //! inserted immediately BEFORE the marker below by the coordinator's fragment
 //! apply pass.
 
+pub mod kv_batched_swap;
+pub mod ssm_store_lru;
 // @port:mods

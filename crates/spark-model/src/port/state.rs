@@ -13,5 +13,7 @@
 /// lane's field is its type's `Default` and is never read.
 #[derive(Default)]
 pub struct ModelPortState {
+    /// Lane L25: staging of the batched sequence swap (`kv_batched_swap`).
+    pub kv_swap: spark_runtime::kv_cache::block_io::swap::SwapStaging,
     // @port:fields
 }
