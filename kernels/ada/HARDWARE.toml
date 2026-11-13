@@ -808,5 +808,22 @@ overrides = [
   "kv_page_score_ada.cu",
   "kv_page_sketch_ada.cu",
   "kv_view_table_ada.cu",
+  # retro_kmeans_ada.cu    ADDITION (port lane L34a). RetroInfer index build:
+  #                        segmented spherical k-means over one layer's keys,
+  #                        read in place from the paged BF16 or FP8 pool (key
+  #                        mean, uniform-stride init, BF16 mma.sync assignment,
+  #                        a stable CSR per pass, ordered centroid and value
+  #                        sums), written at the host's offsets so decode-time
+  #                        updates append. Deterministic. Resolved only by
+  #                        `port/retro/build.rs` under the APPROXIMATE row
+  #                        `retro_attn`, through try_target_kernel.
+  "retro_kmeans_ada.cu",
+  # retro_select_ada.cu    ADDITION (port lane L34a). RetroInfer zone
+  #                        selection: the GQA-summed centroid softmax per KV
+  #                        head, an exact radix select and sort, and the
+  #                        retrieval and estimation lists with device counts
+  #                        (fixed capacities, graph-capturable). Resolved only
+  #                        by `port/retro/select.rs` under `retro_attn`.
+  "retro_select_ada.cu",
   # @port:overrides
 ]
