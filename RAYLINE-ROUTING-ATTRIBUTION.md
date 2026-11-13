@@ -81,6 +81,33 @@ sources.
 - Used: the expected-utility framing of routing under a cost trade-off, which
   the utility module follows.
 
+## 5. ARC-1.0 Stage-1 head and encoder readouts (route_gate study, lane L04)
+
+The routing feasibility study `crates/avarok-spark-bench/src/route_gate/` (binary `route_gate`) measures whether a
+cheap signal predicts that the 4B model fails a prompt. It was first written in Python/NumPy; the Stage-1 head and
+the readouts are now Rust (CPU only, no NumPy, no torch, no transformers).
+
+- Upstream: https://github.com/rayline-ai/vllm-arc, commit `4ee6a9f`, `vllm_arc/arc_heads.py` and
+  `vllm_arc/heads.py`. Copyright 2026 Atlas Futures, Inc. License: Apache License, Version 2.0
+  (`LICENSES/Apache-2.0.txt`). The upstream NOTICE text is reproduced in `NOTICE` and in the study's
+  `NOTICE-rayline.txt` (kept with the retired Python harness).
+- Translated (Python/torch to Rust f64): the Stage-1 head in `route_gate/stage_one/` (`blocks.rs` the searchsorted,
+  interpolation, linear-quantile, order-ratio and Platt blocks; `forward.rs` the member logits, the usage legs, the
+  orderer and the ensemble; `load.rs` the release loader with its pins and refusals).
+- Written from the ARC-1.0 release documentation (Apache-2.0, derived from Qwen3.5-0.8B by the Qwen team, Alibaba
+  Cloud, also Apache-2.0), with no upstream code: the signal heads (`route_gate/signals.rs`), and the encoder
+  readouts (`route_gate/encoder/`, `serializer.rs`, `goldens.rs`, `rows.rs`): the final RMSNorm of the base model
+  applied to the output of layer 12 at the last token of each role block, as a plain CPU forward of the 12-layer
+  `qwen3_5_text` stack (gated DeltaNet, gated full attention, YaRN and interleaved M-RoPE, SwiGLU). The request
+  serializer of the release is closed; `render_blocks` is a stand-in.
+- Changes by Atlas contributors: only the branches the shipped release tensors select are kept (no PCA components,
+  context or warm-cache features, usage floor head, shrink, per-member orderer, quantile-direct orderer, no GPU); a
+  tensor that would select an unported branch makes the loader refuse; shapes are checked up front; the encoder reads
+  `model.language_model.*` only and never the vision tower or head tensors.
+- Dataset terms (read from local files, never redistributed): GSM8K, MMLU, MMLU-Pro, MATH and HumanEval are MIT;
+  MBPP and GPQA are CC-BY-4.0 (GPQA is gated). Question text stays out of the repository. The PII head was trained in
+  part on NVIDIA Nemotron-PII (CC-BY-4.0), per the ARC-1.0 NOTICE.
+
 ## License text
 
 Apache License, Version 2.0: `LICENSES/Apache-2.0.txt`.

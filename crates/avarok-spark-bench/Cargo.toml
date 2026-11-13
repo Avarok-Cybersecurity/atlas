@@ -15,6 +15,19 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 ureq = { version = "3", features = ["json"] }
 
+# route_gate (L04 routing study): a pure-Rust CPU port of the former Python harness. Every crate here is already in
+# Cargo.lock (spark-model, spark-nllb, spark-server and avarok-core use the same versions and features).
+thiserror = { workspace = true }
+sha2 = { workspace = true }
+safetensors = "0.8"
+memmap2 = "0.9"
+half = "2"
+rayon = "1.12"
+tokenizers = { version = "0.23", default-features = false, features = ["onig"] }
+regex = "1"
+flate2 = "1"
+libc = "0.2"
+
 # Kernel microbenchmark dependencies
 avarok-core = { workspace = true }
 avarok-kernels = { workspace = true }
@@ -23,6 +36,7 @@ cudarc = { workspace = true, optional = true }
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
 parking_lot = { workspace = true }
+tempfile = "3"
 
 # ── HTTP-level benchmarks ──
 
