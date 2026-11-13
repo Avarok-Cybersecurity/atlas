@@ -431,6 +431,10 @@ name = "fp8_ada_l2hint_microtest"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]
+name = "fp8_ada_m16_tc_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
 name = "rmsnorm_quant_fp8_microtest"
 required-features = ["cuda", "gpu-examples"]
 
