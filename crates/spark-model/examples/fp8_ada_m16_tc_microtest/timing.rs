@@ -14,7 +14,11 @@ use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use std::time::Instant;
 
 use crate::l15::{Guarded, gbs, gemv, time_cold_us, time_warm_us};
-use crate::{Inputs, Kernels, MAX_M, PEAK_GBS, tc, tc_dual};
+use crate::{Inputs, Kernels, MAX_M, MAX_M32, PEAK_GBS, tc, tc_dual};
+
+/// The ring figure the 32-row entries are held to on the 4B shapes (the
+/// W8A8 arm costs 144 and 162 us there).
+const M32_RING_BAR_US: f64 = 110.0;
 
 /// Device bytes the weight ring must exceed: three times the card's 32 MB L2.
 const RING_BYTES: usize = 96 << 20;
@@ -121,6 +125,52 @@ pub fn timings(
         println!(
             "  M={m:>2}: ahead1 ring {a1:.1} us | ahead4 ring {a4:.1} us | dual (2 weights) ring {dual:.1} us \
              ({:.0} GB/s, {:.0}% of {PEAK_GBS:.0})",
+            gbs(2.0 * wbytes, dual),
+            pct(2.0 * wbytes, dual)
+        );
+    }
+    for p in ring {
+        gpu.free(p)?;
+    }
+    out.free(gpu)?;
+    out2.free(gpu)
+}
+
+/// Ring timings of the 32-row entries: the plain entry at M = 17, 24 and 32,
+/// then the dual entry (two weights) at M = 17 and 32, with the 16-row kernel
+/// at M = 16 beside as the reference. The bar is informational: a figure over
+/// it is printed, not failed.
+pub fn timings32(gpu: &dyn GpuBackend, k: &Kernels, x: &Inputs, n: u32, kk: u32) -> Result<()> {
+    let bytes = MAX_M32 * n as usize * 2;
+    let (out, out2) = (Guarded::new(gpu, bytes)?, Guarded::new(gpu, bytes)?);
+    let (c, c2) = (out.ptr(), out2.ptr());
+    let ring = weight_ring(gpu, x, n, kk)?;
+    let s = x.w[0].1;
+    let wbytes = f64::from(n) * f64::from(kk);
+    let floor = wbytes / (PEAK_GBS * 1e9) * 1e6;
+    let pct = |b: f64, us: f64| 100.0 * gbs(b, us) / PEAK_GBS;
+
+    let r16 = ring_us(gpu, &ring, |w, _| {
+        tc(gpu, k.tc, x.a, (w, s), c, MAX_M, n, kk)
+    })?;
+    println!("  32-row entries: 16-row kernel at M=16 ring {r16:.1} us (floor {floor:.1} us)");
+    for m in [17usize, 24, 32] {
+        let r = ring_us(gpu, &ring, |w, _| tc(gpu, k.tc32, x.a, (w, s), c, m, n, kk))?;
+        let verdict = if r < M32_RING_BAR_US { "under" } else { "OVER" };
+        println!(
+            "  M={m:>2}: tc32 ring {r:.1} us ({:.0} GB/s of weights, {:.0}% of {PEAK_GBS:.0}, {:.2}x the floor) | \
+             {verdict} the {M32_RING_BAR_US:.0} us bar",
+            gbs(wbytes, r),
+            pct(wbytes, r),
+            r / floor
+        );
+    }
+    for m in [17usize, 32] {
+        let dual = ring_us(gpu, &ring, |w, w2| {
+            tc_dual(gpu, k.dual32, x.a, (w, s), c, (w2, s), c2, m, n, kk)
+        })?;
+        println!(
+            "  M={m:>2}: tc32 dual (2 weights) ring {dual:.1} us ({:.0} GB/s, {:.0}% of {PEAK_GBS:.0})",
             gbs(2.0 * wbytes, dual),
             pct(2.0 * wbytes, dual)
         );

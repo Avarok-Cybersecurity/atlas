@@ -27,6 +27,11 @@
 //!    must be rejected, so a comparator that cannot fail does not read as a
 //!    pass.
 //!
+//!  * **the 32-row entries, every M in 1..=32** (`fp8_ada_m16_tc_microtest/m32.rs`):
+//!    `fp8_gemm_ada_m32` and its dual against the GEMV and the host under the
+//!    same contract, rows 0..=15 equal to the 16-row kernel's in bytes, row
+//!    invariance, the extent and two planted controls on the second tile.
+//!
 //! TIMINGS (informational, `FM16_SKIP_TIMINGS=1` leaves them out, as a
 //! memcheck run should; `fp8_ada_m16_tc_microtest/timing.rs`): per M in
 //! 1..=16, microseconds of one launch over a ring of weight copies larger
@@ -52,6 +57,8 @@ use spark_runtime::kernel_args::{KernelLaunch, div_ceil};
 mod l15;
 use l15::*;
 
+#[path = "fp8_ada_m16_tc_microtest/m32.rs"]
+mod m32;
 #[path = "fp8_ada_m16_tc_microtest/timing.rs"]
 mod timing;
 
@@ -66,6 +73,8 @@ const SHAPES: &[(&str, u32, u32)] = &[
 ];
 const SEEDS: &[u64] = &[0x16_2026_0001, 0x16_2026_0002, 0x16_2026_0003];
 const MAX_M: usize = 16;
+/// Activation rows an input set holds: the 32-row entries' M tile.
+const MAX_M32: usize = 32;
 const MODULE: &str = "fp8_gemm_ada_m16";
 /// Sustained read the card measured (`hbm_bandwidth_probe`: 259.6 GB/s).
 const PEAK_GBS: f64 = 260.0;
@@ -80,6 +89,9 @@ struct Kernels {
     dual: KernelHandle,
     ahead1: KernelHandle,
     ahead4: KernelHandle,
+    /// `fp8_gemm_ada_m32` and `fp8_gemm_ada_m32_dual` (17..=32 rows).
+    tc32: KernelHandle,
+    dual32: KernelHandle,
 }
 
 fn kernels(gpu: &dyn GpuBackend) -> Result<Kernels> {
@@ -96,6 +108,8 @@ fn kernels(gpu: &dyn GpuBackend) -> Result<Kernels> {
         dual: gpu.kernel(MODULE, "fp8_gemm_ada_m16_dual")?,
         ahead1: gpu.kernel(MODULE, "fp8_gemm_ada_m16_ahead1")?,
         ahead4: gpu.kernel(MODULE, "fp8_gemm_ada_m16_ahead4")?,
+        tc32: gpu.kernel(MODULE, "fp8_gemm_ada_m32")?,
+        dual32: gpu.kernel(MODULE, "fp8_gemm_ada_m32_dual")?,
     })
 }
 
@@ -154,7 +168,8 @@ fn tc_dual(
         .launch(0)
 }
 
-/// One shape's device inputs: two weights (gate and up) and 16 activation rows.
+/// One shape's device inputs: two weights (gate and up) and 32 activation rows
+/// (the 16-row entries read the first 16).
 struct Inputs {
     w: [(DevicePtr, DevicePtr); 2],
     host_w: BlockScaledFp8,
@@ -178,7 +193,7 @@ fn inputs(gpu: &dyn GpuBackend, rng: &mut Lcg, n: u32, k: u32) -> Result<Inputs>
         upload(gpu, &rng.e4m3_bytes(nu * ku))?,
         upload(gpu, &f32_bytes(&rng.block_scales(nu, ku)))?,
     );
-    let host_a = rng.bf16s(MAX_M * ku, 1.0);
+    let host_a = rng.bf16s(MAX_M32 * ku, 1.0);
     Ok(Inputs {
         w: [w0, w1],
         host_w,
@@ -225,19 +240,19 @@ fn tc_rows(
     Ok(v)
 }
 
-/// The 16 rows on the host: FP64 dot products over each 128-wide scale block,
-/// folded with the block scale in FP64, rounded once to BF16.
-fn host_rows(x: &Inputs) -> Vec<u8> {
+/// The first `rows` rows on the host: FP64 dot products over each 128-wide
+/// scale block, folded with the block scale in FP64, rounded once to BF16.
+fn host_rows(x: &Inputs, rows: usize) -> Vec<u8> {
     let (n, k) = (x.host_w.n, x.host_w.k);
     let kb = x.host_w.k_blocks();
-    let mut vals = vec![0f32; MAX_M * n];
+    let mut vals = vec![0f32; rows * n];
     let mut wrow = vec![0f64; k];
     for col in 0..n {
         for (j, w) in wrow.iter_mut().enumerate() {
             *w = f64::from(fp8_e4m3_to_f32(x.host_w.bytes[col * k + j]));
         }
         let scales = &x.host_w.scales[(col / 128) * kb..(col / 128 + 1) * kb];
-        for t in 0..MAX_M {
+        for t in 0..rows {
             let a = &x.host_a[t * k..(t + 1) * k];
             let mut total = 0f64;
             for (g, s) in scales.iter().enumerate() {
@@ -285,7 +300,7 @@ fn check_seed(
     let mut fails = 0usize;
     let gemv16 = gemv_rows(gpu, k, x, n, kk)?;
     let tc16 = tc_rows(gpu, k.tc, x.a, x.w[0], MAX_M, n, kk)?;
-    let host16 = first.then(|| host_rows(x));
+    let host16 = first.then(|| host_rows(x, MAX_M));
 
     // Every M: against the GEMV and the host under the contract, against the
     // 16-row launch in bytes, and rows at and past M untouched.
@@ -441,8 +456,10 @@ fn main() -> Result<()> {
             let mut rng = Lcg(seed ^ (u64::from(n) << 20) ^ u64::from(kk));
             let x = inputs(&gpu, &mut rng, n, kk)?;
             fails += check_seed(&gpu, &k, &x, n, kk, i == 0)?;
+            fails += m32::check(&gpu, &k, &x, n, kk, i == 0)?;
             if i == 0 && n >= 1024 && !skip_timings {
                 timing::timings(&gpu, &k, &x, n, kk, flush)?;
+                timing::timings32(&gpu, &k, &x, n, kk)?;
             }
             free_inputs(&gpu, x)?;
         }
