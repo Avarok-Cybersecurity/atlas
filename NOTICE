@@ -600,4 +600,21 @@ changes made, in LFM3-ATTRIBUTION.md:
 The LFM3 model weights are NOT part of Atlas. They are licensed by Liquid AI
 under the LFM Open License v1.0 (commercial use is not licensed at USD
 10,000,000 annual revenue or more); Atlas bundles no weights.
+
+------------------------------------------------------------------------------
+LFM3 gated short convolution (HuggingFace transformers, vLLM)
+
+Upstream: HuggingFace transformers, src/transformers/models/lfm3/ (Copyright
+2026 The HuggingFace Team), and vLLM, vllm/model_executor/models/lfm3.py and
+vllm/model_executor/layers/mamba/short_conv.py (Copyright contributors to the
+vLLM project).
+License: Apache License, Version 2.0; see LICENSES/Apache-2.0.txt.
+Atlas files (translations from Python/Triton to CUDA and Rust; no code
+copied): kernels/ada/common/lfm3_shortconv_ada.cu,
+crates/spark-model/src/port/lfm3_conv/{mod.rs, reference.rs}. Changes: the
+gating fused around the depthwise convolution, a token-major input, a
+per-sequence BF16 [hidden, 6] window, packed-sequence prefill.
+No LFM3 weights are included in Atlas; they are licensed separately under the
+LFM Open License v1.0.
+------------------------------------------------------------------------------
 # @port:notice
