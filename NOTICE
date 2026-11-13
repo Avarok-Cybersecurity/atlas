@@ -230,6 +230,36 @@ Changes: design translations and ideas only; no code copied. Written in Rust
   (arXiv:2609.04852); no KVMem source was read or copied. See
   KV-HOST-TIER-ATTRIBUTION.md.
 
+== LMCache and vLLM (host KV tier glue: store hooks, prefetch, restore) ==
+
+LMCache
+Source:  https://github.com/LMCache/LMCache, commit 3aefae1
+         lmcache/v1/cache_engine.py (store after the GPU cache insert, retrieve
+         before the prefill),
+         lmcache/integration/vllm/vllm_v1_adapter.py (an external hit counted in
+         whole blocks past the GPU match),
+         lmcache/v1/api.py:636-656 (the hybrid-model boundary rule),
+         lmcache/v1/kv_load_policy.py (decline a load when recompute is cheaper),
+         lmcache/integration/vllm/lazy_offload_policy/eviction_aware.py (lazy
+         stores released near the eviction head)
+License: Apache License, Version 2.0 (LICENSES/Apache-2.0.txt). LMCache ships
+  no NOTICE file.
+
+vLLM
+Source:  https://github.com/vllm-project/vllm, commit 8a36f08
+         vllm/v1/simple_kv_offload/manager.py (restore into freshly allocated
+         blocks, then hand them to the prefix cache)
+Copyright contributors to the vLLM project.
+License: Apache License, Version 2.0 (LICENSES/Apache-2.0.txt).
+
+Atlas files: crates/spark-model/src/model/kv_tier_glue.rs and
+  crates/spark-model/src/model/kv_tier_glue/{plan.rs, store.rs, restore.rs}
+Changes: design translations only; no code copied. Written in Rust against
+  Atlas's paged KV cache, radix prefix cache and SSM snapshot index; the
+  boundary rule restores KV only up to an SSM snapshot on a hybrid model. The
+  write-through invariants follow the published description of KVMem
+  (arXiv:2609.04852); no KVMem source was read or copied.
+
 LMCache (radix prefix-cache eviction without a full scan; design only)
   Source: https://github.com/LMCache/LMCache, commit 3aefae1
   Files: lmcache/v1/distributed/eviction_policy/isolated_lru.py,
