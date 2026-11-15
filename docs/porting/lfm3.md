@@ -50,7 +50,7 @@ Two details that are easy to get wrong:
 | FP8 | `weight_loader/lfm3/fp8.rs`, row `lfm3_fp8_all` | see below |
 | Tool calls and reasoning | `spark-server/src/tool_parser/lfm3.rs`, `reasoning_parser`, `tool_defaults.toml` | parser `lfm3` (qwen3_coder's XML), reasoning `lfm3` (`<think>`, prompt-opened) |
 | Kernel target | `kernels/ada/lfm3-1.7b/MODEL.toml` | no symlinks; `kernel_source = "holo-3.1-0.8b"`; sampling 0.1 / top_k 50 / repetition 1.1 |
-| Bench tools | `bench/lfm3_ref.py`, `bench/lfm3_qual.py`, `bench/pass.d/L37.sh` | HF reference dump, KL and template gates, 30-case tool gate |
+| Bench tools | measurement tools not included in this repository: an HF reference dump script, a KL and template gate script and a 30-case tool gate script | HF reference dump, KL and template gates, 30-case tool gate |
 
 ## Serving it
 
@@ -100,7 +100,7 @@ Per decode step the model reads about 3.46 GB at BF16 (embedding and head 524 MB
 
 ## What is still to be measured (queue item Q16)
 
-`bench/pass.d/L37.sh` runs these once the weights are on disk and the two HF reference files exist (owner approvals D1, D12):
+The GPU lane script (a measurement tool not included in this repository) runs these once the weights are on disk and the two HF reference files exist (owner approvals D1, D12):
 
 1. BF16 logits against HF (float32, CPU) on five prompts including one over 256 and one over 1,000 tokens: mean top-20 KL below 0.002, 32 identical greedy tokens.
 2. The 30-case tool gate (12 simple, 6 parallel, 6 multiple, 6 irrelevance): every emitted call schema-valid, pass rate at least 0.75.

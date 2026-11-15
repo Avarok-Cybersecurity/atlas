@@ -126,7 +126,7 @@ row of `bench/rows.fix3` runs.
 ## How to run
 
 ```
-spark serve --model-from-path ~/metrale-rtx/models/Qwen3.5-4B --model-name qwen35-4b \
+spark serve --model-from-path <model dir>/Qwen3.5-4B --model-name qwen35-4b \
   --kernel-target holo-3.1-4b --dflash --draft-model ~/models/Qwen3.5-4B-DFlash \
   --max-seq-len 8192 --max-num-seqs 1 --max-batch-size 1 --kv-cache-dtype bf16 \
   --lm-head-dtype bf16 --gpu-memory-utilization 0.93
@@ -164,7 +164,7 @@ only with write-on-accept (`AVAROK_GDN_WOA=1`, lane L10), else the cap.
 
 ## GPU receipts owed (master plan Q11, lane L14)
 
-`~/atlas-wt/bench/pass.d/L14.sh`, function `pass_L14`. In order:
+The GPU measurement script for the 4B matrix (not part of this repository) runs these. In order:
 
 1. **Boot and shape**: `--dflash` boots on the 4B, the log shows the shape
    check line (69 tensors) and the footprint pre-flight; record the preflight

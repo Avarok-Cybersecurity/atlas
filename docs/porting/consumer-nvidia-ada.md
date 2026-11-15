@@ -934,7 +934,7 @@ curl -si localhost:8888/completion -d '{"prompt":"x","mirostat":2}' | head -12  
 
 Also check whether the first generated token carries logprobs. If the scheduler returns none for it, `completion_probabilities` keeps the slot with a `null` logprob.
 
-The opt-in setups measured in section 10 are in section 11, as copy-paste environment lines.
+The opt-in setups measured in section 10 are in section 11, as copy-paste environment lines. The exact serve flags and environment lines are in this guide; the measurement scripts used for the GPU runs are not part of this pull request, so the commands above are the reproduction path.
 
 ## Appendix B: the change set
 

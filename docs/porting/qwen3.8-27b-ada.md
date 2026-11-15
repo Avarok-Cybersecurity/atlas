@@ -127,7 +127,7 @@ With MTP, drop `--lm-head-packed` (the head then expands to BF16, about 1.5 GB m
 
 ## What is unmeasured, and the receipt for each
 
-Run by `~/atlas-wt/bench/pass.d/L24.sh` (queue Q9 for the 4B rows, Q14 for the 27B rows after the
+Run by the GPU measurement script (not part of this repository) for the 4B and 27B rows (the 27B rows after the
 download), against report 77 section 12.5:
 
 | Row | What | Pass criterion |

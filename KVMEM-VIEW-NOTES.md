@@ -93,7 +93,7 @@ off and clears every descriptor, so already captured graphs fall back to identit
 
 ## Owed on the card (Q15 in the master plan)
 
-`bash ~/atlas-wt/bench/pass.d/L32.sh` runs the kernel oracle, the identity gate (a budget above the context: greedy
+The GPU lane script for this view (not in this repository) runs the kernel oracle, the identity gate (a budget above the context: greedy
 output equal to the row off), the needle grid (5 depths x 16K to 128K with a 16K view: in-view recall and answer),
 multi-needle with distractors, three questions on one 64K document, decode tok/s against context at batch 1 and 4,
 and the VRAM ledger. Quality bar for any future default: needle recall at least 95% of dense and multi-needle within

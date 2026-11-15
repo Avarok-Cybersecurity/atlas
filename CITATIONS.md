@@ -201,7 +201,7 @@ Atlas files that carry it. License texts are in `LICENSES/`; notices are in
 
 ### Bench quality and long-context scripts (lane L02)
 
-These are the sources of the measurement scripts kept in `~/atlas-wt/bench/` (outside this repository). None of
+These are the sources of the measurement scripts used for the GPU runs, which are not part of this repository. None of
 their code is copied; the entries record the task definitions, protocols and datasets they follow.
 
 - **RULER** (NVIDIA, Apache-2.0, https://github.com/NVIDIA/RULER, `benchmark/ruler/synthetic.yaml`, `data/synthetic/*.py`, `eval/synthetic/constants.py`): the task list (single, multikey, multivalue and multiquery needle-in-a-haystack, variable tracking, common and frequent word extraction, SQuAD and HotpotQA question answering), the needle and question templates, and the `string_match_all` / `string_match_part` scoring rules. Independent generators with deterministic seeding; the NVIDIA Apache-2.0 notice stays in `ruler.py`. No RULER data or fixture is copied.
