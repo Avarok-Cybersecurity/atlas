@@ -1,4 +1,4 @@
-# Routing policy crate (port sprint lane L40): attribution
+# Routing policy crate (lane L40): attribution
 
 The routing policy crate `crates/atlas-route-policy/` decides which backend
 serves a request for an Atlas routing front: the eligible set before any

@@ -1,6 +1,6 @@
 # Disk KV tier, warm restart and asynchronous restore: LMCache attribution
 
-Lane L27 of the consumer-card port sprint (`port/consumer-opt`). Two rows, both off on every
+Lane L27 of the consumer-card port (`port/consumer-opt`). Two rows, both off on every
 target: `kv_tier_disk` (`AVAROK_KV_TIER_DISK`) and `kv_restore_async` (`AVAROK_KV_RESTORE_ASYNC`).
 
 ## Upstream

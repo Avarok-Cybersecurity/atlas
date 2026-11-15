@@ -1,4 +1,4 @@
-# LMCache attribution: radix eviction without a full scan (port sprint lane L28)
+# LMCache attribution: radix eviction without a full scan (lane L28)
 
 The radix prefix cache's ordered victim index (row `radix_lru_index`, `AVAROK_RADIX_LRU_INDEX`, off)
 follows a design idea from LMCache: keep eviction candidates in an ordered structure so selecting a

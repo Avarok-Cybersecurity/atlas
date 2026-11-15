@@ -1,4 +1,4 @@
-# Keep-packed GGUF IQ4_XS / Q4_K / Q6_K on Ada (port sprint lane L19)
+# Keep-packed GGUF IQ4_XS / Q4_K / Q6_K on Ada (lane L19)
 
 Atlas's Ada (sm_89) keep-packed GGUF 4-bit route serves the file's raw IQ4_XS, Q4_K and Q6_K
 super-blocks without expanding them to BF16. Its kernels are thin entry points over the
@@ -16,7 +16,7 @@ target.
   (`ggml-common.h`, `common.cuh`, `vecdotq.cuh`, `mma.cuh`, `mmq.cuh`, `quantize.cuh`,
   `quantize_impl.cuh` and the headers they include). Those files are included by relative
   path, never edited by this lane, and no file is added inside that directory: the notice
-  lives at the repository root (report 77, BR-3 licensing flag; plan R11). Before this lane the
+  lives at the repository root. Before this lane the
   vendored headers carried no MIT notice anywhere in the tree; the `NOTICE` section now covers
   them and the pre-existing kernels that include them.
 - No upstream file was fetched or opened for this lane beyond the vendored copy: the CPU
@@ -37,8 +37,8 @@ target.
 | `crates/spark-model/src/port/gguf_q4/launch.rs` | `ggml-cuda/mmvq.cu`, `mmq.cuh`, `quantize.cu` (launch geometry, activation layouts and byte sizes) | translation to Rust launch helpers |
 | `crates/spark-model/src/port/gguf_q4/reference.rs` | `ggml-cuda/quantize.cu` (the q8_1 block, the MMQ D4 / DS4 layouts), `ggml-quants.c` (`get_scale_min_k4`) | host mirror in Rust |
 
-Every derived file starts with `// SPDX-License-Identifier: AGPL-3.0-only` and, under it, the
-T-GG header: `// Portions translated from llama.cpp (ggml-org/llama.cpp), MIT License, Copyright
+Every derived file starts with `// SPDX-License-Identifier: AGPL-3.0-only` and, under it, a
+translation header: `// Portions translated from llama.cpp (ggml-org/llama.cpp), MIT License, Copyright
 (c) 2023-2026 The ggml authors: <files>. Changes: <list>.` The other files of the route
 (`weights/gguf/keep_packed_iq4.rs`, `names/qwen35_mtp.rs`, `port/gguf_q4/{mod.rs, w4linear.rs,
 tests.rs}`, the row resolver and the microtest) are Atlas-native.
@@ -72,4 +72,4 @@ tests.rs}`, the row resolver and the microtest) are Atlas-native.
   and the float64 GEMV oracle with planted controls.
 - `crates/spark-model/examples/iq4xs_gemv_microtest.rs` (GPU, deferred): dequant bitwise, the
   quantizer mirrors, the GEMV and MMQ within the float64 bound, row invariance, and the R2 / R3
-  bandwidth bars of report 77 section 12.5.
+  bandwidth bars of `docs/porting/qwen3.8-27b-ada.md`.

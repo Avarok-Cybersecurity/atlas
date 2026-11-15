@@ -1,4 +1,4 @@
-# EXL3 trellis weights: reader and kernels (port sprint lanes L20a, L20b)
+# EXL3 trellis weights: reader and kernels (lanes L20a, L20b)
 
 Atlas can read ExLlamaV3's EXL3 trellis-quantized checkpoints and, on Ada (sm_89), serve their linear
 layers on dedicated decode kernels. The format and its arithmetic are ExLlamaV3's; Atlas's code is
@@ -77,8 +77,8 @@ Changes made for Atlas, across the L20a files:
 
 ### Lane L20b: the kernels and `W4Linear` (owned and filled in by lane L20b)
 
-Lane L20b's brief names these files; their exact upstream line ranges and change lists are recorded by
-that lane (its `REPORT.md` and file headers) and added here through the coordinator:
+These are the files of lane L20b; their exact upstream line ranges and change lists are recorded in each
+file's header:
 
 | Atlas file | Upstream source (TensorFold commit `3885dce`) | Kind |
 |---|---|---|
@@ -113,4 +113,4 @@ sprint is not independent of the translation. Two checks are: `oracle_tests.rs` 
 TensorFold's numpy-generated oracle (162 tiles of states over every codebook and width, codebook spot
 values, and one real 8.00 bpw block bit for bit) when the fixture is present, and `tests.rs` checks every
 codebook state against an independent f32 evaluation of the recipe's constants. The real-checkpoint scan
-and decode (`turboderp/Qwen3.8-27B-exl3`) waits on the download (plan section 6, D6).
+and decode (`turboderp/Qwen3.8-27B-exl3`) waits on the download of that checkpoint.

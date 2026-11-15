@@ -1,4 +1,4 @@
-# L2 evict-first weight loads and the fused RMSNorm FP8 producer, after Cinference (port lane L15)
+# L2 evict-first weight loads and the fused RMSNorm FP8 producer, after Cinference (lane L15)
 
 **What it is.** Two of the three parts of the Ada FP8 kernel family carry
 something from Cinference:

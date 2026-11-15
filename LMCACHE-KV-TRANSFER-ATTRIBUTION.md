@@ -1,4 +1,4 @@
-# LMCache attribution: KV transfer basics (port sprint lane L25)
+# LMCache attribution: KV transfer basics (lane L25)
 
 Atlas's batched KV block transfer, batched sequence swap, pinned host pool and LRU SSM blob store
 follow designs in LMCache. No LMCache code was copied: every Atlas file below is an independent
@@ -21,7 +21,7 @@ Rust implementation written from the upstream design, for Atlas's own paged KV l
 
 Not taken: LMCache's per-format offset kernels (`csrc/cuda/mem_kernels.cu`), its fused
 multi-chunk kernel and the GPU gather kernel (`csrc/cuda/mp_mem_kernels_detail.cuh:175-215`). The
-lane's optional `kernels/ada/common/kv_block_gather_ada.cu` was NOT written: the plan writes it only
+lane's optional `kernels/ada/common/kv_block_gather_ada.cu` was NOT written: it is to be written only
 if the batched copy path measures below 8 GB/s on the card, which is a GPU-pass decision.
 
 ## The Apache-2.0 notice

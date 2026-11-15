@@ -1,4 +1,4 @@
-# Tensor-core chunked GDN prefill for Ada, from NInfer via Cinference (port lane L16)
+# Tensor-core chunked GDN prefill for Ada, from NInfer via Cinference (lane L16)
 
 **What it is.** A three-launch Gated DeltaNet prefill for sm_89
 (`kernels/ada/common/gdn_chunk_tc_ada.cu`) that puts every per-chunk product

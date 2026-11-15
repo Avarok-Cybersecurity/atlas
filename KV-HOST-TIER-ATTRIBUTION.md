@@ -1,4 +1,4 @@
-# Attribution: host-RAM KV tier core (port sprint lane L26a)
+# Attribution: host-RAM KV tier core (lane L26a)
 
 Atlas's host-RAM KV tier (`crates/spark-runtime/src/kv_host_tier/`) follows designs in LMCache and
 vLLM, applies an acceptance rule from Cinference, and implements two ideas published for KVMem. No
@@ -11,7 +11,7 @@ the upstream design or the published description, for Atlas's own paged KV layou
 - Cinference: https://github.com/satellitedown/cinference, commit `383e5db`, Apache License 2.0,
   derived from NInfer by Neroued and contributors (https://github.com/Neroued/ninfer).
 - KVMem: arXiv:2609.04852. The kvmem and kvmem-llama.cpp repositories carry no license; they were not
-  read. Only the paper's description (via the port plan's research report) was used.
+  read. Only the paper's description was used.
 - ARC: N. Megiddo and D. S. Modha, "ARC: A Self-Tuning, Low Overhead Replacement Cache", USENIX FAST 2003.
 - License texts: `LICENSES/Apache-2.0.txt`. The repository `NOTICE` carries the entry for this lane.
 
@@ -19,7 +19,7 @@ the upstream design or the published description, for Atlas's own paged KV layou
 
 | Atlas file | Upstream design source | What it follows | Changes for Atlas |
 |---|---|---|---|
-| `mod.rs`, `control.rs` | LMCache `l1_manager/base.py`, `eviction_controller.py`, `prefetch_controller.py`; vLLM `kv_offload/cpu/gpu_worker.py`, `simple_kv_offload/manager.py` | A pinned host copy of prefix-cached blocks, stored after prefill and restored into fresh GPU blocks | One in-process tier behind one lock; contract 3.7.5 API; per-step budget, lazy drain, cost gate and teardown for the spark-model glue |
+| `mod.rs`, `control.rs` | LMCache `l1_manager/base.py`, `eviction_controller.py`, `prefetch_controller.py`; vLLM `kv_offload/cpu/gpu_worker.py`, `simple_kv_offload/manager.py` | A pinned host copy of prefix-cached blocks, stored after prefill and restored into fresh GPU blocks | One in-process tier behind one lock; per-step budget, lazy drain, cost gate and teardown for the spark-model glue |
 | `index.rs` | LMCache `l1_manager/base.py:132-188` | Staging -> ready -> read-locked states; visible only after the write completed | Tokens stored and compared on every hit (a forged 128-bit key misses); byte totals kept for the watermark, the in-flight cap and the gauges |
 | `writeback.rs` | vLLM `gpu_worker.py:543-731`; vLLM `simple_kv_offload/manager.py`; LMCache `base.py` | D2H on a dedicated stream that waits on the compute stream, one completion event per transfer, publish on completion | Atlas block regions (K then V per layer) as the copy unit, one batched `copy_batch_d2h_async` per call, failure synchronizes and returns every run |
 | `restore.rs` | vLLM `gpu_worker.py:543-731`; LMCache `base.py:132-188`, `prefetch_controller.py:1114-1160` | H2D with source access order "any"; read locks with expiry; in-flight admission watermark | A lease is never dropped while its copy may run; TTL applies only after completion; tickets polled or waited on |

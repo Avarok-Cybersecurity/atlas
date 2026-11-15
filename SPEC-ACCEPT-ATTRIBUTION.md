@@ -1,6 +1,6 @@
 # Device-side speculative acceptance: attribution
 
-Row `mtp_device_accept` (off on every target; port sprint lane L12). The MTP verify path picks each
+Row `mtp_device_accept` (off on every target; lane L12). The MTP verify path picks each
 verify position on the device for rows the scheduler's planner accepts (no grammar, no `logit_bias`, no
 live LZ or DRY penalty, no stateful thinking stage), instead of copying `[K, vocab]` BF16 logits to the
 host and running the pre-sample pipeline there.
@@ -52,7 +52,7 @@ host and running the pre-sample pipeline there.
 - One CTA per (position, regime) job over Atlas's `[K, vocab]` verify rows; 64-bit absolute positions;
   the RNG key is the request seed or a fresh host key per call.
 - Greedy picks are bit-identical to the host; sampled picks are distribution-exact, not bit-identical
-  (owner decision D10), because the RNG stream differs from the host sampler's `StdRng`.
+  because the RNG stream differs from the host sampler's `StdRng`.
 
 ## Verification
 

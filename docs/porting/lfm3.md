@@ -4,7 +4,7 @@
 
 _What Atlas needs to serve LFM3-1.7B, what was built for it, what the weights' license says, and what is still unmeasured._
 
-**Status: written, not yet run.** The code is on the `port/consumer-opt` branch: the config parser, the weight loader with its two RoPE tables, the FP8 routes, the tool-call and reasoning parsers, the `kernels/ada/lfm3-1.7b` target and the bench tools. Everything marked "inferred" below is arithmetic from the model's shapes or a figure Liquid or a third party published; nothing here is a measurement on the RTX 4060 Ti. The GPU pass (plan queue item Q16) turns each into a number or a failure.
+**Status: written, not yet run.** The code is on the `port/consumer-opt` branch: the config parser, the weight loader with its two RoPE tables, the FP8 routes, the tool-call and reasoning parsers, the `kernels/ada/lfm3-1.7b` target and the bench tools. Everything marked "inferred" below is arithmetic from the model's shapes or a figure Liquid or a third party published; nothing here is a measurement on the RTX 4060 Ti. The GPU pass turns each into a number or a failure.
 
 ## License of the weights (read this first)
 
@@ -98,9 +98,9 @@ Known limits: parameter values are whitespace-trimmed (the model card's own patt
 
 Per decode step the model reads about 3.46 GB at BF16 (embedding and head 524 MB, FFN 2.27 GB, attention 231 MB, conv 437 MB) and about 2.0 to 2.3 GB with E4M3 projections. At 288 GB/s and the 73 to 85% of the byte ceiling Atlas reaches on the Holo models that is about 65 tok/s BF16 and 90 to 105 FP8, single stream. KV is 22.5 KB per token in BF16 across the 11 attention layers (5.9 GB at 256K, 2.9 GB with FP8 KV); only the 6 global layers need the full length, but Atlas keeps pages for the sliding layers too (a ring buffer for them is wave 2, row `kv_swa_ring`). The conv state is 13 x 2048 x 6 values per sequence (about 320 KB). The ModelConfig carries the conv geometry on the GDN schema (`ssm_qkvz_size() == 6144`), which sizes an SSM pool of about 0.6 MB per slot per layer that the conv layers do not use.
 
-## What is still to be measured (queue item Q16)
+## What is still to be measured
 
-The GPU lane script (a measurement tool not included in this repository) runs these once the weights are on disk and the two HF reference files exist (owner approvals D1, D12):
+The GPU lane script (a measurement tool not included in this repository) runs these once the weights are on disk and the two HF reference files exist:
 
 1. BF16 logits against HF (float32, CPU) on five prompts including one over 256 and one over 1,000 tokens: mean top-20 KL below 0.002, 32 identical greedy tokens.
 2. The 30-case tool gate (12 simple, 6 parallel, 6 multiple, 6 irrelevance): every emitted call schema-valid, pass rate at least 0.75.

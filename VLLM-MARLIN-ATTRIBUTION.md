@@ -1,4 +1,4 @@
-# Marlin W4A16 kernels for Ada (port sprint lane L18a)
+# Marlin W4A16 kernels for Ada (lane L18a)
 
 Atlas's Ada (sm_89) Marlin kernels are a code copy of the Marlin mixed-precision GEMM as
 vLLM ships it. This file records where every copied line came from, what changed, and the

@@ -1,8 +1,8 @@
 # Qwen3.8-27B on a 16 GB Ada card (RTX 4060 Ti)
 
-Status: **written, not measured.** Everything below is code and arithmetic from the port sprint (branch
+Status: **written, not measured.** Everything below is code and arithmetic from this port (branch
 `port/consumer-opt`, lane L24). No 27B weight has been loaded on Ada yet; every number marked "inferred"
-comes from report 77 (the 5060 Ti recipe study, section 12) and must be replaced by the GPU pass receipts
+comes from a study of the RTX 5060 Ti recipe and must be replaced by the GPU pass receipts
 listed at the end. Nothing here is on by default.
 
 ## What the target is
@@ -28,7 +28,7 @@ anonymous directory resolves to it, and the two Holo targets resolve exactly as 
 
 ## Why it does not fit without changes
 
-From report 77 section 12.1 (inferred; 15.29 GiB usable with a desktop session):
+From that study (inferred; 15.29 GiB usable with a desktop session):
 
 | Item | GiB |
 |---|---:|
@@ -57,7 +57,7 @@ from the host table directly. Same bytes either way, so the row is bit-identical
 
 It declines (and the table stays on the device) when the head is tied to the embedding, the tensor is not
 a BF16 `[rows, hidden]` table, or the backend refuses mapped memory. WSL2 may refuse a 2.4 GiB pinned
-region (receipt Q5); a refusal is counted in `atlas_embed_host_refusals_total`, and a `--speculative` serve
+region; a refusal is counted in `atlas_embed_host_refusals_total`, and a `--speculative` serve
 then refuses to start, because its sizing assumed the freed VRAM. Metrics: `atlas_embed_host_resident_bytes`,
 `atlas_embed_host_device_bytes_freed_total`, `atlas_embed_host_row_copies_total`.
 
@@ -128,11 +128,11 @@ With MTP, drop `--lm-head-packed` (the head then expands to BF16, about 1.5 GB m
 ## What is unmeasured, and the receipt for each
 
 Run by the GPU measurement script (not part of this repository) for the 4B and 27B rows (the 27B rows after the
-download), against report 77 section 12.5:
+download), against these criteria:
 
 | Row | What | Pass criterion |
 |---|---|---|
-| Q9 | 4B, `AVAROK_EMBED_HOST_OFFLOAD=0` vs `=1` | greedy token SHA equal solo and C=8; VRAM freed in the boot ledger, or the decline logged for a tied head |
+| Embed | 4B, `AVAROK_EMBED_HOST_OFFLOAD=0` vs `=1` | greedy token SHA equal solo and C=8; VRAM freed in the boot ledger, or the decline logged for a tied head |
 | R0 | `--check-kernels` on `qwen3.8-27b` | resolves, no hard error; harvested `[expected_absent]` replaces the carried tables |
 | R1 | load and residency | weights about 12.5 GiB, peak at most 15.3 GiB, no CPU fallback |
 | R2, R3 | dequant oracle, GEMV bandwidth | lane L19's rows |

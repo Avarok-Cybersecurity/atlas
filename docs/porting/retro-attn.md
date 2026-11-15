@@ -6,7 +6,7 @@ _What it is, how to turn it on, what it costs, what is decided and what is still
 
 **Status: written, not yet run.** The host side (lane L33) and the kernels (lanes L34a, L34b) are on the
 `port/consumer-opt` branch. Nothing here is a measurement on the RTX 4060 Ti; the numbers marked "modeled"
-come from report 74's bandwidth model. The GPU pass (plan queue item Q15) runs the shadow gate first.
+come from a bandwidth model. The GPU pass runs the shadow gate first.
 
 ## What it does
 
@@ -78,7 +78,7 @@ and one log line per sample. The copies are large (a 64K-token layer in BF16 is 
 sample is in flight at a time, and the first sample of a sequence pays the CPU k-means (seconds to minutes per
 layer at 128K on 24 threads). That is why it is opt-in and sampled.
 
-**Gate (decision D8):** proceed to the timing rows only if, at 64K and 128K, on all 8 layers, the mean
+**Gate:** proceed to the timing rows only if, at 64K and 128K, on all 8 layers, the mean
 `retrieval_estimation` mass recall is at least 0.97 and the mean output error at most 0.03, on the
 needle-bearing prompts of the L02 grid. The hybrid model is the risk: only 8 layers carry KV, so each is a
 long-range retrieval head the GDN layers cannot back up.

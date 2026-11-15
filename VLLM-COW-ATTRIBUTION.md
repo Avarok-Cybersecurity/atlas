@@ -1,4 +1,4 @@
-# vLLM attribution: copy-on-write partial-tail prefix hits (port sprint lane L28)
+# vLLM attribution: copy-on-write partial-tail prefix hits (lane L28)
 
 **Headline: a prefix hit that ends inside a KV block now gets a private copy of that block instead
 of the donor's writable tail (Atlas issue #1193).** Row `prefix_cow_tail` (`AVAROK_PREFIX_COW_TAIL`,

@@ -1,4 +1,4 @@
-# RetroInfer attribution: retrieval attention host side (port sprint lane L33)
+# RetroInfer attribution: retrieval attention host side (lane L33)
 
 Atlas's RetroInfer retrieval attention translates the index math of microsoft/RetrievalAttention (the
 repository holds RetroInfer, arXiv 2505.02922, VLDB 2026) into a Rust CPU reference and Rust host logic.

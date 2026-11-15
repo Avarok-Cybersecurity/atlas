@@ -1,7 +1,7 @@
-# GPU backend extensions: graph templates, exec update, batched copies (port sprint L08)
+# GPU backend extensions: graph templates, exec update, batched copies (lane L08)
 
-The `GpuBackend` trait (`crates/spark-runtime/src/gpu.rs`) gains the port sprint's
-extension methods (contract 3.7.1 of the port plan): CUDA graph templates with a
+The `GpuBackend` trait (`crates/spark-runtime/src/gpu.rs`) gains these
+extension methods: CUDA graph templates with a
 topology signature, in-place `cuGraphExecUpdate`, `cuGraphUpload`, batched async
 host/device copies over `cuMemcpyBatchAsync`, non-blocking `cuEventQuery`, and
 `cuMemHostRegister` registration recorded as tier-owned in `pinned_hosts`. Every method
@@ -59,10 +59,10 @@ synchronizes on), the mock emulation (`gpu/mock_port.rs`), the tests
 (`gpu/port_ext_tests.rs`) and the GPU oracle
 (`crates/spark-model/examples/gpu_ext_selftest.rs`).
 
-## Receipts owed (GPU queue)
+## Receipts owed (GPU run)
 
 - `gpu_ext_selftest` on the RTX 4060 Ti: every gate PASS (templates, signature, exec
   update, batched round trip, event polling, host registration).
-- Q5: batched copy GB/s through L07's `pinned_probe`.
-- Q9: L09's `graph_exec_update` row (greedy SHA equal at C=1 and C=8, instantiations
+- Batched copy GB/s through L07's `pinned_probe`.
+- L09's `graph_exec_update` row (greedy SHA equal at C=1 and C=8, instantiations
   flat after warmup).

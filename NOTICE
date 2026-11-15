@@ -566,8 +566,7 @@ TierKV pager design (window desk; design only, no code copied)
           a recent window and recalled pages over a host-RAM store; head
           protection of 2,048 positions; staging at most once per 1,024
           positions and only after evictions; MTP draft contexts kept out of
-          paging), as described in the port plan's report 77 section 2.5. The
-          files were not fetched or read by Atlas contributors.
+          paging). The files were not fetched or read by Atlas contributors.
   Copyright (c) 2023-2026 The ggml authors. MIT License
           (LICENSES/llama.cpp-MIT.txt).
   Atlas files: crates/spark-model/src/port/kv_window/{mod.rs, policy.rs,

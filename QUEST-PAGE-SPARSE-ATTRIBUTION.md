@@ -1,8 +1,8 @@
-# Quest page-sparse decode attention (port lane L30, row `attn_page_sparse`)
+# Quest page-sparse decode attention (lane L30, row `attn_page_sparse`)
 
 **Approximate, off by default on every target, never default on.** Long-context decode on the RTX 4060 Ti is
 bound by reading the whole KV history once per generated token: the Qwen3.5-4B reads 32 KiB of BF16 KV per
-context token, about 17 ms per step at 128K (port sprint report 77, section 5.2). Quest keeps a small summary
+context token, about 17 ms per step at 128K. Quest keeps a small summary
 per page of keys and attends only to the pages whose summary says they can matter.
 
 ## Sources and license
@@ -10,10 +10,10 @@ per page of keys and attends only to the pages whose summary says they can matte
 | Source | What Atlas takes | Kind | License |
 |---|---|---|---|
 | Quest, J. Tang, Y. Zhao, K. Zhu, G. Xiao, B. Kasikci, S. Han, "Quest: Query-Aware Sparsity for Efficient Long-Context LLM Inference", ICML 2024, arXiv:2406.10774 | per-page key min/max, the bound `sum_c max(q_c * kmin_c, q_c * kmax_c)`, top-k page selection | algorithm (published method) | paper |
-| arczhi/llama-tierkv, `scripts-5060ti/proto/proto_page_sparse.cu` (kernels `build_summaries`, `page_scores`, `topk`) | the correct per-channel bound (not the repository's pager, which scores `q * max(kmin, kmax)`, that is `q * kmax`); the sinks + top-k + recent-window budget; one selection shared by verify rows | idea only, through report 77 | MIT, Copyright (c) 2023-2026 The ggml authors, `LICENSES/llama.cpp-MIT.txt` (the file has no header of its own) |
+| arczhi/llama-tierkv, `scripts-5060ti/proto/proto_page_sparse.cu` (kernels `build_summaries`, `page_scores`, `topk`) | the correct per-channel bound (not the repository's pager, which scores `q * max(kmin, kmax)`, that is `q * kmax`); the sinks + top-k + recent-window budget; one selection shared by verify rows | idea only | MIT, Copyright (c) 2023-2026 The ggml authors, `LICENSES/llama.cpp-MIT.txt` (the file has no header of its own) |
 
-No upstream source was fetched, read or copied: the lane worked from the formula and the design notes written
-in report 77 (section 5.2 and BR-4), as the master plan requires (3.1). Every file carries the T-QU header.
+No upstream source was fetched, read or copied: the lane worked from the formula and the design as
+described, not from any upstream file. Every file carries an attribution header.
 
 ## Atlas files
 
@@ -73,7 +73,7 @@ come back. Both rows on is therefore "Quest-ranked recall into the desk", not a 
   `atlas_attn_sparse_desk_pages_ranked_total`, `atlas_attn_sparse_desk_summaries_total{result}` (only when the
   scorer is registered).
 
-## Receipts (GPU, deferred to the coordinator's queue, row Q15)
+## Receipts (GPU, deferred)
 
 `examples/page_sparse_microtest.rs` PASS (summary bytes equal to the CPU reference, scores within 1e-4, exact
 top-k sets, the rebuild path, the identity gate bit-identical through `paged_decode_attn`); then the L02 NIAH grid

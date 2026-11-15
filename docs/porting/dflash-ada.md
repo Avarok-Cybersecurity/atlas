@@ -1,6 +1,6 @@
 # DFlash on the Ada 4B: z-lab/Qwen3.5-4B-DFlash
 
-Lane L14 of the consumer-optimization port sprint. This is a wiring lane: the
+Lane L14 of the consumer-optimization port. This is a wiring lane: the
 DFlash engine (`BlockDiffusionDraftHead`, the K = gamma + 1 verify, the gamma
 resolver) already exists and runs on GB10 and Hopper. The lane pairs the
 Qwen3.5-4B drafter with the Ada 4B target, checks the pairing at startup, and
@@ -162,7 +162,7 @@ only with write-on-accept (`AVAROK_GDN_WOA=1`, lane L10), else the cap.
   on) rely on the existing per-layer capture, which the 27B drafter already
   exercises with `[1, 16, 31, 46, 61]`.
 
-## GPU receipts owed (master plan Q11, lane L14)
+## GPU receipts owed (lane L14)
 
 The GPU measurement script for the 4B matrix (not part of this repository) runs these. In order:
 

@@ -4,7 +4,7 @@ Atlas runs Liquid AI's LFM3 text models (`LiquidAI/LFM3-1.7B`, `-Base`, `-FP8`).
 written for Atlas in Rust and CUDA from the published architecture; **no Liquid, HuggingFace or
 vLLM source is copied**. The files below translate the architecture (tensor names, the block
 structure, the RoPE rule, the config fields) from the Apache-2.0 reference implementations, so
-each carries the translation header of master plan table 3.8 (T-HF). The model WEIGHTS are a
+each carries a translation header naming those sources. The model WEIGHTS are a
 separate matter and are not part of Atlas: see "Weights license".
 
 ## Upstream sources
@@ -13,7 +13,7 @@ separate matter and are not part of Atlas: see "Weights license".
 |---|---|---|---|
 | HuggingFace transformers `models/lfm3`, as shipped in the model repo `LiquidAI/LFM3-1.7B` (`modeling_lfm3.py`, `configuration_lfm3.py`, `lfm3_conv.py`) | Apache-2.0, "Copyright 2026 The HuggingFace Team" (per-file header) | transformers 5.12.1 (the `transformers_version` of the checkpoint's `config.json`), read 2026-11-12 | the numerical reference |
 | vLLM `vllm/model_executor/models/lfm3.py`, `vllm/model_executor/layers/mamba/short_conv.py` | Apache-2.0, "Copyright contributors to the vLLM project" | commit 8a36f08 | structure cross-check (attention, decoder layer, conv state shape; the conv as a recurrent layer) |
-| llama.cpp `src/models/lfm3.cpp`, `conversion/lfm3.py` | MIT, "Copyright (c) 2023-2026 The ggml authors" | as read in research report 78 | tensor-name and zero-tail RoPE cross-check (idea only) |
+| llama.cpp `src/models/lfm3.cpp`, `conversion/lfm3.py` | MIT, "Copyright (c) 2023-2026 The ggml authors" | revision not recorded here | tensor-name and zero-tail RoPE cross-check (idea only) |
 | LiquidAI/LFM3-1.7B model card, `tokenizer_config.json` (`response_template`), `generation_config.json` | LFM Open License v1.0 for the repository; facts only | 2026-11-12 | tool-call wire format, sampling defaults, stop token |
 
 HF `modeling_lfm3.py` sits in a repository whose `LICENSE` is the LFM Open License, while the

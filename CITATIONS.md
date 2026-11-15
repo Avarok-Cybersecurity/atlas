@@ -192,9 +192,9 @@ new fork under Tom Turney's account with full prior-art chain (1) → (2) → (3
 above prominently cited and the original `TheTom/llama-cpp-turboquant`
 attribution at the top of every modified kernel.
 
-## Port sprint sources (`port/consumer-opt`)
+## Consumer-GPU port sources (`port/consumer-opt`)
 
-Projects, papers and reports the port sprint's code is copied from, translated
+Projects, papers and reports the consumer-GPU port's code is copied from, translated
 from or built on as an idea, one entry per source, with its license and the
 Atlas files that carry it. License texts are in `LICENSES/`; notices are in
 `NOTICE`.
@@ -310,7 +310,7 @@ copied.
 
 - Chen, Liang and Liu, "DFlash: Block Diffusion for Flash Speculative
   Decoding", arXiv:2602.06036 (2026). The method behind `--dflash`; Atlas's
-  `BlockDiffusionDraftHead` is its own implementation. Port sprint use: the
+  `BlockDiffusionDraftHead` is its own implementation. Use in the consumer-GPU port: the
   Ada 4B pairing, `kernels/ada/holo-3.1-4b/MODEL.toml` `[dflash]`.
 - `z-lab/Qwen3.5-4B-DFlash` (https://huggingface.co/z-lab/Qwen3.5-4B-DFlash),
   Z Lab and Modal, Apache-2.0, about 1.27 GB BF16, not bundled. Its
@@ -412,14 +412,14 @@ copied.
   memory, check before publishing). The trellis-coded, Hadamard-incoherent
   quantization method EXL3 follows. Cited for the method; no code.
 
-- **Qwen3.8-27B on a 16 GB card: the arczhi RTX 5060 Ti recipe and the MiaAI one-click kit** (sprint report
-  77, sections 2, 7.1 and 12). Cited as evidence only, nothing copied: the recipe's measured memory budget and
+- **Qwen3.8-27B on a 16 GB card: the arczhi RTX 5060 Ti recipe and the MiaAI one-click kit**.
+  Cited as evidence only, nothing copied: the recipe's measured memory budget and
   its `-ot token_embd.weight=CPU` placement (the embedding table read off the device) motivate the
   `embed_host_offload` row (`crates/spark-model/src/port/embed_host/`, an independent mapped-memory design);
   the MiaAI planner's rule that a measured ceiling overrides the formula only downward (`tools/profiles.py`,
   MIT, Copyright (c) 2026 Mia'a AI Lab; idea only) is the rule of
   `crates/spark-server/src/main_modules/serve_phases/preflight/measured_ceiling.rs`. The bench rows R0 to R12
-  of `docs/porting/qwen3.8-27b-ada.md` follow report 77 section 12.5. The weights the target serves are
+  are listed in `docs/porting/qwen3.8-27b-ada.md`. The weights the target serves are
   Unsloth's GGUF of Qwen3.8-27B (Apache-2.0, Qwen team), downloaded by the owner, never redistributed.
 
 ### Host-RAM KV tier core (L26a)
@@ -454,7 +454,7 @@ copied.
   `attn_page_sparse`, approximate, off).
 - **arczhi/llama-tierkv** (MIT, the ggml license, `LICENSES/llama.cpp-MIT.txt`),
   `scripts-5060ti/proto/proto_page_sparse.cu`: the RTX 5060 Ti page-sparse prototype whose correct bound (not the
-  pager's `q * max(kmin, kmax)`) the port follows, as described in the port sprint's report 77 (section 5.2, BR-4);
+  pager's `q * max(kmin, kmax)`) the port follows;
   no source read. Attribution: `QUEST-PAGE-SPARSE-ATTRIBUTION.md`.
 
 - **KVMem query-time bounded KV view** (arXiv:2609.04852; the kvmem/kvmem-llama.cpp repository carries no license,
@@ -493,7 +493,7 @@ copied.
 
 ### Host-resident window desk and windowed MTP KV (L36)
 
-- **TierKV pager** of `arczhi/llama-tierkv` (MIT, Copyright (c) 2023-2026 The ggml authors), `kv-paging-design.md`, as described in the port plan's report 77 section 2.5. Design only, nothing fetched or copied: a VRAM desk of head sinks (2,048 positions), a recent window and recalled pages over a host-RAM store; staging at most once per 1,024 positions and only after evictions; MTP draft contexts excluded from paging. Atlas reads the desk through a compacted paged block table instead of staging pages into ordinary KV cells. Atlas: `crates/spark-model/src/port/kv_window/`, `crates/spark-runtime/src/kv_host_tier/pages.rs`, `kernels/ada/common/kv_page_fetch_ada.cu`. Notice in `NOTICE`.
+- **TierKV pager** of `arczhi/llama-tierkv` (MIT, Copyright (c) 2023-2026 The ggml authors), `kv-paging-design.md`. Design only, nothing fetched or copied: a VRAM desk of head sinks (2,048 positions), a recent window and recalled pages over a host-RAM store; staging at most once per 1,024 positions and only after evictions; MTP draft contexts excluded from paging. Atlas reads the desk through a compacted paged block table instead of staging pages into ordinary KV cells. Atlas: `crates/spark-model/src/port/kv_window/`, `crates/spark-runtime/src/kv_host_tier/pages.rs`, `kernels/ada/common/kv_page_fetch_ada.cu`. Notice in `NOTICE`.
 - **LMCache** (Apache-2.0), commit 3aefae1, `lmcache/v1/distributed/l1_manager/base.py`: host copies are published only after their copy completed and their memory is kept while a copy touches it. Design only. Atlas: `crates/spark-runtime/src/kv_host_tier/pages.rs`, `crates/spark-model/src/port/kv_window/fetch.rs`.
 - **Quest** (Tang et al., "Quest: Query-Aware Sparsity for Efficient Long-Context LLM Inference", ICML 2024): the page upper-bound scorer the desk's recall seam (`selector::PageScorer`) is built for; the scorer itself is lane L30's.
 

@@ -1,8 +1,8 @@
-# Copy drafter (port sprint lane L13): attribution
+# Copy drafter (lane L13): attribution
 
 The merged copy drafter in `crates/spark-server/src/scheduler/copy_draft/` and
 its round plan seam `crates/spark-server/src/scheduler/spec_round_plan.rs`
-combine three sources into one design (master plan 3.7.4). This file records
+combine three sources into one design. This file records
 what came from where, under which license, and what Atlas changed. NOTICE
 carries the upstream NOTICE text; CITATIONS.md lists the sources.
 
@@ -57,8 +57,7 @@ carries the upstream NOTICE text; CITATIONS.md lists the sources.
 
 ## 3. KVMem: yield gate and source cursor (idea only)
 
-- Source: the KVMem description (arXiv:2609.04852) as summarized in the port
-  research report `76-kvmem.md`. The `kvmem/kvmem-llama.cpp` repository
+- Source: the KVMem description (arXiv:2609.04852). The `kvmem/kvmem-llama.cpp` repository
   carries no license, so no file of it was opened and no code was copied.
 - Ideas used: 16/8/4-token windows with backward match extension; a source
   cursor kept across fully accepted rounds and cleared on a rejection; the

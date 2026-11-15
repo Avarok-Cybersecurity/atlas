@@ -1,4 +1,4 @@
-# Marlin W4A16 host for Ada (port sprint lane L18b)
+# Marlin W4A16 host for Ada (lane L18b)
 
 Atlas's Marlin host (configuration choice, workspace, GPTQ/AWQ repack, the opt-in round-to-nearest
 quantizer, the `W4Linear` implementation and the `marlin_w4a16` row) is a translation into Rust of

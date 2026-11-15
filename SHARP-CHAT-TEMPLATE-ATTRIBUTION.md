@@ -1,4 +1,4 @@
-# Sharp chat template (port sprint lane L39)
+# Sharp chat template (lane L39)
 
 Atlas ships one third-party chat template inside the binary: the "Sharp" template for Qwen3.5, 3.6
 and 3.8 models. It is a verbatim copy of an Apache-2.0 file plus one leading Jinja comment. It is

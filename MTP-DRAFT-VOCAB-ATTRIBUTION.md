@@ -1,6 +1,6 @@
 # MTP head v2: frequency-ranked draft vocabulary and device-resident propose chain
 
-Port sprint lane L11 (`port/consumer-opt`). Two rows, both off on every target:
+Lane L11 (`port/consumer-opt`). Two rows, both off on every target:
 `mtp_vocab_rank` (`id` | `freq`, `AVAROK_MTP_VOCAB_RANK`, `--mtp-vocab-rank`) and
 `mtp_propose_graph` (`AVAROK_MTP_PROPOSE_GRAPH`).
 

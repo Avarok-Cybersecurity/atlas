@@ -1,4 +1,4 @@
-# TensorFold affine 4-bit kernels for Ada (port sprint lanes L17a, L17b, L17c)
+# TensorFold affine 4-bit kernels for Ada (lanes L17a, L17b, L17c)
 
 Atlas's Ada (sm_89) affine 4-bit route serves MLX-affine weights, quantized from a BF16 checkpoint at
 load, on TensorFold's lane MMA GEMV and prompt GEMMs. The CUDA kernels are a code copy, adapted; the

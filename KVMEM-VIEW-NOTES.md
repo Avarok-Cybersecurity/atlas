@@ -1,4 +1,4 @@
-# Bounded KV view: notes (port lanes L31 and L32)
+# Bounded KV view: notes (lanes L31 and L32)
 
 Row `kv_view_selection` (`AVAROK_KV_VIEW`), flags `--kv-view-budget-tokens` (0 or absent = off),
 `--kv-view-sink-tokens` (128), `--kv-view-recent-tokens` (2048), `--kv-view-query-tokens` (512), env knobs
@@ -8,10 +8,9 @@ target and never default on in this sprint.
 
 ## Source and license
 
-The technique is described in arXiv:2609.04852 (KVMem) and in the idea descriptions of the port research report
-`76-kvmem.md` (sections 2.1, 2.2, B2 to B5). The kvmem and kvmem-llama.cpp repositories carry no license, so no file
+The technique is described in arXiv:2609.04852 (KVMem). The kvmem and kvmem-llama.cpp repositories carry no license, so no file
 from them was opened, read or copied. Every file here is an independent implementation from the published
-description and carries the T-KV header:
+description and carries this header:
 
 > Technique described in arXiv:2609.04852 (KVMem). Independent implementation from the published description; no
 > source copied from kvmem/kvmem-llama.cpp (that repository carries no license).
@@ -81,7 +80,7 @@ off and clears every descriptor, so already captured graphs fall back to identit
   YaRN scaling would sketch inexactly (selection quality only; attention always reads the real K and V).
 - The KV-budget charge covers the fixed buffers, the capture slots and the scorer scratch (an estimate, the actual
   size is logged); the per-page sketch (3.1% of BF16 KV, 6.25% of FP8 KV) is allocated after the build from what
-  `--gpu-memory-utilization` left. A proportional charge needs a seam extension (REQUESTS.md R2).
+  `--gpu-memory-utilization` left. A proportional charge needs a seam extension.
 - A batched chunk-0 prefill with no page tables leaves sketch gaps; that sequence's selection is skipped
   (`sketch_gap`).
 - Selection debug log (lane L02's request): with `AVAROK_KV_VIEW_SELECTION_LOG=1` (off unless set) each selection
@@ -91,7 +90,7 @@ off and clears every descriptor, so already captured graphs fall back to identit
   every layer, so the lines of a selection differ only in `layer`. Decode steps replay graphs with no host code and
   only append tail pages, so the selection is the one point logged; a kept view (a continuation) logs nothing.
 
-## Owed on the card (Q15 in the master plan)
+## Owed on the card
 
 The GPU lane script for this view (not in this repository) runs the kernel oracle, the identity gate (a budget above the context: greedy
 output equal to the row off), the needle grid (5 depths x 16K to 128K with a 16K view: in-view recall and answer),
