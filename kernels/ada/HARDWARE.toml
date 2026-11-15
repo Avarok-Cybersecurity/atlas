@@ -162,7 +162,7 @@ memory_fit_consumer = true
 w8a8_prefill_max_m_widening = 4294967295
 w8a8_prefill_max_m_narrowing = 4294967295
 # ── Port sprint rows (port/consumer-opt) ──
-# The port sprint's rows (`crates/avarok-kernels/build_defaults_port.rs`). Each
+# The port rows (`crates/avarok-kernels/build_defaults_port.rs`). Each
 # is false, or its baseline, until a GPU receipt on this card flips it. Rows
 # are inserted immediately before the marker line below.
 # Collect the per-request logprob confidence summary (mean top-1 probability,
@@ -263,7 +263,7 @@ mtp_propose_graph = false
 # and biases travel as a sparse edit list, and every other row keeps the host
 # pipeline, counted by reason in atlas_mtp_device_accept_fallback_total.
 # Greedy picks are bit-identical to the host pipeline; sampled picks are
-# distribution-exact, not bit-identical (decision D10: the RNG is keyed by
+# distribution-exact, not bit-identical (the RNG is keyed by
 # seed and position, not the host sampler's stream). Only Ada builds the
 # kernel; any other target has no module and keeps the host pipeline with one
 # log line. The device path is asked before the verify pick helper's greedy
@@ -462,7 +462,7 @@ affine4_prefill_int8 = false
 # both win over it; it declines on tensor parallel, a pending LoRA adapter, or
 # absent kernels. Ada has no FP4 datapath, so whether the software-dequant
 # GEMV reaches the bandwidth that makes this a win was never measured; off
-# until queue row Q2 shows at least 85% of the measured DRAM bandwidth at M=1,
+# until a bandwidth measurement shows at least 85% of the measured DRAM bandwidth at M=1,
 # then the D7 gate (teacher-forced NLL delta at most twice the FP8 FFN
 # route's, full-vocabulary KL, coherence, recall).
 dense_nvfp4_from_bf16 = false
@@ -490,7 +490,7 @@ embed_host_offload = false
 # `--pinned-pool-chunk-mb` chunk, and the file write of one chunk overlaps the
 # copy of the next; restore mirrors it. The file is byte-identical to the
 # per-region path, so either reader reads either writer's file. OFF until the
-# receipt on this card: `kv_swap_roundtrip` (queue row Q9) passes G1 and G2 at
+# receipt on this card: `kv_swap_roundtrip` passes G1 and G2 at
 # 1K, 4K and 32K tokens and G3 at 32K, batched >= 5x the per-region path and
 # >= 8 GB/s for save and restore. `AVAROK_KV_SWAP_TIMING=1` logs one line per
 # image on either path.
@@ -503,7 +503,7 @@ kv_batched_swap = false
 # re-homes a spilled prefix or the tail sweep drops one
 # (`spark-runtime/src/radix_tree/snapshot_insert.rs`). Only matters with the
 # SSM tier on (`AVAROK_SSM_TIER`): no entry is ever spilled without it. OFF
-# until the receipt on this card: the reuse ladder (queue row Q10, rung C)
+# until the receipt on this card: the reuse ladder (rung C)
 # shows no tok/s, TTFT or SSM-hit loss against off. Outputs are unchanged
 # either way: a missing blob is a recompute.
 ssm_store_lru = false
@@ -594,7 +594,7 @@ prefix_cow_tail = false
 # it): `examples/page_sparse_microtest.rs` PASS (summary bytes, scores, exact
 # top-k sets, the identity gate bit-identical), then the L02 NIAH grid at
 # 32K/64K/128K/262K, decode ms/step against context, perplexity drift and one
-# agent task at 64K+ (queue row Q15).
+# agent task at 64K+.
 attn_page_sparse = false
 # Bounded KV view (APPROXIMATE; `spark-model/src/port/kv_view/`, core
 # `spark-runtime/src/kv_select/` and `kv_cache/sketch.rs`, kernels
@@ -662,8 +662,8 @@ prefill_sparse_attn = false
 # attend their sinks plus the same recent window. It refuses the prefix cache,
 # --high-speed-swap, vision input and KV dtypes other than BF16 and FP8. NEVER
 # default on, on any target: it changes outputs whenever a sequence outgrows
-# the desk. `AVAROK_KV_WINDOW_DESK=1` is the A/B; the receipts (plan Q14,
-# report 77 section 12.5 R7 to R9 on the 27B) are KV capacity, needle recall
+# the desk. `AVAROK_KV_WINDOW_DESK=1` is the A/B; the receipts (on the 27B)
+# are KV capacity, needle recall
 # at 128K and 262K, restore at least 10 GB/s and at most 15% decode loss from
 # misses; `atlas_kv_window_*` show residency, fetches and demotions.
 kv_window_desk = false
@@ -673,7 +673,7 @@ kv_window_desk = false
 # copies; the BF16 stays for prefill, +0.22 GB). The head gate, norms, conv
 # taps, embedding and head stay BF16. It touches LFM3 checkpoints only. LFM3
 # decode is weight-bandwidth bound (3.46 GB of BF16 per step against 288
-# GB/s), so E4M3 is the route to the roughly 1.5x decode the plan expects; it
+# GB/s), so E4M3 is the route to the roughly 1.5x decode expected; it
 # stays off because E4M3 keeps 3 mantissa bits against BF16's 7, a numerics
 # change. The existing dense_fp8_from_bf16 and attn_fp8_from_bf16 rows convert
 # only their own class on an LFM3 BF16 checkpoint, and Liquid's own
@@ -1024,14 +1024,14 @@ overrides = [
   "prefill_paged_compute_asym.cuh",
   "swiglu_quant_fp8_ada.cu",
   "gated_delta_rule_wyn_woa.cu",
-  # draft_vocab_remap.cu  ADDITION (port sprint L11). Maps the MTP draft
+  # draft_vocab_remap.cu  ADDITION. Maps the MTP draft
   #                       head's argmax rows to token ids in place when the
   #                       head is frequency-ranked (`mtp_vocab_rank = "freq"`),
   #                       before embed_from_argmax and any readback. Looked up
   #                       only under that row, through try_target_kernel, so a
   #                       build without it keeps the id-ranked head.
   "draft_vocab_remap.cu",
-  # spec_accept_sample_ada.cu  ADDITION (port sprint L12). Picks MTP verify
+  # spec_accept_sample_ada.cu  ADDITION. Picks MTP verify
   #                       positions on the device: the host pre-sample
   #                       pipeline's masks, penalties and biases as a sparse
   #                       edit list, then the first-index-wins argmax (greedy,
@@ -1085,7 +1085,7 @@ overrides = [
   #                        pairs) and the cp.async/ldmatrix/MMA primitives
   "affine_codes_ada.cuh",
   "affine_n_ada.cu",
-  # marlin_ada.cu and its   ADDITIONS (port sprint L18a). vLLM's Marlin W4A16
+  # marlin_ada.cu and its   ADDITIONS. vLLM's Marlin W4A16
   # six marlin_*_ada.cuh    GEMM (commit 8a36f08, Apache-2.0; Marlin by Elias
   # headers                 Frantar, IST-DASLab): BF16 activations against GPTQ
   #                         int4 (kU4B8) or AWQ int4 with zero points (kU4),
@@ -1175,7 +1175,7 @@ overrides = [
   #                        only by `port/retro/attn.rs` under `retro_attn`.
   "retro_attn_ada.cu",
   "prefill_block_sparse_ada.cu",
-  # kv_page_fetch_ada.cu  ADDITION (port sprint L36). kv_window_view_compact:
+  # kv_page_fetch_ada.cu  ADDITION. kv_window_view_compact:
   #                       the window desk's view of a paged block table (each
   #                       row without the desk's hole entries, length less one
   #                       block per removed entry), launched by the desk's

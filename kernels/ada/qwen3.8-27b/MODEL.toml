@@ -1,9 +1,8 @@
 # Ada target: kernel set inherited from gb10 via symlink, reached through
-# kernel_source = "holo-3.1-4b" (no new symlinks; rule S1). expected_absent is
+# kernel_source = "holo-3.1-4b" (no new symlinks). expected_absent is
 # NOT yet harvested on Ada hardware (`spark serve --check-kernels`): the tables
 # below are holo-3.1-4b's, carried because the compiled kernel set is the same.
-# Port sprint lane L24 (branch port/consumer-opt). No Ada correctness or
-# performance measurement is claimed for this target.
+# No Ada correctness or performance measurement is claimed for this target.
 #
 # ── Why this directory looks the way it does ──────────────────────────────
 # GB10 and Hopper serve Qwen3.8-27B by redirecting to qwen3.6-27b's kernel tree.
@@ -16,11 +15,11 @@
 # the same architecture family (qwen3_5 dense hybrid GDN + full attention +
 # MRoPE), so every lookup the dense path issues for this model is a lookup the
 # 4B target already makes. The 27B-only pieces arrive as real files in
-# kernels/ada/common (the keep-packed GGUF IQ4_XS / Q4_K / Q6_K kernels, lane
-# L19; the affine and EXL3 families, lanes L17a, L17c, L20b), registered in
+# kernels/ada/common (the keep-packed GGUF IQ4_XS / Q4_K / Q6_K kernels;
+# the affine and EXL3 families), registered in
 # kernels/ada/HARDWARE.toml [kernels] overrides.
 #
-# ── What fits a 16 GB card (report 77 section 12.1; every number inferred) ──
+# ── What fits a 16 GB card (every number inferred) ──
 #   weights on device (UD-IQ4_XS keep-packed, Q6_K head, MTP head)  12.50 GiB
 #   embedding table off the device (row embed_host_offload)          -2.37 GiB BF16
 #   CUDA context, cuBLASLt, graphs                                    0.45 GiB
@@ -76,7 +75,7 @@ mtp_layers = 0
 vision = true
 
 # UNMEASURED on Ada (and on 3.8 weights anywhere): carried from gb10. A
-# long-context eval on this card (report 77 rows R7 and R8) decides it.
+# long-context eval on this card decides it.
 effective_context = 24576
 
 # ── Sampling and behavior ────────────────────────────────────────────────
@@ -131,7 +130,7 @@ thinking_in_tools = true
 max_thinking_budget = 2048
 default_kv_dtype = "fp8"
 # default_num_drafts deliberately NOT set, as on gb10: 3.8 earns its own K
-# with its own sweep (report 77 row R6, agent replay) before one is pinned.
+# with its own sweep (agent replay) before one is pinned.
 
 [[model_types]]
 model_type = "qwen3_5"
@@ -145,7 +144,7 @@ hidden_size = 5120
 # Carried from kernels/ada/holo-3.1-4b/MODEL.toml, table for table: the
 # compiled kernel set is that target's (kernel_source above) and the dense
 # qwen3_5 path issues the same lookups. NOT harvested for this model; the
-# GPU pass (report 77 row R0, `--check-kernels` on this directory) replaces
+# GPU pass (`--check-kernels` on this directory) replaces
 # these tables with the harvested ones.
 [expected_absent.w4a16]
 w4a16_gemm_t_p3 = "Deep-K p3 twin shipped only in qwen3.6-27b's shadow; layers::tgemm_kernel falls back to w4a16_gemm_t (resolves: common). Unmeasured on Ada."

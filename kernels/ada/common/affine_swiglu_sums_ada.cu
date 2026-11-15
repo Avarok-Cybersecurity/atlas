@@ -9,7 +9,7 @@
 // names. The SwiGLU fusion (`affine4_swiglu_act_quant_ada`) is new Atlas code, written in the style of
 // swiglu_quant_fp8_ada.cu.
 
-// Ada (sm_89) activation side of the affine 4-bit W4A8 prompt GEMM (lane L17b of the port sprint): per row and
+// Ada (sm_89) activation side of the affine 4-bit W4A8 prompt GEMM: per row and
 // per 64-input group, the int8 codes of x in the int8 mma's slot order, the group scale a = amax / 127 and the
 // FP32 sum of the BF16 inputs, in one pass.
 //

@@ -26,7 +26,7 @@
 
 #include <cuda_bf16.h>
 // Spelled from this directory: the vendored ggml headers live in gb10's 27B tree and are included, never
-// edited (master plan 3.1, "include-only files"). nvcc resolves a quoted include against the directory
+// edited (include-only files). nvcc resolves a quoted include against the directory
 // of the path it is handed, which for this real (non-symlink) file is kernels/ada/common.
 #include "../../gb10/qwen3.6-27b/nvfp4/q4k_vendor/mmq.cuh"
 #include "../../gb10/qwen3.6-27b/nvfp4/q4k_vendor/quantize_impl.cuh"

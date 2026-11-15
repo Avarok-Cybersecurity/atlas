@@ -14,7 +14,7 @@
 // size 128, 4 stages; the shared-memory budget is a compile-time check here, not a launch-time
 // choice; no torch.
 
-// Ada (sm_89) Marlin W4A16 GEMM entry points (port sprint lane L18a; host side L18b,
+// Ada (sm_89) Marlin W4A16 GEMM entry points (host side:
 // crates/spark-model/src/port/marlin/). Nothing in Atlas looks these up unless the
 // `marlin_w4a16` row (off on every target) routes a layer to Marlin; the lookups are lazy
 // (`try_target_kernel`), so an Ada build without this module keeps every current path.

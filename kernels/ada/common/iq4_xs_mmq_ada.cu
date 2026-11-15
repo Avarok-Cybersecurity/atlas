@@ -21,7 +21,7 @@
 // `_wc` bounds-checks the last row tile (N % 128 != 0); `_nc` does not.
 
 #include <cuda_bf16.h>
-// The vendored ggml headers, included from gb10's 27B tree and never edited (master plan 3.1).
+// The vendored ggml headers, included from gb10's 27B tree and never edited.
 #include "../../gb10/qwen3.6-27b/nvfp4/q4k_vendor/mmq.cuh"
 
 // ids (mmq_x ints) + the weight tile (mmq_y rows of the type's MMA tile width) + the activation tile

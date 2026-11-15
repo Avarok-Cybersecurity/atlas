@@ -2,7 +2,7 @@
 // Algorithm after XAttention (antidiagonal block scoring for block-sparse prefill), described in its paper;
 // independent implementation, no source copied (the reference repository has no detected license).
 //
-// Block-sparse paged PREFILL attention for Ada (sm_89), lane L35 of the port sprint. APPROXIMATE: it is
+// Block-sparse paged PREFILL attention for Ada (sm_89). APPROXIMATE: it is
 // reached only when the `[defaults] prefill_sparse_attn` row resolves on (off on every target) and this
 // module is in the image (only kernels/ada compiles it). Host side:
 // crates/spark-model/src/port/sparse_prefill/launch.rs; CPU reference: port/sparse_prefill/reference.rs,

@@ -13,10 +13,10 @@
 // addition); a new tile-layout BF16 dequant kernel for the prefill fallback and the oracle;
 // tf_affine8_pack4 and tf_affine8_widen not carried (no caller in Atlas); comments rewritten.
 //
-// MLX affine weights of 2, 3, 5, 6 or 8 bits a weight on sm_89, lane L17c of the port sprint
-// (`port/consumer-opt`). Host side: crates/spark-model/src/port/affine/widths.rs. Nothing here runs
+// MLX affine weights of 2, 3, 5, 6 or 8 bits a weight on sm_89.
+// Host side: crates/spark-model/src/port/affine/widths.rs. Nothing here runs
 // unless a W4 route row is on AND the route asked for a width other than 4 (`--w4-bits`); the 4-bit
-// lane kernels are L17a's `affine4_lane_ada.cu`.
+// lane kernels are in `affine4_lane_ada.cu`.
 //
 // FORMAT. Per output row and 64-input group: codes q in [0, 2^bits - 1], a bf16 scale s and a bf16
 // bias b, value = s * q + b (MLX's affine format). The checkpoint (MLX) layout is (n, k * bits / 32)

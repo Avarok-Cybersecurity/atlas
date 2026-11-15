@@ -41,7 +41,8 @@
 //   * Greedy: max over non-NaN values, first index attaining it (-0.0 == +0.0, NaN never wins, all-NaN
 //     gives 0): `spark_runtime::sampler::argmax_first_wins_f32`, exactly. The block reduction combines
 //     (value, index) pairs with that order, which is associative and commutative.
-//   * Sampled: distribution-exact, not bit-identical (decision D10). Finite values only (the host
+//   * Sampled: distribution-exact, not bit-identical (the RNG is keyed by
+//     seed and position, not the host sampler's stream). Finite values only (the host
 //     sampler drops non-finite logits); s = v / T; w = expf(s - s_max). The truncated support follows
 //     the host sampler's order of top-k, min-p (w >= min_p * w_max), top-p (cumulative w / sum >= top_p,
 //     inclusive), in the same sequential f32 arithmetic on one thread; the parallel sums (full-vocabulary

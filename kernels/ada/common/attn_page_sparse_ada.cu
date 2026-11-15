@@ -6,10 +6,10 @@
 // block table written into selector-owned buffers instead of host staging, summaries keyed by the
 // page's leading physical block with a completeness mask, a key fingerprint and a slot lock, and
 // directed f16 rounding so the stored bound stays an upper bound, by Atlas contributors. The
-// prototype source was not read; the formula is the one written in the port sprint's report 77
-// (section 5.2 and BR-4): score_p = sum_c max(q_c * kmin_c, q_c * kmax_c).
+// prototype source was not read; the formula is the Quest page upper bound:
+// score_p = sum_c max(q_c * kmin_c, q_c * kmax_c).
 //
-// Responsibility: Quest page-sparse decode for the Ada full-attention layers (port lane L30, row
+// Responsibility: Quest page-sparse decode for the Ada full-attention layers (row
 // `attn_page_sparse`, APPROXIMATE, off by default on every target). Three entry points, all
 // launched by `crates/spark-model/src/port/sparse_quest/launch.rs`:
 //

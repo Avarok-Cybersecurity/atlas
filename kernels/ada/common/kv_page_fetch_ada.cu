@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Design after the TierKV pager of arczhi/llama-tierkv (kv-paging-design.md; MIT, Copyright (c) 2023-2026 The ggml authors): attention over the pages on the VRAM desk only, every key keeping the RoPE position it was written with, taken from the port plan's description (report 77 section 2.5); no code copied or fetched. Atlas compacts its paged block table instead of staging pages into ordinary KV cells.
+// Design after the TierKV pager of arczhi/llama-tierkv (kv-paging-design.md; MIT, Copyright (c) 2023-2026 The ggml authors): attention over the pages on the VRAM desk only, every key keeping the RoPE position it was written with, as that design describes it; no code copied or fetched. Atlas compacts its paged block table instead of staging pages into ordinary KV cells.
 //
-// kv_window_view_compact: the window desk's view of a paged block table (port plan lane L36,
-// row `kv_window_desk`; host side `crates/spark-model/src/port/kv_window/selector.rs`).
+// kv_window_view_compact: the window desk's view of a paged block table
+// (row `kv_window_desk`; host side `crates/spark-model/src/port/kv_window/selector.rs`).
 //
 // A block the desk moved to host RAM keeps its logical index: the sequence's block table holds
 // the desk's HOLE block id there. Each decode or verify step, inside the captured graph, this

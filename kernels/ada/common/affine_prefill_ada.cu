@@ -15,7 +15,7 @@
 // can run only on a raised flag and count the fallback), replacing the host readback of upstream w4a8.zig.
 
 // Ada (sm_89) prompt GEMMs (M > 16 rows) over MLX affine 4-bit weights in TensorFold's tiled layout, the prefill
-// half of the affine route (lane L17b of the port sprint; the decode half is affine4_lane_ada.cu, L17a).
+// half of the affine route (the decode half is affine4_lane_ada.cu).
 //
 // ── WEIGHT LAYOUT (written by affine_pack_ada.cu, L17a) ─────────────────────────────────────────────────────
 //

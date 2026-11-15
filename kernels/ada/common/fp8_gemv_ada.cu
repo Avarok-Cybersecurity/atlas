@@ -301,8 +301,7 @@ extern "C" __global__ void __launch_bounds__(FGA_BLOCK)
 // and on 13.2+ the SASS must be inspected before any timing is trusted:
 // `cuobjdump -sass` of this module, where every weight `LDG` in the `_l2ef`
 // functions must carry a cache-policy descriptor operand that a preceding
-// instruction writes (the exact command is in the port sprint's L15 bench
-// snippet, `pass_L15_sass`). The row is off on every target until that check
+// instruction writes. The row is off on every target until that check
 // and a byte-parity run pass.
 
 #if defined(__CUDACC_VER_MAJOR__) && (__CUDACC_VER_MAJOR__ == 13) && (__CUDACC_VER_MINOR__ < 2)

@@ -20,7 +20,7 @@
 //
 // Row invariance: activation row j accumulates into its own register in a loop order that does not depend
 // on m, and the cross-lane and cross-warp sums run in a fixed order, so row j's bits are the same for any
-// m (the W4Linear contract, port plan 3.7.2).
+// m (the W4Linear contract).
 //
 // Entry points (module `kquant_mmvq_q4_ada`), each with the same arguments
 // (vx, vy, dst, ncols_x = K, nrows_x = N, m):
@@ -33,7 +33,7 @@
 // of examples/iq4xs_gemv_microtest.rs.
 
 #include <cuda_bf16.h>
-// The vendored ggml headers, included from gb10's 27B tree and never edited (master plan 3.1).
+// The vendored ggml headers, included from gb10's 27B tree and never edited.
 #include "../../gb10/qwen3.6-27b/nvfp4/q4k_vendor/mmq.cuh"
 
 #define ATLAS_Q4_NWARPS 4
