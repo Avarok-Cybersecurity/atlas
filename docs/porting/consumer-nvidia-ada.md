@@ -1,10 +1,37 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 
-# Atlas on consumer NVIDIA cards: the RTX 4060 Ti 16 GB (Ada, sm_89)
+# Atlas Ada (sm_89) Port: Implementation, Benchmarks, Limitations, and Reproduction Notes
 
 _How Atlas goes from GB10 to a 16 GB consumer card: what breaks on sm_89, what changes in each layer, and how to check the result with and without the card._
 
 By Josef Long
+
+**Where to start.**
+This is the full technical report. The short overview is [consumer-gpu-overview.md](consumer-gpu-overview.md).
+Per-lane status and the labeled results are in [consumer-gpu-status.md](consumer-gpu-status.md), and Appendix A has the reproduction commands.
+
+**Abstract.** I ported Atlas, which was built for GB10, to a 16 GB RTX 4060 Ti (Ada, `sm_89`). Three architecture walls stood in the way: static shared memory above 48 KiB, no TMA and no FP4. I fixed them with dynamic shared memory whose size the kernel owns, by dropping an unused NVFP4 weight copy, and by budgeting the recurrent-state snapshot regions. For speed, cuBLASLt BF16 prefill is the one new default, and opt-in rows add FP8, int4 and MTP verify. On the 4B, BF16 prefill went from 794 to 3,684 tok/s against Atlas's previous BF16 dispatch. With eight users the totals are 195 tok/s (BF16), 222 (FP8 FFN) and 381 (the lossy opt-in int4 stack); for one user they are 29, 40 and 98. The limits: int4 task accuracy is unmeasured, the 27B has not run, and I have no matched quantized comparison with another engine.
+
+**Contents**
+
+- [Results at a glance](#results-at-a-glance)
+- [What this work contributes](#what-this-work-contributes)
+- [What changed](#what-changed)
+- [1. Why consumer cards](#1-why-consumer-cards)
+- [2. The card, in numbers](#2-the-card-in-numbers)
+- [3. What broke on sm_89, and why](#3-what-broke-on-sm_89-and-why)
+- [4. The Ada target layout](#4-the-ada-target-layout)
+- [5. The shared-memory fix, step by step](#5-the-shared-memory-fix-step-by-step)
+- [6. Fitting 16 GB](#6-fitting-16-gb)
+- [7. FP8 on Ada](#7-fp8-on-ada)
+- [8. Speaking llama.cpp's API](#8-speaking-llamacpps-api)
+- [9. Results on the card](#9-results-on-the-card)
+- [10. Results with several users (November 12 to 14)](#10-results-with-several-users-november-12-to-14)
+- [11. Opt-in recipes](#11-opt-in-recipes)
+- [12. What did not work, and what is not finished](#12-what-did-not-work-and-what-is-not-finished)
+- [13. Limits and next steps](#13-limits-and-next-steps)
+- [Appendix A: Reproducing the results](#appendix-a-reproducing-the-results)
+- [Appendix B: the change set](#appendix-b-the-change-set)
 
 Atlas was built on GB10: 120 GB of unified memory, one box, one model target at a time. This guide brings it to a consumer graphics card, with the RTX 4060 Ti 16 GB as the reference part. It covers what broke, why it broke, what changed in each layer of Atlas, and how to check the result with and without the card.
 
@@ -40,12 +67,14 @@ Both models fit and serve on a 16 GB card.
 
 What carries these numbers:
 
-- **The BF16 default.** On Ada the BF16 dense FFN now prefills through cuBLASLt (`[defaults] ffn_bf16_cublas_prefill`). Against Atlas's previous dispatch that is 4.6x faster prefill on the 4B (794 to 3,684 tok/s) and 1.7x on the 0.8B, and 2.0 to 2.3x the total decode at two to eight streams, with the same numerics class and no new memory. It is the only default this branch changes on Ada.
+- **The BF16 default.** On Ada the BF16 dense FFN now prefills through cuBLASLt (`[defaults] ffn_bf16_cublas_prefill`). That made the 4B read a 3,921-token prompt 4.6x faster than Atlas's previous BF16 dispatch did (794 to 3,684 tok/s), and the 0.8B 1.7x faster. That figure is prefill only, not decode, and not a comparison with another engine. Total decode at two to eight streams was measured separately, at 2.0 to 2.3x the previous dispatch. The numerics class is the same and there is no new memory. It is the only default this branch changes on Ada.
 - **The optional FP8 dense FFN** (`AVAROK_DENSE_FP8_FROM_BF16=1`) speeds single-stream decode up 1.19x on the 0.8B and 1.34x on the 4B, frees 2.1 GB on the 4B, and holds a mean KL of about 0.002 against BF16. At 8 users its gain over BF16 is small (222 against 195 total).
 - **The tensor-core GDN prefill** (`AVAROK_GDN_PREFILL_TC=1`, opt-in) speeds up prompt reading, not decode. On the FP8 FFN route with FP8 KV and a prompt of about 5,349 tokens, time to first token went from 1,262 to 1,097 ms (-13.0 percent), about 4,238 to 4,876 prompt tok/s (+15 percent), one run per arm, mean KL 0.00089 against the row off. That prompt is longer than the 3,921-token prompt in the table above, and the 3,921-token case was not measured with this row, so the two figures are not comparable.
 - **MTP speculative decoding** (`--speculative`) lifts one user on the 4B to 49.7 tok/s with the FP8 FFN. With several users it does not help on its own: at 8 users FP8 with MTP measured 156.8 tok/s total against 197.4 without it. The verify rows in section 10 are what make it pay at 8 users.
 - **The best FP8-coverage setup**, `fp8covtc` (FP8 for the FFN, GDN and attention projections, the tensor-core FFN kernel and `mintok`), measured 290 tok/s total at 8 users against 208 for the FP8 FFN serve in the same screen, and 49 against 39 for one user. That comparison is not like for like: the row arm had `mintok` and the base did not. A like-for-like figure is **not measured**; my estimate is about +24 percent instead of +39.5 percent, and it is only an estimate. Its mean KL against that FP8 FFN serve is 0.0018; its KL against BF16 was not measured. It ran in a row screen (256-token streams), not in the final run, so it is not in the table above.
 - **The int4 stack is lossy and opt-in.** It quantizes the FFN, GDN and attention projections to 4 bits and adds MTP with one draft. Against BF16 its mean KL is 0.0337 (FP8: 0.0029), its top-1 token agreement is 14.4 percent, and 1 of 24 test prompts never diverges (FP8: 6 of 24). Its accuracy on real tasks was not measured. Use it only where that trade is acceptable.
+
+**Read the 381 as follows:** it is the total output tokens per second across eight concurrent requests (about 48 per request), on Qwen3.5-4B, with an opt-in int4 stack that changes the model's output (KL 0.0337 against BF16, accuracy on real tasks not measured). It is a screening result, not a record, and not a comparison with another engine.
 
 Three things to know before quoting any of this:
 
@@ -54,6 +83,16 @@ Three things to know before quoting any of this:
 - **The 27B has not run on this card** (section 12), and the only comparison with another engine is BF16 llama.cpp (section 10). No quantized llama.cpp or other engine was measured, so nothing here says Atlas is faster at 4 bits.
 
 The FP8 route stays off by default until the checks listed in section 9 are done.
+
+## What this work contributes
+
+This list says what the work adds, not that every technique is new. The techniques are known; the value is the specific Ada adaptation, the measured interactions on one constrained card, and a bounded, reproducible record.
+
+- A narrowly scoped Ada (`sm_89`) target for Atlas that handles the architecture-specific shared-memory, TMA and FP4 incompatibilities while keeping the inherited GB10 sources unchanged.
+- Budgeted model residency and recurrent-state accounting that make a 16 GB deployment workable and let FP8 and MTP configurations pass a preflight that used to refuse them.
+- Ada-specific FP8 and int4 execution plus speculation and verification experiments, showing how throughput, concurrency and numerical fidelity interact on one consumer GPU.
+- A measured account of what helps (cuBLASLt BF16 prefill, low-bit decode, selected verification kernels) next to the negative results (CUDA Graph changes, fusion, an FP8 LM head).
+- A bounded benchmark record that documents its own method corrections and locates the hot kernels with GPU profiling.
 
 ## What changed
 
