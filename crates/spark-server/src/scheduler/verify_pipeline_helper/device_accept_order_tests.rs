@@ -2,9 +2,10 @@
 //! Responsibility: tests that the verify pick helper asks the device acceptance path FIRST and that a
 //! verify pass with the `mtp_device_accept` row on always leaves a trace (lane L12).
 //!
-//! The regression is queue-1's boot check: the row on, 675 verify passes, 0 device rows and 0 for
-//! every fallback reason. The traffic was greedy, grammar-free and penalty-neutral, which the
-//! grammarless fast-greedy shortcut answers with the raw argmax, and the hook sat behind it. These
+//! The regression is the boot check of an earlier GPU run on this card: the row on, 675 verify
+//! passes, 0 device rows and 0 for every fallback reason. The traffic was greedy, grammar-free
+//! and penalty-neutral, which the grammarless fast-greedy shortcut answers with the raw argmax,
+//! and the hook sat behind it. These
 //! tests drive `verify_pick_all_via` on exactly that row with a device function in the three states
 //! it can be in (row off, device picks, device declines), and the per-step check with a step that
 //! records nothing.
@@ -155,7 +156,7 @@ fn an_empty_span_is_not_a_verify_call() {
 
 #[test]
 fn a_step_that_moved_no_counter_has_every_pass_unaccounted() {
-    // Row on, verify passes ran, counters stood still: the 0/0 of queue-1 L12.
+    // Row on, verify passes ran, counters stood still: the 0/0 of an earlier GPU run on this card.
     assert_eq!(unaccounted_passes(true, 675, 40, 40), 675);
     assert_eq!(unaccounted_passes(true, 1, 0, 0), 1);
     // Anything recorded during the step accounts for it.
@@ -169,9 +170,9 @@ fn a_step_that_moved_no_counter_has_every_pass_unaccounted() {
 
 #[test]
 fn with_the_row_on_rows_and_reasons_cannot_both_stand_still_over_a_verify_pass() {
-    // The test queue-1 L12 needed: it fails if a verify pass with the row on can end with neither
-    // series having moved. The step below recorded nothing (a verify path that never reaches the
-    // pick helper), and the per-step check counts its passes.
+    // The test that earlier GPU run needed: it fails if a verify pass with the row on can end with
+    // neither series having moved. The step below recorded nothing (a verify path that never
+    // reaches the pick helper), and the per-step check counts its passes.
     let events_before = metrics::events();
     account_verify_passes(true, 3, events_before);
     assert!(

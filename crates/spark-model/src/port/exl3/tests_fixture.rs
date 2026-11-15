@@ -8,9 +8,9 @@
 //! fixture (`exl3_oracle.bin`: 162 tiles of trellis words with their expected 16-bit states over every
 //! width and codebook, codebook spot values, and one real MCG 8.00 bpw 128 x 128 block from a public
 //! checkpoint with its decoded `Wq` bits and its FP64 dequant). The file is data, read in place: point
-//! `ATLAS_EXL3_ORACLE` at it (for example `~/research/TensorFold/zig/tests/fixtures/exl3_oracle.bin`) and
-//! these tests check the scalar decoder, the lane mirror and both dequant paths against it. Without the
-//! variable they return early (the mock-green CPU tests above still run).
+//! `ATLAS_EXL3_ORACLE` at it (for example `<TensorFold checkout>/zig/tests/fixtures/exl3_oracle.bin`)
+//! and these tests check the scalar decoder, the lane mirror and both dequant paths against it.
+//! Without the variable they return early (the mock-green CPU tests above still run).
 
 use super::format::Exl3Codebook;
 use super::reference::{codebook_value, lane_states, tile_states, tile_u32, unpack};

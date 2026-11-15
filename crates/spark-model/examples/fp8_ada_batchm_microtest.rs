@@ -196,7 +196,7 @@ fn parity(
     k: u32,
     role: usize,
 ) -> Result<usize> {
-    // Fault localization (queue-1, 2026-11-13: the run died with
+    // Fault localization (an earlier GPU run on this card, 2026-11-13: the run died with
     // CUDA_ERROR_ILLEGAL_ADDRESS after the M=2 rows, and a row that passes
     // prints nothing between M=2 and M=8). `L15_TRACE` drains the stream after
     // each of the three launch groups and names it on stderr, so a fault is

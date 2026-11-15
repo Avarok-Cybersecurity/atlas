@@ -20,9 +20,9 @@ check passed for; Atlas uses the table only when the served model's
 Standard library only. Usage (paths are explicit; nothing is downloaded):
 
     python3 -I gen_mtp_vocab_rank.py \
-        --ranking-dir ~/research/cinference/tools/freq_corpus/fixtures/ranking \
-        --tokenizer ~/metrale-rtx/models/Qwen3.5-4B/tokenizer.json \
-        --tokenizer ~/metrale-rtx/models/Qwen3.5-0.8B/tokenizer.json \
+        --ranking-dir <cinference checkout>/tools/freq_corpus/fixtures/ranking \
+        --tokenizer <model dir>/Qwen3.5-4B/tokenizer.json \
+        --tokenizer <model dir>/Qwen3.5-0.8B/tokenizer.json \
         --out-dir crates/spark-model/data
 
 The output is deterministic: the same inputs give byte-identical files.

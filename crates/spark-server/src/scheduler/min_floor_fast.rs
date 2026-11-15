@@ -39,8 +39,8 @@
 //! one. The host pipeline keeps the FIRST index that holds the maximum; the
 //! device argmax (`argmax_bf16`) keeps, among tied ids, the one with the lower
 //! `index mod 1024` (its reduction prefers the lower thread). Exact top ties
-//! are not rare in BF16 logits: 178 of 13,406 greedy positions in queue-1's
-//! quality dumps (1.3%). So with the row on a floored greedy run is NOT
+//! are not rare in BF16 logits: 178 of 13,406 greedy positions in the quality dumps of an earlier
+//! GPU run on this card (1.3%). So with the row on a floored greedy run is NOT
 //! bit-identical to the row off. It emits what the same request emits without
 //! a floor, which takes the device argmax already, up to that request's first
 //! EOS pick. A device argmax with the host's tie-break (compare indices on

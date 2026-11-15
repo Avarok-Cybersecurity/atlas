@@ -32,7 +32,7 @@
 //! The table is EMPTY at write time: no context ceiling has been measured on
 //! Ada (`docs/porting/consumer-nvidia-ada.md`, "Largest `--max-seq-len` that
 //! serves at batch 1: not measured"). The GPU pass fills it from
-//! `bench/pass.d/L24.sh` (cell `ceiling`, rows R1 and R7 of 77 section 12.5),
+//! a script outside this repository (cell `ceiling`, rows R1 and R7 of 77 section 12.5),
 //! a clean card each time (77 7.1: a ceiling measured beside other processes
 //! is contention, not a ceiling). With no row nothing is refused, so every
 //! serve behaves exactly as before.

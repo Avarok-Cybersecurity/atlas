@@ -8,8 +8,8 @@
 //!
 //! # Why a Qwen3.5-4B DFlash serve at 8 streams was refused
 //!
-//! `bench-results/queue-1/s4-l14-df-c8.log`: "only 8.08 GB remains but 13.32 GB
-//! is needed". The 13.32 GiB is `inference=11314 MB + buffer_arena=2327 MB`, and
+//! The boot log of an earlier GPU run on this card: "only 8.08 GB remains but 13.32 GB is
+//! needed". The 13.32 GiB is `inference=11314 MB + buffer_arena=2327 MB`, and
 //! the 11,314 MiB is exactly
 //!
 //! ```text

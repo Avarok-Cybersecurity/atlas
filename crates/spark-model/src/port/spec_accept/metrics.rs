@@ -9,9 +9,9 @@
 //! With the row on, every verify pass is accounted for: its rows are counted, or a reason is. The
 //! verify pick helper consults the device path before anything else, so each of its calls records
 //! one or the other, and the scheduler's per-step check ([`events`], [`Fallback::NotConsulted`])
-//! covers a verify pass that never reached the helper. queue-1 L12 is what this prevents: 675 verify
-//! passes with 0 rows and every reason 0, because a greedy shortcut answered every call ahead of
-//! the hook.
+//! covers a verify pass that never reached the helper. An earlier GPU run on this card is what
+//! this prevents: 675 verify passes with 0 rows and every reason 0, because a greedy shortcut
+//! answered every call ahead of the hook.
 
 use std::fmt::Write;
 use std::sync::atomic::{AtomicU64, Ordering};

@@ -36,7 +36,7 @@ fn with_embed(config: &ModelConfig, rows: usize) -> Vec<String> {
 
 #[test]
 fn a_padded_embedding_is_accepted_after_the_tokenizer_cap() {
-    // The queue-1 S10 failure: "model.embed_tokens.weight has shape
+    // The failure of an earlier GPU run: "model.embed_tokens.weight has shape
     // [128000, 2048], expected [125033, 2048]".
     let out = with_embed(&capped(), TABLE_ROWS);
     assert!(out.is_empty(), "{out:?}");

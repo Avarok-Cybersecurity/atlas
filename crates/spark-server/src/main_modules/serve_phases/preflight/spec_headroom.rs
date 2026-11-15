@@ -55,8 +55,8 @@
 //! 2.5 GiB and the clamp binds (no saving); at `--max-batch-size 1` the 4B
 //! reserves about 2.7 GiB instead of 4. UNMEASURED: the receipt is a boot
 //! ledger whose outside-the-ledger bytes stay under this term at C=1 and C=8
-//! (`bench/pass.d/L14.sh`), and `AVAROK_SPEC_HEADROOM_FULL` restores the flat
-//! reserve.
+//! (a GPU script outside this repository), and `AVAROK_SPEC_HEADROOM_FULL` restores the
+//! flat reserve.
 //!
 //! # What keeps the flat 4 GiB
 //!

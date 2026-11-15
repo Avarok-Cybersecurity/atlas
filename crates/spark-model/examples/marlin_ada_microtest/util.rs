@@ -2,8 +2,8 @@
 
 //! Responsibility: the Marlin microtest's plumbing: a deterministic generator, uploads and
 //! downloads, the sampled-column CPU oracle (the "2 BF16 ulps plus a term-magnitude bound" of
-//! `port::marlin::reference`), PASS/FAIL bookkeeping in the form `bench/pass.d/L18a.sh` and
-//! `L18b.sh` parse, and a synchronized timing loop.
+//! `port::marlin::reference`), PASS/FAIL bookkeeping in the form the GPU measurement scripts (not
+//! part of this repository) parse, and a synchronized timing loop.
 
 use anyhow::Result;
 use spark_model::port::marlin::reference::{bf16_to_f32, f32_to_bf16, tolerance};

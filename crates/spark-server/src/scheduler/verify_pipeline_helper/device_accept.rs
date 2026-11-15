@@ -25,9 +25,10 @@
 //!
 //! It used to sit after the helper's greedy shortcuts. For a grammar-free greedy row with neutral
 //! penalties the grammarless shortcut answers every call with the verify forward's graphed argmax,
-//! so on greedy traffic the hook was never reached: queue-1 L12 booted with the row on, ran 675
-//! verify passes and reported 0 device rows and 0 for every reason. Consulted first, each call now
-//! records its rows or its reason, and a row the planner accepts is picked by the device path.
+//! so on greedy traffic the hook was never reached: an earlier GPU run on this card booted with
+//! the row on, ran 675 verify passes and reported 0 device rows and 0 for every reason. Consulted
+//! first, each call now records its rows or its reason, and a row the planner accepts is picked
+//! by the device path.
 //!
 //! What a covered greedy row gets with the row on is therefore the host pipeline's pick, computed on
 //! the device, where the row off gives it the shortcut's raw argmax. The two differ in exactly the
@@ -35,15 +36,15 @@
 //!
 //! * an exact top tie: the graphed argmax keeps the tied id with the lower `index mod 1024`
 //!   (`argmax_bf16`'s reduction prefers the lower thread), the pipeline and this path the lower
-//!   index. Ties are not rare in BF16 logits: 178 of 13,406 greedy positions in queue-1's quality
-//!   dumps tie exactly at the top (1.3%);
+//!   index. Ties are not rare in BF16 logits: 178 of 13,406 greedy positions in the quality dumps
+//!   of an earlier GPU run on this card tie exactly at the top (1.3%);
 //! * a mask the shortcut does not apply (the `min_tokens` EOS mask, the post-close think mask).
 //!
 //! So greedy output with the row on is bit-identical to the HOST PIPELINE, which is the row's
 //! claim and what `AVAROK_NO_FAST_GREEDY_CHAT=1` serves with the row off; it is not bit-identical
 //! to the default row-off serve, whose greedy rows take the shortcut.
 //!
-//! # The identity screen's off arm (queue-1 `rows/devacc`, fixed 2026-11-13)
+//! # The identity screen's off arm (found in an earlier GPU run, fixed 2026-11-13)
 //!
 //! The screen compared `AVAROK_NO_FAST_GREEDY_CHAT=1` against the same plus the row and found 2 of
 //! 8 prompts different. The off arm was not the host pipeline: the masked-verify shortcut

@@ -54,8 +54,9 @@
 //! graph's raw argmax. That argmax is `argmax_bf16`'s tree reduction, which settles an exact top tie
 //! by reduction order, not by lowest index. The `mtp_device_accept` identity screen used that switch
 //! to ask for the host pipeline and got the raw argmax instead. The eight verify rows where its two
-//! arms differed (queue-1 `rows/devacc`, K4 trace) had the device path (first index wins, as the host
-//! pipeline) on one side and this shortcut on the other; the two that reached the output are exact
+//! arms differed (an earlier GPU run on this card, K4 trace) had the device path (first index
+//! wins, as the host pipeline) on one side and this shortcut on the other; the two that reached
+//! the output are exact
 //! BF16 top ties (equal top-2 logprobs in the quality dump: ` data`/` columns`, ` move`/` send`).
 //! With the switch honored here, the off arm of that screen is the host pipeline and the row's claim
 //! ("bit-identical to the host pipeline") is testable.

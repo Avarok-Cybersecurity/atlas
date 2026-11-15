@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! The DFlash fit, pinned at the Qwen3.5-4B + `Qwen3.5-4B-DFlash` numbers of
-//! `bench-results/queue-1/s4-l14-df-c8.log` (RTX 4060 Ti 16 GB): the default
+//! an earlier GPU run on an RTX 4060 Ti 16 GB: the default
 //! reserve it refused, the arithmetic that makes the same card hold eight
 //! streams with the row on, and the proof that the row off changes nothing.
 //! CPU only: every figure comes from the SSOT functions the allocators use.

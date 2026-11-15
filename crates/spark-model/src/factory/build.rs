@@ -160,7 +160,7 @@ pub fn build_model(
         // models share, read from the store, not against `config.vocab_size`:
         // the server has capped that to the tokenizer's count by now, and the
         // comparison refused every correct drafter on a padded table
-        // (`dflash_pairing.rs`, queue-1 S4.L14).
+        // (`dflash_pairing.rs`, seen in an earlier GPU run on this card).
         if let Err(e) = super::dflash_pairing::check(&args.drafter_config, &config, &store) {
             let refuse = crate::layers::ops::target_defaults::resolved()
                 .memory_fit_consumer

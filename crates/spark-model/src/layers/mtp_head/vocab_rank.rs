@@ -43,8 +43,8 @@
 //! A greedy pick flips only where two tokens are within that step, and such
 //! positions are common:
 //!
-//! * In the base arm's own quality run (`bench-results/queue-1/rows/_base/g2/
-//!   qual-scrr-g2-base.json`, 24 replies, 2,683 positions) 40 positions (1.5%)
+//! * In the base arm's own quality run (an earlier GPU run on this card, 24 replies, 2,683
+//!   positions) 40 positions (1.5%)
 //!   have a bit-exact top-2 logit tie, 129 (4.8%) are within 0.125 (one bf16
 //!   step at |logit| 16 to 32), and 19 of 24 replies contain at least one
 //!   exact tie.

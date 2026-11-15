@@ -21,7 +21,7 @@
 //! vocab_size from 248320 to 248070 (tokenizer)") so the decode head skips
 //! the padding rows. The pairing check compared the drafter against that
 //! capped value and refused every correct drafter on a target whose table is
-//! padded (queue-1 S4.L14: "DFlash drafter vocabulary (248320) differs from
+//! padded (an earlier GPU run on this card: "DFlash drafter vocabulary (248320) differs from
 //! the target's 248070"). A drafter built for another vocabulary is still
 //! refused: its count does not match the table's rows either.
 

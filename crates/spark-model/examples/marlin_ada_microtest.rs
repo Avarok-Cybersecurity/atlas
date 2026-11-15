@@ -12,7 +12,8 @@
 //! any FAIL, or a control that passes its gate, exits non-zero):
 //!  * every entry point once, on its full row tile, within 2 BF16 ulps plus the FP32 term-magnitude
 //!    bound of a float64 CPU product of the dequantized weight (`port::marlin::reference`); the PASS
-//!    line names the entry (`bench/pass.d/L18a.sh` counts the 30 names); the lock array back at zero;
+//!    line names the entry (a GPU measurement script that is not part of this repository counts
+//!    the 30 names); the lock array back at zero;
 //!  * decode (the row-invariant policy) at M = 1, 8, 16, 17, 32, 64 on the 4B FFN shapes, GPTQ and
 //!    AWQ types, with a planted control (a reference missing its last group must fail the bound);
 //!  * row invariance: row r at every M in 1..=64 byte-equal to row r at M = 64 and to the row decoded

@@ -155,7 +155,7 @@ fn tensorfold_oracle_if_present() {
 }
 
 #[test]
-#[ignore = "needs ATLAS_EXL3_MODEL_DIR (a downloaded EXL3 checkpoint); run by bench/pass.d/L20a.sh"]
+#[ignore = "needs ATLAS_EXL3_MODEL_DIR (a downloaded EXL3 checkpoint); run by hand with the variable set"]
 fn real_checkpoint_scans_and_decodes() {
     let dir = std::env::var("ATLAS_EXL3_MODEL_DIR").expect("ATLAS_EXL3_MODEL_DIR");
     let dir = PathBuf::from(dir);

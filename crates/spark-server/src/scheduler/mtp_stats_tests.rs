@@ -198,8 +198,8 @@ fn account_step_reads_and_clears_the_plan_stash_and_feeds_the_histogram() {
 #[test]
 fn with_mtp_device_accept_on_a_verify_pass_always_moves_its_counters() {
     use spark_model::port::spec_accept::metrics;
-    // queue-1 L12: the row on, 675 verify passes, 0 device rows and 0 for every
-    // fallback reason. This step verifies drafts on two sequences and never
+    // An earlier GPU run on this card: the row on, 675 verify passes, 0 device rows and 0 for
+    // every fallback reason. This step verifies drafts on two sequences and never
     // reaches the verify pick helper (DFlash raw-argmax verify does that), so
     // nothing below `account_step` records anything. The step's own check must.
     let (mut a, _ra) = crate::scheduler::test_support::active_seq(0, 3);

@@ -312,7 +312,7 @@ fn gate_batch(g: &dyn GpuBackend, gates: &mut Gates) -> Result<()> {
     );
     println!(
         "info G4: one cold round trip of {} MiB: batch path {batch_us} us, per-copy {loop_us} us \
-         (bandwidth receipts come from pinned_probe, queue Q5)",
+         (bandwidth receipts come from pinned_probe)",
         (2 * E * B) >> 20
     );
     g.free_host_pinned(up, E * B)?;

@@ -2,7 +2,8 @@
 
 //! Responsibility: opt-in dump of the prefill hidden state (after chosen layers, after the final
 //! norm, and the last-position logits) so a GPU parity check can compare Atlas's Qwen3.5 path with
-//! a CPU reference (`route_gate/encoder/GPU-PARITY.md`, runner `~/atlas-wt/bench/gpu_parity.py`).
+//! a CPU reference (`route_gate/encoder/GPU-PARITY.md`; the runner script is not part of
+//! this repository).
 //!
 //! Environment (all read once per prefill call; with `AVAROK_DUMP_HIDDEN` unset a prefill pays one
 //! `std::env::var` miss and nothing else, and no device work is added):

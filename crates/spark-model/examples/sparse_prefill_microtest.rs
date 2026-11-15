@@ -41,9 +41,10 @@ const NORMWISE: f64 = 1e-2;
 const POINTWISE: f64 = 3e-2;
 /// The head dimension the production dense paged kernel is compiled for (`HDIM` in
 /// `kernels/gb10/common/prefill_paged_compute.cuh`: its shared-memory tiles and tile counts are
-/// compile-time). At any other `head_dim` its output is not a reference. queue-1 S6.L35 went red on
-/// exactly the two hd128 cells, with the sparse kernel within 1.7e-3 of FP64 dense attention in both
-/// and the dense kernel 0.46 and 0.86 away from it; those cells are judged against FP64 alone.
+/// compile-time). At any other `head_dim` its output is not a reference. An earlier GPU run
+/// (2026-11-13) went red on exactly the two hd128 cells, with the sparse kernel within 1.7e-3 of
+/// FP64 dense attention in both and the dense kernel 0.46 and 0.86 away from it; those cells are
+/// judged against FP64 alone.
 const DENSE_KERNEL_HDIM: usize = 256;
 
 fn bytes_of(v: &[u32]) -> &[u8] {
@@ -290,7 +291,7 @@ fn cases() -> Vec<Case> {
     ];
     if std::env::var("AVAROK_BENCH_ITERS").is_ok() {
         // GPU-only checks (sentinel, identity against the dense kernel) at 32K keys; TTFT at 128K is
-        // the serve cell's job (bench/pass.d/L35.sh).
+        // the serve cell's job (a GPU script that is not part of this repository).
         let big = Case {
             q_offset: 30_720,
             q_len: 2048,

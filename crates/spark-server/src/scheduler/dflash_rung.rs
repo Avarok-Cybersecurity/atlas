@@ -84,7 +84,7 @@
 //! UNCHANGED and unproven. What is known: the drafter's own model card
 //! (B200, SGLang) has block 16 best at concurrency 1 and block 8 best at
 //! concurrency 32, the same shape as this ladder, but a different engine and
-//! card. The 4B GPU matrix (`bench/pass.d/L14.sh`) sweeps the C>=2 rung
+//! card. The 4B GPU matrix (a script outside this repository) sweeps the C>=2 rung
 //! (`AVAROK_DFLASH_RUNG_MULTI` = 4, 8, 16), the narrow rung and the pinned
 //! `--dflash-gamma` widths, and these constants change only on that receipt.
 

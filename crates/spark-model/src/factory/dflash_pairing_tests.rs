@@ -54,7 +54,7 @@ fn drafter() -> DflashConfig {
 
 #[test]
 fn a_padded_table_pairs_with_the_drafter_that_states_its_rows() {
-    // queue-1 S4.L14: the checkpoint's table has 248320 rows, the tokenizer
+    // An earlier GPU run on this card: the checkpoint's table has 248320 rows, the tokenizer
     // names 248070 of them, and the drafter states 248320.
     let s = store(&[(EMBED, [TABLE_ROWS, HIDDEN])]);
     let t = target(TOKENIZER);
