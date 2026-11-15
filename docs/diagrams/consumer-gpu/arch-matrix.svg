@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 820" width="1200" height="820" font-family="Inter, ui-sans-serif, system-ui, Segoe UI, Helvetica, Arial, sans-serif" role="img" aria-labelledby="t d">
   <title id="t">Which instructions each NVIDIA arch accepts, and how kernels/ada answers</title>
-  <desc id="d">A matrix of seven instruction features against four arch strings: sm_89 (Ada), sm_90a (Hopper), sm_100a (B200) and sm_121f (the GB10 build). sm_89 refuses static shared memory above 48 KiB, TMA, the FP4 convert and the warp-level block-scaled MMA, and accepts FP8 mma.sync and the paired E4M3 convert. Each refusal maps to one Ada fix. Below the matrix, the portability probe's counts: the gb10 tree compiled for sm_89 gives 534 unique compiles with 60 ptxas failures (49 shared memory, 6 FP4 convert, 3 block-scaled MMA, 2 TMA); the ada tree gives 192 compiles and 192 passes.</desc>
+  <desc id="d">A matrix of seven instruction features against four arch strings: sm_89 (Ada), sm_90a (Hopper), sm_100a (B200) and sm_121f (the GB10 build). sm_89 refuses static shared memory above 48 KiB, TMA, the FP4 convert and the warp-level block-scaled MMA, and accepts FP8 mma.sync and the paired E4M3 convert. Each refusal maps to one Ada fix. Below the matrix, the portability probe's counts: the gb10 tree compiled for sm_89 gives 534 unique compiles with 60 ptxas failures (49 shared memory, 6 FP4 convert, 3 block-scaled MMA, 2 TMA); the ada tree gives 223 compiles and 223 passes.</desc>
 
   <rect width="1200" height="820" fill="#0F1216"/>
 
@@ -137,11 +137,11 @@
   <text x="1068" y="679" font-size="12" fill="#F28B82" font-weight="650">60 fail</text>
 
   <text x="40" y="732" font-size="12" font-weight="600" fill="#C9CCD4">--hw ada</text>
-  <text x="40" y="748" font-size="10.5" fill="#82868F">both holo targets</text>
-  <!-- 192 compiles at the same scale: 323.6 px -->
-  <rect x="160" y="720" width="323.6" height="28" fill="#0F2A22" stroke="#12B981"/>
-  <text x="176" y="739" font-size="12" fill="#12B981" font-weight="650">192 of 192 pass</text>
-  <text x="500" y="739" font-size="11.5" fill="#82868F">exit 0 on the branch</text>
+  <text x="40" y="748" font-size="10.5" fill="#82868F">every ada model</text>
+  <!-- 223 compiles at the same scale: 375.8 px -->
+  <rect x="160" y="720" width="375.8" height="28" fill="#0F2A22" stroke="#12B981"/>
+  <text x="176" y="739" font-size="12" fill="#12B981" font-weight="650">223 of 223 pass</text>
+  <text x="552" y="739" font-size="11.5" fill="#82868F">exit 0 on the branch</text>
 
   <g font-size="11" fill="#C9CCD4">
     <rect x="160" y="776" width="12" height="12" fill="#F28B82"/><text x="180" y="786">49 static shared memory</text>

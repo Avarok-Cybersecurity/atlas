@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760" width="1200" height="760" font-family="Inter, ui-sans-serif, system-ui, Segoe UI, Helvetica, Arial, sans-serif" role="img" aria-labelledby="t d">
   <title id="t">The kernels/ada tree: symlinks and real files</title>
-  <desc id="d">kernels/ada holds 200 relative symlinks into kernels/gb10 and 11 real files. common/ has 186 symlinks into gb10/common, five real overrides (the four prefill sources and gated_delta_rule_fla.cu) and three real additions (prefill_dyn_smem.cuh, fp8_gemv_ada.cu, fp8_gemm_ada.cu). Each holo model directory has a real MODEL.toml and seven nvfp4 symlinks. The 20 paged prefill wrappers stay symlinks but include the Ada headers, because a quoted include resolves against the directory the file was opened from.</desc>
+  <desc id="d">kernels/ada holds 200 relative symlinks into kernels/gb10 and 53 real files. common/ has 186 symlinks into gb10/common, five real overrides (the four prefill sources and gated_delta_rule_fla.cu) and 43 real additions (among them prefill_dyn_smem.cuh, fp8_gemv_ada.cu and fp8_gemm_ada.cu). Four model directories have a real MODEL.toml, and each holo directory also has seven nvfp4 symlinks. The 20 paged prefill wrappers stay symlinks but include the Ada headers, because a quoted include resolves against the directory the file was opened from.</desc>
 
   <defs>
     <marker id="tipInk" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
@@ -18,7 +18,7 @@
   <rect width="1200" height="760" fill="#0F1216"/>
 
   <text x="40" y="44" font-size="23" font-weight="650" fill="#C9CCD4">kernels/ada: a gb10 mirror with real files only where Ada differs</text>
-  <text x="40" y="66" font-size="13.5" fill="#82868F">200 relative symlinks and 11 real files. The same pattern kernels/hopper and kernels/b200 use.</text>
+  <text x="40" y="66" font-size="13.5" fill="#82868F">200 relative symlinks and 53 real files. The same pattern kernels/hopper and kernels/b200 use.</text>
 
   <!-- ===== left: the ada tree ===== -->
   <rect x="40" y="92" width="610" height="506" rx="4" fill="#171B21" stroke="#2E353F"/>
@@ -48,6 +48,8 @@
     <text x="78" y="504" fill="#C9CCD4">holo-3.1-4b/</text>
     <text x="98" y="524" fill="#C9CCD4">MODEL.toml</text>
     <text x="98" y="544" fill="#82868F">nvfp4/  7 symlinks</text>
+
+    <text x="78" y="566" fill="#C9CCD4">lfm3-1.7b/, qwen3.8-27b/: a real MODEL.toml each</text>
   </g>
   <!-- annotations (sans) -->
   <g font-size="11" fill="#82868F">
@@ -56,14 +58,14 @@
     <text x="400" y="278" fill="#BE9DF8">5 real overrides</text>
     <text x="400" y="294">same name as a gb10 file; the</text>
     <text x="400" y="308">header says what differs</text>
-    <text x="400" y="372" fill="#12B981">3 real additions</text>
-    <text x="400" y="388">names gb10 does not have</text>
+    <text x="400" y="372" fill="#12B981">43 real additions</text>
+    <text x="400" y="388">names gb10 does not have; 3 of 43 shown</text>
     <text x="300" y="452">real copy; adds the TMA expected_absent entry</text>
     <text x="300" y="472">-&gt; ../../../gb10/holo-3.1-0.8b/nvfp4/*</text>
     <text x="300" y="524">real copy; adds the TMA expected_absent entry</text>
     <text x="300" y="544">-&gt; ../../../gb10/holo-3.1-4b/nvfp4/*</text>
   </g>
-  <text x="60" y="582" font-size="11.5" fill="#C9CCD4">Totals: 200 symlinks (186 in common/, 14 in the two nvfp4/ dirs); 11 real files.</text>
+  <text x="60" y="588" font-size="11.5" fill="#C9CCD4">Totals: 200 symlinks (186 in common/, 14 in the two nvfp4/ dirs); 53 real files.</text>
 
   <!-- ===== right: gb10 ===== -->
   <rect x="760" y="92" width="400" height="150" rx="4" fill="#171B21" stroke="#2E353F"/>
@@ -105,7 +107,7 @@
   <g font-size="11.5">
     <rect x="40" y="652" width="360" height="90" rx="4" fill="#1E242B" stroke="#2E353F"/>
     <text x="56" y="674" font-weight="650" fill="#C9CCD4">[kernels] overrides</text>
-    <text x="56" y="694" fill="#82868F">HARDWARE.toml lists all 8 real sources.</text>
+    <text x="56" y="694" fill="#82868F">HARDWARE.toml lists all 48 real sources.</text>
     <text x="56" y="711" fill="#82868F">check_kernel_shadows.py refuses a real file</text>
     <text x="56" y="728" fill="#82868F">that is not declared (its RULE 3).</text>
 

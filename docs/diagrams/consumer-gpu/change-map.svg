@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 800" width="1200" height="800" font-family="Inter, ui-sans-serif, system-ui, Segoe UI, Helvetica, Arial, sans-serif" role="img" aria-labelledby="t d">
   <title id="t">Atlas on consumer NVIDIA cards: the change map</title>
-  <desc id="d">Six layers of Atlas, from the HTTP server down to the build tooling, with every change of the consumer-GPU work placed in its layer and colored by its group: the Ada target, the 16 GB memory fit, the portability probe, llama.cpp server compatibility and the FP8 path. The scheduler and kernels/gb10/common are unchanged.</desc>
+  <desc id="d">Six layers of Atlas, from the HTTP server down to the build tooling, with every change of the consumer-GPU work placed in its layer and colored by its group: the Ada target, the 16 GB memory fit, the portability probe, llama.cpp server compatibility and the FP8 path. The scheduler and kernels/gb10/common are unchanged. A caption notes the November opt-in rows, which are not drawn: they sit in kernels/ada, spark-model and spark-server and are off by default.</desc>
 
   <rect width="1200" height="800" fill="#0F1216"/>
 
@@ -119,7 +119,7 @@
     <rect x="240" y="538" width="4" height="80" fill="#BE9DF8"/>
     <text x="256" y="559" font-size="12.5" font-weight="650" fill="#C9CCD4">kernels/ada (new)</text>
     <text x="256" y="578" font-size="11" fill="#82868F">200 relative symlinks into gb10,</text>
-    <text x="256" y="594" font-size="11" fill="#82868F">8 real sources in common/, real</text>
+    <text x="256" y="594" font-size="11" fill="#82868F">48 real sources in common/, real</text>
     <text x="256" y="610" font-size="11" fill="#82868F">HARDWARE.toml and MODEL.tomls</text>
 
     <rect x="551" y="538" width="298" height="80" rx="4" fill="#1E242B" stroke="#2E353F"/>
@@ -175,5 +175,9 @@
     <rect x="710" y="748" width="12" height="12" fill="#EFB338"/><text x="730" y="758">llama.cpp API</text>
     <rect x="860" y="748" width="12" height="12" fill="#12B981"/><text x="880" y="758">FP8 path</text>
     <rect x="980" y="748" width="12" height="12" fill="none" stroke="#82868F" stroke-dasharray="3 2"/><text x="1000" y="758">unchanged</text>
+  </g>
+  <g font-size="11" fill="#82868F">
+    <text x="40" y="780">Not drawn: the November opt-in rows (FP8 for the GDN and attention projections, a 16-row FP8 FFN kernel, a 4-bit route, MTP verify rows and a width policy,</text>
+    <text x="40" y="794">a device-side pick for min_tokens requests, a ptxas workaround). They sit in kernels/ada, spark-model and spark-server, and are off by default (guide sections 10 and 11).</text>
   </g>
 </svg>

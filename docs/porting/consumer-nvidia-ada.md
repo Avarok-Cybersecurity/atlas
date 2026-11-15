@@ -8,11 +8,16 @@ By Josef Long
 
 Atlas was built on GB10: 120 GB of unified memory, one box, one model target at a time. This guide brings it to a consumer graphics card, with the RTX 4060 Ti 16 GB as the reference part. It covers what broke, why it broke, what changed in each layer of Atlas, and how to check the result with and without the card.
 
-**Atlas now runs on the card.** Every Ada kernel assembles for `sm_89`, the host-side changes are unit-tested on the mock backend, and the whole path has served on an RTX 4060 Ti 16 GB: the kernel audit, the FP8 kernel oracle, BF16 and FP8 serves of both models, and the 16 GB memory checks. The headline numbers are below, and section 9 has the full measurements and the exact setup. Every number in this guide is one of three things, and the text says which each time: a figure from NVIDIA's spec sheet, a value computed from the model shapes and the code's own sizing rules, or a measurement from that run.
+**Atlas now runs on the card.** Every Ada kernel assembles for `sm_89`, the host-side changes are unit-tested on the mock backend, and the whole path has served on an RTX 4060 Ti 16 GB: the kernel audit, the FP8 kernel oracle, BF16 and FP8 serves of both models, and the 16 GB memory checks. The headline numbers are below, and section 9 has the full measurements and the exact setup. Every number in this guide is one of three things, and the text says which each time: a figure from NVIDIA's spec sheet, a value computed from the model shapes and the code's own sizing rules, or a measurement from that run. A second round of runs, in November, measured the card with up to eight users at once and screened every optimization on this branch the same way; section 10 has those results, section 11 the opt-in recipes, and section 12 what did not work.
 
 ## Results at a glance
 
-Measured on the RTX 4060 Ti 16 GB with this branch's defaults: single stream, a 3,921-token prompt for prefill and a 25-token prompt for decode, median of five runs (setup in section 9).
+Everything here was measured on one RTX 4060 Ti 16 GB under WSL 2, on the 4B (the Qwen3.5-4B BF16 checkpoint, served through the `holo-3.1-4b` target) unless a column says 0.8B. There are two sets of runs, and each table says which it comes from:
+
+- **One user, one request at a time** (section 9). Prompt reading and decode, median of five runs.
+- **Several users at once** (section 10). One server set up for eight users, measured with 1, 2, 4 and 8 users sending at the same time. **C=1** is one user alone, in tokens per second for that user. **C=8** is eight users at once, and the number is the **total** across all eight; one user gets about an eighth of it.
+
+**One user** (this branch's defaults and the optional FP8 FFN; 3,921-token prompt for prefill, 25-token prompt for decode, median of five):
 
 | Measurement | 0.8B, BF16 | 0.8B, FP8 FFN | 4B, BF16 | 4B, FP8 FFN | 4B, FP8 FFN + MTP |
 |---|---|---|---|---|---|
@@ -22,17 +27,37 @@ Measured on the RTX 4060 Ti 16 GB with this branch's defaults: single stream, a 
 | Peak VRAM (MiB), batch 1 | 4,676 | 4,408 | 13,596 | 11,492 | 11,753 |
 | Mean KL over top-20 logprobs, against BF16 | n/a | 0.0021 | n/a | 0.0016 | same tokens as FP8 FFN (KL 0.00005 against it) |
 
-Both models fit and serve on a 16 GB card. Three things carry the numbers:
+Both models fit and serve on a 16 GB card.
 
-- **The BF16 default.** On Ada the BF16 dense FFN now prefills through cuBLASLt (`[defaults] ffn_bf16_cublas_prefill`). Against Atlas's previous dispatch that is 4.6x faster prefill on the 4B (794 to 3,684 tok/s) and 1.7x on the 0.8B, and two to 2.3x the aggregate decode at two to eight concurrent streams, with the same numerics class and no new memory.
-- **The optional FP8 dense FFN** (`AVAROK_DENSE_FP8_FROM_BF16=1`) speeds single-stream decode up 1.19x on the 0.8B and 1.34x on the 4B, close to what the byte model predicts, frees 2.1 GB on the 4B, and holds a mean KL of about 0.002 against BF16. Against the new BF16 default its prefill gain is small: 1.12x on the 4B, and on the 0.8B the two are level within run-to-run noise (13,220 to 14,538 against 13,798 tok/s). It is a decode and memory lever.
-- **MTP speculative decoding** (`--speculative`, the model's own multi-token-prediction head) lifts the 4B's decode to 49.7 tok/s, 1.75x the original BF16 default and above the 46.9 tok/s one-token-per-pass ceiling, at some prefill cost. On a 16 GB card it fits only with the FP8 FFN, and only after this branch's fix to the post-load memory audit.
+**Several users, 4B, total tok/s across all users** (one server with 8 slots, BF16 KV cache, BF16 LM head, fixed-length streams of 512 generated tokens, `mintok` on every arm; the fair final run of 2026-11-14):
+
+| Users | BF16 | FP8 FFN (opt-in) | int4 stack (opt-in, **lossy**) |
+|---|---|---|---|
+| 1 | 29 | 40 | 98 |
+| 2 | 56 | 77 | 185 |
+| 4 | 107 | 143 | 294 |
+| 8 | 195 (about 24 per user) | 222 (about 28 per user) | 381 (about 48 per user) |
+
+What carries these numbers:
+
+- **The BF16 default.** On Ada the BF16 dense FFN now prefills through cuBLASLt (`[defaults] ffn_bf16_cublas_prefill`). Against Atlas's previous dispatch that is 4.6x faster prefill on the 4B (794 to 3,684 tok/s) and 1.7x on the 0.8B, and 2.0 to 2.3x the total decode at two to eight streams, with the same numerics class and no new memory. It is the only default this branch changes on Ada.
+- **The optional FP8 dense FFN** (`AVAROK_DENSE_FP8_FROM_BF16=1`) speeds single-stream decode up 1.19x on the 0.8B and 1.34x on the 4B, frees 2.1 GB on the 4B, and holds a mean KL of about 0.002 against BF16. At 8 users its gain over BF16 is small (222 against 195 total).
+- **The tensor-core GDN prefill** (`AVAROK_GDN_PREFILL_TC=1`, opt-in) speeds up prompt reading, not decode. On the FP8 FFN route with FP8 KV and a prompt of about 5,349 tokens, time to first token went from 1,262 to 1,097 ms (-13.0 percent), about 4,238 to 4,876 prompt tok/s (+15 percent), one run per arm, mean KL 0.00089 against the row off. That prompt is longer than the 3,921-token prompt in the table above, and the 3,921-token case was not measured with this row, so the two figures are not comparable.
+- **MTP speculative decoding** (`--speculative`) lifts one user on the 4B to 49.7 tok/s with the FP8 FFN. With several users it does not help on its own: at 8 users FP8 with MTP measured 156.8 tok/s total against 197.4 without it. The verify rows in section 10 are what make it pay at 8 users.
+- **The best near-lossless setup**, `fp8covtc` (FP8 for the FFN, GDN and attention projections, the tensor-core FFN kernel and `mintok`), measured 290 tok/s total at 8 users against 208 for the FP8 FFN serve in the same screen, and 49 against 39 for one user. That comparison is not like for like: the row arm had `mintok` and the base did not. A like-for-like figure is **not measured**; my estimate is about +24 percent instead of +39.5 percent, and it is only an estimate. Its mean KL against that FP8 FFN serve is 0.0018; its KL against BF16 was not measured. It ran in a row screen (256-token streams), not in the final run, so it is not in the table above.
+- **The int4 stack is lossy and opt-in.** It quantizes the FFN, GDN and attention projections to 4 bits and adds MTP with one draft. Against BF16 its mean KL is 0.0337 (FP8: 0.0029), its top-1 token agreement is 14.4 percent, and 1 of 24 test prompts never diverges (FP8: 6 of 24). Its accuracy on real tasks was not measured. Use it only where that trade is acceptable.
+
+Three things to know before quoting any of this:
+
+- **Nothing from the November work is on by default, and this PR flips no default.** Every November row stays opt-in, with recipes in section 11.
+- **The several-user runs send fixed-length requests** (`min_tokens` equal to `max_tokens`). On such a request every decode step copies the logits to the host for sampling; ordinary requests never pay that. The `mintok` row removes it, so the final run gives `mintok` to every arm, and the table above compares like with like. A first run gave it only to the stack, which flattered the stack by about 5 to 10 percent (section 10.4).
+- **The 27B has not run on this card** (section 12), and the only comparison with another engine is BF16 llama.cpp (section 10). No quantized llama.cpp or other engine was measured, so nothing here says Atlas is faster at 4 bits.
 
 The FP8 route stays off by default until the checks listed in section 9 are done.
 
 ## What changed
 
-The work comes in five parts, and none of them touches the scheduler or `kernels/gb10/common`, the kernel sources every NVIDIA target inherits. No other target's PTX moves.
+The work comes in seven parts, and none of them touches `kernels/gb10/common`, the kernel sources every NVIDIA target inherits. No other target's PTX moves. The November opt-in rows do add code to `spark-model` and `spark-server` (the MTP width policy and the device-side greedy pick live there), and the `HARDWARE.toml` files of four other targets (b200, b300, gb10, hopper) gain default-off declarations of the new rows, additions only, so every target states every lever.
 
 | Part | What it does | Where it lives |
 |---|---|---|
@@ -42,6 +67,9 @@ The work comes in five parts, and none of them touches the scheduler or `kernels
 | llama.cpp API | `/completion`, `/tokenize`, `/props` and the rest, so llama.cpp clients work unchanged | `spark-server/src/api/llama_compat/` |
 | FP8 path | Load-time BF16 to FP8 for the dense FFN, with two `sm_89` kernels, off by default | `kernels/ada/common/`, `spark-model` |
 | Ada serving | cuBLASLt for the BF16 dense-FFN prefill by default, and a post-load memory audit that lets MTP fit with the FP8 FFN | `kernels/ada/HARDWARE.toml`, `spark-model`, `spark-server` preflight |
+| Opt-in rows (November) | FP8 for the GDN and attention projections, a 16-row tensor-core FP8 FFN kernel, a 4-bit route for all three projection groups, MTP verify rows and a width policy, the device-side greedy pick for requests with a `min_tokens` floor, and a fix for a CUDA 13.3 `ptxas` miscompile. Every row is off by default on every target | `kernels/ada/common/`, `kernels/ada/HARDWARE.toml`, `spark-model`, `spark-server` |
+
+The November rows don't change any default and don't touch `kernels/gb10/common` either; section 10 has what each one measured.
 
 ![Change map: every change of the consumer-GPU work placed in the Atlas layer it touches, colored by group](../diagrams/consumer-gpu/change-map.svg)
 
@@ -110,33 +138,33 @@ It enumerates every `.cu` file the build would compile for one hardware target a
 
 It's a necessary check, not a sufficient one. It finds unknown instructions and resource overflows with the file and line, and says nothing about launch bounds, numerics or speed. Its simplifications (NVIDIA targets only, no Windows `-std=c++17`, `MODEL.toml` read only for `kernel_source`) are listed in its docstring.
 
-Here's what it found with CUDA 13.3.73:
+Here's what it found with CUDA 13.3.73. Both rows were re-run on the final branch (tip `cf655f62e`): the gb10 run exited 1 with the same counts as the first tree, and the ada run exited 0 with more compiles, because the Ada tree has grown since the first sprint (section 4):
 
 | Run | Unique compiles | Pass | Fail in nvcc | Fail in ptxas |
 |---|---|---|---|---|
 | `--hw gb10 --arch sm_89` (every gb10 model) | 534 | 474 | 0 | 60 |
-| `--hw ada --arch sm_89` (both holo targets) | 192 | 192 | 0 | 0 |
+| `--hw ada --arch sm_89` (every ada model) | 223 | 223 | 0 | 0 |
 
 The 60 gb10 failures fall into exactly the three walls: 49 shared-memory overflows, 6 FP4 converts, 3 block-scaled MMAs and 2 TMA barriers. Of those 60, 39 are in `gb10/common` (the 22 prefill modules and `gated_delta_rule_fla.cu`, some under several flag sets), 2 are the holo targets' MoE GEMM, and 19 are in models `kernels/ada` doesn't carry. Every file compiles to PTX for `sm_89` (the nvcc column); only ptxas catches these, which is why the probe runs both.
 
 ## 4. The Ada target layout
 
-![The kernels/ada tree: 200 symlinks into kernels/gb10, eight real sources in common/, and why the paged wrappers can stay symlinks](../diagrams/consumer-gpu/ada-tree.svg)
+![The kernels/ada tree: 200 symlinks into kernels/gb10, 48 real sources in common/, and why the paged wrappers can stay symlinks](../diagrams/consumer-gpu/ada-tree.svg)
 
-`kernels/ada` follows the pattern `kernels/hopper` and `kernels/b200` already use: a mirror of `kernels/gb10` made of relative symlinks, with real files only where the target differs.
+`kernels/ada` follows the pattern `kernels/hopper` and `kernels/b200` already use: a mirror of `kernels/gb10` made of relative symlinks, with real files only where the target differs. The counts below are from `git ls-tree -r HEAD kernels/ada` on this branch (mode 120000 is a symlink): 253 files, 200 of them symlinks and 53 real.
 
 | Path | Kind | Count |
 |---|---|---|
 | `kernels/ada/HARDWARE.toml` | real | 1 |
 | `kernels/ada/common/*` | symlink to `../../gb10/common/<same name>` | 186 |
 | `kernels/ada/common/*` | real, overriding a gb10 file of the same name | 5 |
-| `kernels/ada/common/*` | real, a name gb10 doesn't have | 3 |
-| `kernels/ada/holo-3.1-{0.8b,4b}/MODEL.toml` | real copy | 2 |
+| `kernels/ada/common/*` | real, a name gb10 doesn't have | 43 |
+| `kernels/ada/{holo-3.1-0.8b,holo-3.1-4b,lfm3-1.7b,qwen3.8-27b}/MODEL.toml` | real | 4 |
 | `kernels/ada/holo-3.1-{0.8b,4b}/nvfp4/*` | symlink into the gb10 model dir | 14 |
 
-The five overrides are `inferspark_prefill.cu`, `inferspark_prefill_fp8kv.cu`, `prefill_paged_compute.cuh` and `prefill_paged_compute_asym.cuh` for the shared-memory wall, and `gated_delta_rule_fla.cu` for TMA. The three additions are `prefill_dyn_smem.cuh` and the two FP8 kernels, `fp8_gemv_ada.cu` and `fp8_gemm_ada.cu`. All eight are listed in `[kernels] overrides`.
+The five overrides are `inferspark_prefill.cu`, `inferspark_prefill_fp8kv.cu`, `prefill_paged_compute.cuh` and `prefill_paged_compute_asym.cuh` for the shared-memory wall, and `gated_delta_rule_fla.cu` for TMA. The 43 additions began as three: `prefill_dyn_smem.cuh` and the two FP8 kernels, `fp8_gemv_ada.cu` and `fp8_gemm_ada.cu`. The rest were added after the first sprint: the kernels of the opt-in rows in section 10 (for example the 16-row FP8 FFN kernel, `fp8_gemm_ada_m16.cu`, and the tensor-core GDN prefill, `gdn_chunk_tc_ada.cu`) and kernels for other routes and models. All 48 real sources are listed in `[kernels] overrides`.
 
-I went with symlinks because 186 of the 194 files in `common/` are gb10's own bytes, so a kernel fix in gb10 reaches Ada the day it lands. Fixing the shared-memory wall inside `gb10/common` instead would have moved the PTX and the closure hash of every target that compiles those sources, and reopened their gates, to solve a problem only Ada has. The tooling already enforces the pattern: `scripts/check_kernel_shadows.py` now knows `ada` mirrors `gb10` and refuses an undeclared real file, and `crates/avarok-kernels/tests/inherited_targets.rs` holds `ada` to the same per-file mirror assertions as Hopper and B200. The price is that a later gb10 edit to one of the five overridden files won't reach Ada until someone copies it over, so each real file's header says what differs from its gb10 original and that it has to be kept in step by hand.
+I went with symlinks because 186 of the 234 files in `common/` are gb10's own bytes, so a kernel fix in gb10 reaches Ada the day it lands. Fixing the shared-memory wall inside `gb10/common` instead would have moved the PTX and the closure hash of every target that compiles those sources, and reopened their gates, to solve a problem only Ada has. The tooling already enforces the pattern: `scripts/check_kernel_shadows.py` now knows `ada` mirrors `gb10` and refuses an undeclared real file, and `crates/avarok-kernels/tests/inherited_targets.rs` holds `ada` to the same per-file mirror assertions as Hopper and B200. The price is that a later gb10 edit to one of the five overridden files won't reach Ada until someone copies it over, so each real file's header says what differs from its gb10 original and that it has to be kept in step by hand.
 
 One symlink detail makes the shared-memory fix cheaper than it looks. Twenty paged prefill wrappers (`inferspark_prefill_paged_turbo4.cu` and friends) stay symlinks. Each one does `#include "prefill_paged_compute.cuh"` (11 of them) or `#include "prefill_paged_compute_asym.cuh"` (9). nvcc resolves a quoted include next to the path it opened, which is `kernels/ada/common/`, so the wrappers pick up the real Ada headers without copies of their own.
 
@@ -250,7 +278,7 @@ The divisors were chosen so GB10 doesn't change in practice. With about 115 GiB 
 
 ## 7. FP8 on Ada
 
-Ada is the oldest NVIDIA arch with FP8 tensor cores (`mma.sync` with E4M3 operands) and the paired E4M3 convert (`cvt.rn.f16x2.e4m3x2`), and that's the part of this card I most wanted to use. The FP8 work uses both, for the dense FFN only.
+Ada is the oldest NVIDIA arch with FP8 tensor cores (`mma.sync` with E4M3 operands) and the paired E4M3 convert (`cvt.rn.f16x2.e4m3x2`), and that's the part of this card I most wanted to use. The FP8 work uses both. This section describes the dense FFN route; the same load-time conversion now also exists for the GDN and attention projections, as opt-in rows measured in section 10.
 
 It's off by default. `kernels/ada/HARDWARE.toml` declares `dense_fp8_from_bf16 = false`, like every other target, because FP8 changes numerics. The card run (section 9) measured what flipping it would buy and cost: decode 1.21x faster on the 0.8B and 1.34x on the 4B, and a mean KL of 0.002 against BF16. The row stays `false` until the maintainers decide that is enough of a receipt; section 9 lists what it does not yet cover.
 
@@ -308,7 +336,7 @@ This isn't a lever. The modules exist only in `kernels/ada`, so gb10, Hopper and
 
 ### What it buys (computed, then measured)
 
-![Decode ceiling at 288 GB/s against weight bytes per token, for the 0.8B and 4B models in BF16, with an FP8 FFN, and the projected next steps, with the decode measured on the card](../diagrams/consumer-gpu/decode-roofline.svg)
+![Decode ceiling at 288 GB/s against weight bytes per token, for the 0.8B and 4B models in BF16, with an FP8 FFN, and two further computed ceilings, with the decode measured on the card](../diagrams/consumer-gpu/decode-roofline.svg)
 
 Single-stream decode reads every weight once per token, so the ceiling is 288 GB/s divided by the bytes per token. From the model shapes:
 
@@ -319,7 +347,7 @@ Single-stream decode reads every weight once per token, so the ceiling is 288 GB
 
 These are ceilings, not measurements. Real decode lands below them, because the KV cache, the recurrent state (about 51 MiB per sequence on the 4B, read and written every step), activations and launch gaps all cost time, and no kernel reaches the full 288 GB/s. The ratio between the two columns is the more reliable prediction. The FFN is 54% of the 4B's per-token bytes but only 35% of the 0.8B's, where the LM head weighs as much as the FFN, which is why the 4B gains more. For prefill I expected up to 2x per FFN projection if the W8A8 GEMM reaches the same fraction of FP8 peak as the BF16 GEMM does of BF16 peak. The per-token activation quantization is extra traffic W8A16 doesn't pay.
 
-The card confirmed the decode prediction closely. Single-stream decode on a short prompt went from 139.3 to 168.4 tok/s on the 0.8B (1.21x, the computed ratio exactly) and from 28.9 to 38.7 tok/s on the 4B (1.34x against 1.37x computed). Both models decode at the same fraction of their ceiling in both formats: about 73% on the 0.8B and 83 to 85% on the 4B, so the FFN bytes saved turn into speed one for one.
+The card confirmed the decode prediction closely. Single-stream decode on a short prompt went from 139.3 to 168.4 tok/s on the 0.8B (1.21x, the computed ratio exactly) and from 28.9 to 38.7 tok/s on the 4B (1.34x against 1.37x computed). Both models decode at the same fraction of their ceiling in both formats: about 73% on the 0.8B and 83 to 85% on the 4B, so the FFN bytes saved turn into speed one for one. With the GDN and attention projections also in FP8 (the `fp8cov` row of section 10), one user decodes at 50 tok/s on the eight-user server, against 39 for the FP8 FFN alone in the same screen.
 
 Prefill needs two baselines, because Atlas's BF16 default is not its fastest BF16 path. With no `AVAROK_CUBLAS_GEMM` set, a BF16 dense FFN prefills through the hand-written `dense_gemm_tc` (`layers/dense_ffn.rs`), which on this card is slow: moving the FFN alone to cuBLASLt takes the 4B's time to first token on a 3,921-token prompt from 4.94 s to 1.07 s, so `dense_gemm_tc` spends at least 3.9 s on the FFN's 17.8 TFLOP (32 layers x 3 projections x 2 x 2560 x 9216 x 3,921), at most about 4.6 TFLOP/s. Against that default the FP8 FFN lifts long-prompt prefill 1.89x on the 0.8B and 5.3x on the 4B. Against BF16 with `AVAROK_CUBLAS_GEMM=ffn`, which costs nothing in accuracy, the FP8 gain is 1.10x and 1.15x, because the FFN is then a smaller share of prefill (attention, the GDN layers and the LM head are untouched). Section 9 has the A/B. Against both baselines the W8A8 arm never lost, so this run gives no reason for a `w8a8_prefill_max_m_*` ceiling on Ada; a direct W8A8 against W8A16 sweep (`AVAROK_FFN_W8A16_ONLY`) was not run.
 
@@ -398,7 +426,7 @@ Every serve also answered three fixed checks correctly, including recalling a co
 | `AVAROK_GDN_PREFILL_TC=1` | 8,103 | not run |
 | `AVAROK_DENSE_FP8_KEEP_NVFP4=1` (the NVFP4 copy built, as before this branch) | 7,721 | not run |
 
-Decode didn't move in any row. Building the NVFP4 copy again changes nothing, so the 16 GB fit didn't cost prefill speed. The GDN tensor-core lever has nothing to switch to on Ada: its spine lives in `kernels/hopper/common/gated_delta_rule_chunk_tc.cu`, which the Ada tree doesn't carry, so the lookup resolves no kernel. The FFN cuBLASLt arm is worth 1.6x on the 0.8B and 4.6x on the 4B with no change in numerics class (BF16 in, FP32 accumulate). On that receipt `kernels/ada/HARDWARE.toml` now declares `ffn_bf16_cublas_prefill = true`, so an Ada build takes the cuBLASLt arm for the BF16 dense-FFN prefill with nothing in its environment. The row is narrower than `AVAROK_CUBLAS_GEMM=ffn`: the W8A8 FFN prefill and the MoE shared expert keep their own kernels. A set `AVAROK_CUBLAS_GEMM` (any value, `off` included) still decides, and `AVAROK_FFN_BF16_CUBLAS_PREFILL=0` is the A/B back to `dense_gemm_tc`. The "Default" row above is the dispatch before this row existed; the sprint results at the top measure the new default.
+Decode didn't move in any row. Building the NVFP4 copy again changes nothing, so the 16 GB fit didn't cost prefill speed. The GDN tensor-core lever has nothing to switch to on Ada: its spine lives in `kernels/hopper/common/gated_delta_rule_chunk_tc.cu`, which the Ada tree doesn't carry, so the lookup resolves no kernel. That has since changed: the Ada tree now carries its own tensor-core chunked GDN prefill, and section 10.5b measures it. The FFN cuBLASLt arm is worth 1.6x on the 0.8B and 4.6x on the 4B with no change in numerics class (BF16 in, FP32 accumulate). On that receipt `kernels/ada/HARDWARE.toml` now declares `ffn_bf16_cublas_prefill = true`, so an Ada build takes the cuBLASLt arm for the BF16 dense-FFN prefill with nothing in its environment. The row is narrower than `AVAROK_CUBLAS_GEMM=ffn`: the W8A8 FFN prefill and the MoE shared expert keep their own kernels. A set `AVAROK_CUBLAS_GEMM` (any value, `off` included) still decides, and `AVAROK_FFN_BF16_CUBLAS_PREFILL=0` is the A/B back to `dense_gemm_tc`. The "Default" row above is the dispatch before this row existed; the sprint results at the top measure the new default.
 
 ### Memory
 
@@ -407,7 +435,7 @@ Decode didn't move in any row. Building the NVFP4 copy again changes nothing, so
 | NVFP4 FFN copy | not built (2,430 MiB by formula) | not built: residency summary `not built 2.55 GB` |
 | Decode-rollback ring | 4 slots x 8 seqs, 1,632 MiB | 4 slots x 8 seqs x 51.0 MB = 1.59 GB (was 3.19 GB), capped at 1/3 of 7.42 GB beside the weights |
 | Ring at `--max-batch-size 1` | 8 slots, 408 MiB | 8 slots x 1 seq = 0.40 GB |
-| Largest `--max-seq-len` that serves at batch 1 | not computed | not measured |
+| Longest prompt that served and recalled a needle (4B) | not computed | BF16 KV: 31,650 tokens, failed at 95,000; FP8 KV: 159,807 tokens, failed at 261,632 (section 12) |
 
 The batch-8 serve answered the same three checks correctly. It ran with `--max-batch-size 8 --oom-guard-mb 1024` and otherwise the server's defaults, so its KV cache was the default FP8 (E4M3, with no scales in the checkpoint), not the BF16 KV of the batch-1 serves; its peak VRAM is not comparable to theirs. The ring and the NVFP4 copy don't depend on the KV dtype.
 
@@ -452,9 +480,9 @@ The concurrency rows come from one server with `--max-num-seqs 8 --max-batch-siz
 | Decode tok/s, long prompt / short prompt | 36.5 / 38.4 | 45.9 / 49.7 | 1.26x / 1.29x |
 | 256-token answer to the long prompt, end to end | 7.9 s | 6.7 s | 1.18x |
 
-Atlas's own `--speculative` help warns that speculative output is not guaranteed bit-identical to plain decoding. On the eight agreement prompts (greedy, 128 tokens, thinking on) it was identical here: 1,016 of 1,016 tokens matched plain FP8 decoding on both models, with a mean KL over the top-20 logprobs of 0.00005 on the 4B and 0.00001 on the 0.8B. The draft acceptance rate is not logged and was not measured. In BF16 the 4B with MTP does not fit on this card, and that refusal is real: 10.4 GB of weights plus a 4.3 GB reserve exceed the 14.9 GB budget. On the 0.8B, MTP raised short-prompt decode from 169.1 to 182.6 tok/s, left long-prompt decode unchanged and cost prefill (13,220 to 10,197 tok/s).
+Atlas's own `--speculative` help warns that speculative output is not guaranteed bit-identical to plain decoding. On the eight agreement prompts (greedy, 128 tokens, thinking on) it was identical here: 1,016 of 1,016 tokens matched plain FP8 decoding on both models, with a mean KL over the top-20 logprobs of 0.00005 on the 4B and 0.00001 on the 0.8B. The November runs measured it: with one draft, 64 percent of drafts were accepted, 1.64 tokens per verify pass (section 10). In BF16 the 4B with MTP does not fit on this card, and that refusal is real: 10.4 GB of weights plus a 4.3 GB reserve exceed the 14.9 GB budget. On the 0.8B, MTP raised short-prompt decode from 169.1 to 182.6 tok/s, left long-prompt decode unchanged and cost prefill (13,220 to 10,197 tok/s).
 
-**3. FP8 FFN batching.** With the FP8 FFN, the 4B's aggregate decode at 1 / 2 / 4 / 8 streams is 32.3 / 63.5 / 115.5 / 159.7 tok/s (per stream 38.0 / 33.2 / 29.2 / 20.3), peaking at 14,882 MiB.
+**3. FP8 FFN batching.** With the FP8 FFN, the 4B's aggregate decode at 1 / 2 / 4 / 8 streams is 32.3 / 63.5 / 115.5 / 159.7 tok/s (per stream 38.0 / 33.2 / 29.2 / 20.3), peaking at 14,882 MiB. The November runs measure the same server differently (section 10.1) and get 197.4 tok/s total at 8 users for the FP8 FFN and 185.4 for BF16, against 159.7 and 149.4 here. The FP8 difference comes with the change of measurement; for BF16 the cause is not established. Compare numbers within one set of runs, not across the two.
 
 **Tried and not kept:**
 
@@ -471,7 +499,8 @@ The row stays `false` in this branch. For the maintainers, here is what the runs
 
 - **For.** Decode is 1.19x faster on the 0.8B and 1.34x on the 4B, as the byte model predicts. Peak VRAM drops 0.3 GB and 2.1 GB, and that headroom is what lets MTP fit on the 4B. Mean KL against BF16 is 0.002. The kernels are bit-identical to the gb10 ones, and coherence matches BF16 everywhere the suite's token budget allows a comparison, except one sampled name check on the 0.8B.
 - **Weaker than it was.** Against the new BF16 default, FP8 prefill is only 1.12x faster on the 4B and level with BF16 on the 0.8B within run-to-run noise, so the case is decode and memory, not prefill.
-- **Not yet covered.** A task-level quality check (perplexity or an eval set, rather than eight prompts), with repeated sampled checks such as the name check. A `compute-sanitizer` pass over a long-prompt prefill, which could not run under WSL 2 (section 10). A W8A8 against W8A16 prefill sweep.
+- **Not yet covered.** A task-level quality check (perplexity or an eval set, rather than eight prompts), with repeated sampled checks such as the name check. A `compute-sanitizer` pass over a long-prompt prefill, which could not run under WSL 2 (section 13). A W8A8 against W8A16 prefill sweep.
+- **Since then.** The November runs measured the FP8 FFN with up to eight users (222 tok/s total at 8 users against 195 for BF16) and its mean KL against BF16 again (0.0029, on 24 prompts). A task-level quality check is still not done.
 
 For reference, the computed ceilings these are read against:
 
@@ -483,20 +512,262 @@ For reference, the computed ceilings these are read against:
 
 Measured decode sits at 73% of the ceiling on the 0.8B and 83 to 85% on the 4B, in both formats. Prefill depends on how close the GEMMs get to the tensor peak (44.1 TFLOPS for BF16, 88.3 for FP8 with FP32 accumulation); the FP8 GEMM reaches about 80% of its peak on its own, and end-to-end prefill also pays for attention, the GDN layers and the LM head.
 
-## 10. Limits and next steps
+## 10. Results with several users (November 12 to 14)
 
-The card runs covered the dynamic-shared-memory prefill (a 3,920-token recall on both models), floor discovery and the launch path, the TMA fallback (every GDN layer resolved a non-TMA state spine, `gated_delta_rule_chunk_delta_h_vfused`), the 16 GB fit, the FP8 kernels and the FP8 route, batches of up to eight streams in BF16 and with the FP8 FFN, and MTP speculative decoding, all on one card and one host. A `compute-sanitizer --tool memcheck` pass over a long-prompt prefill, which I still want before the FP8 row flips because the converted prefill kernels change how shared memory is reached, did not run: under WSL 2 the sanitizer reported the device as unsupported and asked for the Windows WDDM debugger interface to be enabled (`EnableDebuggerInterface.bat`, as an administrator). The serve itself answered all three checks under the sanitizer, but without instrumentation that proves nothing about memory safety. It needs that host setting, or a native Linux host. What they didn't cover: prompts beyond 3,921 tokens and the largest context that serves; the llama.cpp routes on the card (the `curl` list in Appendix A, not run here); and other Ada parts.
+Section 9 measured one request at a time. Real use is often several at once: an agent with parallel tool calls, or a few people on one box. So the second round of runs measured one server set up for eight users, at 1, 2, 4 and 8 users, and screened every optimization on this branch against it. Same card, WSL 2, CUDA 13.3, the 4B unless stated.
 
-The FP8 route covers the dense FFN. On the 4B, the attention projections (0.59 GB) and the GDN projections (about 2.0 GB) aren't touched by it and stay BF16. No mock-backend test covers `load_layers` end to end with the route on yet.
+### 10.1 How I measured
 
-What is left, ranked by expected gain on this card. The gains are estimates from a time budget of the 4B's FP8 prefill and from the decode byte model, not measurements:
+- **Server.** `--max-seq-len 8192 --max-num-seqs 8 --max-batch-size 8 --kv-cache-dtype bf16 --lm-head-dtype bf16 --gpu-memory-utilization 0.93`. C=1 is one user on that same eight-slot server.
+- **Load.** Each user sends the short prompt and gets a fixed-length answer (`min_tokens` equal to `max_tokens`): 256 generated tokens in a row screen, 512 in the final run. The rate is taken over the window when every stream is decoding (from the last stream's first token to the first stream's finish), so prompt reading and the tail don't dilute it.
+- **Row screens.** One setting against a base setting in the same screen, two repetitions each at C=1 and C=8. The base differs between rows (an FP8 FFN serve measured between 190 and 209 tok/s at C=8 across screens), so compare each row with its own base, not rows with each other.
+- **Noise bar: 3 percent.** A gain inside it counts as no gain. An earlier screen used a 43.6 percent bar; that was a bug, caused by mixing two definitions of the rate, and the real run-to-run noise is 3 percent.
+- **Identity.** A row that should not change the output has to match its base token for token, greedy, on 8 test prompts at C=1.
+- **KL.** Mean KL divergence of the top-20 token probabilities against the base arm (0 means identical). The final run's KL is against BF16, and the tables say so. For the 4-bit routes there is also a stricter tool: a sealed panel, token streams built once on the BF16 server and scored teacher-forced, so every position is compared over the full vocabulary instead of stopping at the first divergence. The KL figures in this section are all top-20 KL.
+- **Coherence.** `scripts/test_coherence.py`, about 89 checks. Four fail the same way in every build (name recall, an empty system message, a 5,000-character system message, temperature 0), as section 9 explains; a row may not add a fifth.
+- **Frozen binaries.** Each new build is checked against the previous one with every new row off. The port build matched the sprint-2 build on 4 of 5 setups; the fifth (`--ngram-speculative`) fails to start on both, so it is not a regression.
+- **Calibration.** The card sustains 260 GB/s of memory reads (the spec says 288), and pinned host transfers run at 6.5 GB/s to the device and 6.6 GB/s back.
 
-1. **The GDN projections to FP8 at load** (`in_proj_qkvz` and `out_proj`, about 2.0 GB per decode token on the 4B), with the Ada W8A8 GEMM for their prefill. The FP8 arms exist behind environment switches and use the gb10 kernel today. Estimated: about 95 ms off the 4B's 948 ms time to first token, and a decode ceiling near 58 tok/s together with attention, before MTP.
-2. **The attention projections to FP8**, which needs a W8A8 prefill arm of its own: with FP8 weights and the current W8A16 arm, prefill would get slower. About 30 ms estimated.
-3. **`--lm-head-dtype fp8`.** The flag exists and halves the 4B's 1.27 GB LM-head read, but Atlas's own help warns that it can derail long generations on some models, so it needs a long-generation quality gate first.
-4. **A tensor-core GDN state spine for Ada**, ported from Hopper's `gated_delta_rule_chunk_tc.cu`: about 30 to 40 ms estimated, with a numerics check against the scalar spine.
-5. **Fusing the FP8 activation quantization into SwiGLU and the norm**: about 20 ms estimated.
-6. **MTP bookkeeping**: log the draft acceptance rate, and measure MTP under batching.
+### 10.2 The rule every optimization went through
+
+Every change in this section went through the same seven steps, and a row that skipped one is listed as not finished:
+
+1. **Commit.** One change per commit on this branch.
+2. **Dispatch flag.** A row in `HARDWARE.toml` with an environment override, `false` on every target.
+3. **Execution counter.** The boot line prints the row as `(env)` when it is on, and the path counts or logs that it ran. A flag that is set but never taken is a no-op that looks like a flat result. That is how the device-side MTP accept was caught doing nothing on Ada, and fixed.
+4. **Oracle.** A GPU microtest against a reference: bit-exact, or within a stated ULP bound. Memcheck where it applies.
+5. **Accuracy.** Identity for rows that must not change output; KL and the coherence suite for rows that may.
+6. **A/B.** A row screen against its base, as in 10.1.
+7. **Retain or reject.** A gain beyond the noise bar with identical output or KL within bounds is kept, as an opt-in row. Inside the noise bar, or slower, it is rejected (section 12). A row becomes a default only after more than this: a full ABBA confirm run and a task-level accuracy check, and no November row has had both.
+
+### 10.3 Baselines
+
+Measured on the port build before any row was screened (2026-11-12):
+
+| Setting | C=1 tok/s | C=8 tok/s, total | Notes |
+|---|---|---|---|
+| BF16 | 28.6 | 185.4 | the sprint-2 build measured 28.5 and 185.9, so no regression |
+| FP8 FFN | 37.1 | 197.4 | |
+| FP8 FFN + MTP, 1 draft | 47.9 | 156.8 | 64 percent of drafts accepted, 1.64 tokens per pass; loses to plain FP8 at 8 users |
+| FP8 FFN + MTP, 3 drafts | 26.9 | 59.9 | 34 to 38 percent accepted, measured while downloads were writing to disk |
+
+Sprint 1 measured BF16 at 8 streams as 149.4 tok/s (section 9). The cause of the gap to 185.4 is not established, so I don't compare numbers across the two sets of runs.
+
+### 10.4 The final run
+
+Four servers, each measured at 1, 2, 4 and 8 users, 512 generated tokens per stream, with `mintok` on all four so that the fixed-length requests cost the same on every arm. "Stack" is int4 on all three projection groups (FFN, GDN, attention) plus MTP with 1 draft and the MTP width policy. Total tok/s:
+
+| Users | BF16 | FP8 FFN | FP8 FFN + MTP, 3 drafts | Stack (lossy) | Stack against FP8 FFN |
+|---|---|---|---|---|---|
+| 1 | 29 | 40 | 40 | 98 | 2.45x |
+| 2 | 56 | 77 | 75 | 185 | 2.4x |
+| 4 | 107 | 143 | 117 | 294 | 2.1x |
+| 8 | 195 | 222 | 134 | 381 | 1.7x |
+
+Quality against BF16, on 24 prompts:
+
+| Measure | FP8 FFN | Stack |
+|---|---|---|
+| Mean KL, top-20 | 0.0029 | 0.0337 |
+| Top-1 agreement until first divergence | 47.7 percent (first run) | 14.4 percent |
+| Prompts that never diverge | 6 of 24 | 1 of 24 |
+| Coherence | the 4 known failures | the same 4, none new |
+
+The verdict is PASS, a gain at every user count, and all four arms have only the 4 known coherence failures. The stack is lossy by these measures and stays opt-in. Its accuracy on real tasks was not measured.
+
+Footnote on the first run. An earlier final run the same night gave `mintok` to the stack but not to the three reference arms, and so flattered the stack (380 total at 8 users against 201 for FP8 FFN, 1.9x). With `mintok` the references rose from 185 to 195 (BF16, 8 users), 201 to 222 (FP8, 8 users) and 37 to 40 (FP8, one user), so about 5 to 10 percent of the first run's gain over the references was the benchmark method, not the stack. That run's FAIL verdict came from one flaky coherence check in a reference arm and did not repeat.
+
+### 10.5 Row screens
+
+Each row against its own base in the same screen (10.1), C=1 then C=8 total, in tok/s:
+
+| Row (environment) | Base | C=1 | C=8, total | KL against base | Verdict |
+|---|---|---|---|---|---|
+| `fp8dec`, FP8 decode GEMV (`AVAROK_FFN_FP8_DECODE_GEMV=1`) | FP8 FFN | 36 to 38 (+5.4%) | 190 to 199 (+4.5%) | 0.00000 | kept |
+| `mintok`, device argmax under a `min_tokens` floor (`AVAROK_MIN_TOKENS_GPU_ARGMAX=1`) | FP8 FFN | 36 to 38 (+6.9%) | 190 to 213 (+12.0%) | 0.00000, output identical | kept, opt-in (see below) |
+| `gdnver1`, GDN verify GEMV (`AVAROK_GDN_VERIFY_GEMV=1`) | FP8 FFN + MTP, 1 draft | 51 to 57 (+12.8%) | 164 to 175 (+6.8%) | 0.00034 | kept |
+| `gdnver3`, same with 3 drafts | FP8 FFN + MTP, 3 drafts | 30 to 51 (+68.5%) | 56 to 76 (+35.3%) | 0.00030 | kept |
+| `lmhver`, LM-head verify GEMV (`AVAROK_LM_HEAD_VERIFY_GEMV=1`) | `gdnver1` | 58 to 57 (-0.5%) | 177 to 187 (+5.4%) | 0.00000 | kept |
+| `mtpwidth`, MTP width policy (`AVAROK_MTP_WIDTH_POLICY=1`) | FP8 FFN + MTP, 1 draft | 50 to 49 (-2.0%) | 162 to 186 (+15.3%) | 0.00004 | kept; the first screen failed at -4.5% for one user, fixed in `68ee99532` |
+| `mtpall`, MTP 1 draft + the three rows above | FP8 FFN + MTP, 1 draft | 51 to 56 (+10.8%) | 164 to 196 (+19.5%) | 0.00034 | kept |
+| `devacc2`, device-side MTP accept (`AVAROK_MTP_DEVICE_ACCEPT=1`), after `5837cb599` | the host pipeline | 36 to 39 (+6.8%) | 74 to 127 (+72.8%) | 0.00003 | kept; its base is the slow host pipeline, not the usual one, so the C=8 gain overstates it |
+| `fp8gdn`, FP8 GDN projections (`AVAROK_GDN_FP8_FROM_BF16=1`) | FP8 FFN | 39 to 45 (+16.4%) | 208 to 220 (+5.7%) | 0.00147 | kept |
+| `fp8attn`, FP8 attention projections (`AVAROK_ATTN_FP8_FROM_BF16=1`) | FP8 FFN | 39 to 40 (+3.7%) | 208 to 212 (+2.1%) | 0.00107 | kept |
+| `fp8cov`, both | FP8 FFN | 39 to 50 (+28.0%) | 208 to 230 (+10.9%) | 0.00179 | kept |
+| `fp8covmtp1`, both + MTP 1 draft | FP8 FFN + MTP, 1 draft | 51 to 74 (+44.9%) | 165 to 240 (+45.4%) | 0.00168 | kept |
+| `fp8covtc`, both + tensor-core FFN + `mintok`, no MTP | FP8 FFN | 39 to 49 (+26.8%) | 208 to 290 (+39.5%) | 0.00179 (top-1 agreement 28.1%, 2 of 24 prompts never diverge) | kept; best near-lossless 8-user number, but not like for like (below) |
+| `int4all`, int4 FFN, GDN and attention, no MTP | FP8 FFN | 39 to 64 (+64.7%) | 209 to 314 (+50.4%) | **0.0388** | kept, **lossy** |
+| `int4mtp1`, the same + MTP 1 draft | FP8 FFN + MTP, 1 draft | 53 to 100 (+90.4%) | 169 to 361 (+113.5%) | **0.0401** | kept, **lossy** |
+
+Two of these need a word. `mintok` only acts on a greedy request that has a `min_tokens` floor to reach. Today such a request sends every decode step through the host sampling pipeline (a copy of the logits to the host and a scan per sequence); with the row on, it stays on the device argmax, and the host redoes a step only when the device's pick is an end-of-sequence token. A request without `min_tokens` already takes the device argmax, so it gains nothing. The screens send fixed-length requests, which is exactly the case it fixes. Output matched on the 8 test prompts; the code notes one deliberate difference, the tie-break when the two top logits are exactly equal.
+
+Because of that, any row screen whose row arm includes `mintok` and whose base does not mixes a real gain with the benchmark effect. That is the case for `fp8covtc`: its row arm has `mintok`, its base does not, so its +39.5 percent at 8 users is not like for like. A like-for-like figure is **not measured**. My estimate is about +24 percent; it is an estimate, not a result. `fp8cov` alone, which has no `mintok` in either arm, gave +10.9 percent at 8 users. `mintok` stays an opt-in row like every other November row; this PR flips no default.
+
+### 10.5b Prompt reading
+
+Measured on the FP8 FFN route with FP8 KV, one slot, one run per arm (so these have no repetition behind them):
+
+| Row | Prompt | Time to first token, off to on | Prompt tok/s | KL against off | Verdict |
+|---|---|---|---|---|---|
+| Tensor-core chunked GDN prefill (`AVAROK_GDN_PREFILL_TC=1`) | about 5,349 tokens | 1,262 to 1,097 ms (-13.0%) | about 4,238 to 4,876 (+15%) | 0.00089 (top-1 agreement 54.3%, 10 of 24 prompts never diverge) | kept, opt-in |
+| Block-sparse prefill | 32K tokens | 18,155 to 17,077 ms (-5.9%) | not computed | approximate attention, so not identical by design | off |
+| Fused RMSNorm and FP8 quant | 3,878 / 5,349 / 8,045 tokens | 882 to 885, 1,202 to 1,202, 1,844 to 1,838 ms | no change | 0.00000, 24 of 24 identical | rejected (section 12) |
+
+The tensor-core GDN prefill is the first change since sprint 1 that moves prompt reading. It only changes prefill; decode is untouched. The small numerics change is why it stays opt-in. Its prompt length is not the 3,921 tokens of section 9: the 3,921-token case was not measured with the row on, so 4,876 tok/s must not be read against the sprint-1 4,135 as if the prompts were the same. On this prompt length the row is above the 4,500 tok/s gate and the 4,800 target I had set for prefill. Block-sparse prefill is a real gain at 32K, but its attention is approximate, so it stays off.
+
+### 10.6 The tensor-core FFN kernel
+
+`AVAROK_FFN_FP8_M16_TC=1` runs a native-FP8 dense FFN of 5 to 16 rows (a decode step of 5 to 8 users, or a one-draft verify of up to 16 rows) on a new 16-row tensor-core kernel, `fp8_gemm_ada_m16.cu`, instead of the W8A8 arm. In its microtest (not a serve) it takes a flat 91 to 103 us for M = 1 to 16, against 158 to 166 us for the old batched GEMV at M = 8; a 32-row tile measures 102 us at M = 32 on both 4B shapes. Memcheck reports 0 errors and 445 test rows pass.
+
+In serving it was screened twice, and the two screens don't agree:
+
+| Row | First screen, C=1 / C=8 | Rerun, C=1 / C=8 | KL |
+|---|---|---|---|
+| `tcdec`, plain decode | 37 to 37 / 203 to 232 (+14.6%) | 39 to 39 (-1.8%) / 204 to 211 (+3.4%) | 0.00000 |
+| `tcmtp1`, 1 draft | 50 to 50 / 161 to 174 (+8.4%) | 50 to 50 / 162 to 176 (+8.4%) | 0.00000 |
+| `tcmtp3`, 3 drafts | 37 to 38 / 122 to 127 (+4.2%) | 38 to 26 (-30%) / 121 to 58 (-52%), FAIL | 0.00002 |
+| `tcmtp1all`, with the verify rows | 56 to 56 / 195 to 220 (+12.8%) | 53 to 53 / 186 to 213 (+14.6%) | 0.00001 |
+| `tcmtp3all` | 58 to 59 / 179 to 199 (+10.9%) | 56 to 54 (-3.4%) / 175 to 183 (+4.4%) | 0.00000 |
+| `tc32mtp3`, 32-row kernel | not screened | 38 to 38 / 121 to 125 (+3.4%) | 0.00001 |
+| `tc32mtp3all`, 32-row kernel | not screened | 56 to 54 / 175 to 204 (+16.6%) | 0.00003 |
+
+The `tcmtp3` rerun fell 30 percent for one user, and at one user this kernel isn't even called (one user's step has 1 to 4 rows), so that run was most likely disturbed. I read the gain as positive, between about 3 and 15 percent at 8 users, with the run-to-run spread not resolved. A clean repeat is pending.
+
+### 10.7 Speculative decoding
+
+- Tokens per verify pass on an essay corpus: 1.745 with 1 draft, 2.071 with 2, 2.139 with 3.
+- A round costs 1.29 plain steps, against about 1.2 predicted.
+- The copy drafter keeps output identical and measured +17.0% in its screen. It has had no ABBA confirm run.
+- At 8 users, MTP with the FP8 FFN alone loses to plain decoding (156.8 against 197.4 total). That is why the faster MTP setups add the width policy and the verify rows.
+- A draft-depth sweep on recorded agent traces has not run.
+
+### 10.8 Against llama.cpp
+
+The one comparison with another engine is BF16 on the same card:
+
+| 4B, BF16 | Prefill tok/s | Decode tok/s |
+|---|---|---|
+| Atlas, this branch (section 9, 3,921-token prompt) | 3,684 | 28.6 |
+| llama.cpp, Vulkan backend, measured on this machine on 2026-11-05 | 2,752 to 2,794 | 28.3 |
+| llama.cpp, CUDA backend, quoted from earlier work, not re-measured | 3,378 | 27.4 |
+
+On the 0.8B, llama.cpp's Vulkan backend measured about 11,400 tok/s prefill and 128 to 132 decode, against Atlas's 13,798 and 141.8. These were separate runs on different days, not a controlled A/B, so read them as "the same class", with Atlas ahead on prefill. Decode on the 4B is the same within noise. No quantized llama.cpp (and no other engine at 4 bits) was measured, so this says nothing about the int4 stack against anything else.
+
+### 10.9 Where the time goes now
+
+An nsys profile of both fast setups at 8 streams (35-second windows, CUDA graphs traced node by node, so the profiled speed is not the benchmark speed) found the GPU busy 95.6 percent of the time on the int4 stack and 94.3 percent on `fp8covtc`, with under 5 percent idle between kernels. So there is little host or graph overhead left to remove, and the remaining gains have to come from the kernels. On the int4 stack:
+
+| Kernel | Share of GPU time |
+|---|---|
+| `dense_gemv_bf16_batchm`, a BF16 GEMV | 21% |
+| the three 4-bit GEMVs, `affine4_lane_*` | about 44% together |
+| `gated_delta_rule_decode_f32`, the GDN decode | 13% (285,000 launches of about 15 us) |
+| `paged_decode_attn` | 9% |
+
+About 1.9 million kernels launched in 35 seconds, many of 1 to 7 us. The 21 percent BF16 GEMV is consistent with the BF16 LM head, which reads about 1.27 GB per step against about 1.8 GB for the whole 4-bit body; that is an inference, not a checked attribution.
+
+### 10.10 A compiler bug
+
+The batched FP8 verify GEMV faulted with illegal addresses at 3 to 8 rows. The cause was a CUDA 13.3 `ptxas` miscompile in `fp8_gemv_ada_batchm_7`, not an Atlas indexing error. The fix indexes the activations with a 32-bit word index. Its author's microtests pass (95 and 28 rows), memcheck reports 0 errors, and a scan of 216 PTX files found no other place with the same hazard. The queue step meant to re-verify it end to end did not run (section 12).
+
+### 10.11 Identity gate on the final build
+
+The final build of this branch was compared with the first-PR build (`bin-s2`), every new row off, greedy output, 8 prompts per setup:
+
+| Setup | Result |
+|---|---|
+| Default 4B serve | identical, 8 of 8 prompts |
+| FP8 FFN plus MTP with 1 draft | identical, 8 of 8 |
+| 0.8B | identical, 8 of 8 |
+| 8 users with MTP | single-user pass identical, 8 of 8; the concurrent pass matched 7 of 8 in all three runs against the older build, always the same prompt ("TCP vs UDP") |
+
+For that prompt the single-user output is identical in both builds. In the concurrent pass the old build gives different outputs on different runs, and the final build gives either the single-user output or a variant the old build also produces. I read it as batch-timing noise, not a regression; that is a judgment, not a proof. Two other setups fail to start on the old build too, so they have no identity result: the 4B `--check-kernels` at 55 percent memory use, and the `--ngram-speculative` identity run.
+
+## 11. Opt-in recipes
+
+Both setups below are environment variables on a release build of this branch, on top of the serve flags of section 10.1. Nothing here changes a default. To check that a row is really on, look for it in the boot line marked `(env)`, for example `ffn_fp8_m16_tc=on (env)`.
+
+**(a) Near-lossless: `fp8covtc`.** FP8 for the FFN, GDN and attention projections, the tensor-core FFN kernel and `mintok`, no speculation. Measured: 290 tok/s total at 8 users against 208 for the FP8 FFN alone in the same screen, 49 against 39 for one user, mean KL 0.0018 against the FP8 FFN serve. Only this arm had `mintok`, so the like-for-like gain is not measured (about +24 percent by estimate, not +39.5).
+
+```bash
+AVAROK_DENSE_FP8_FROM_BF16=1 \
+AVAROK_GDN_FP8_FROM_BF16=1 \
+AVAROK_ATTN_FP8_FROM_BF16=1 \
+AVAROK_FFN_FP8_M16_TC=1 \
+AVAROK_MIN_TOKENS_GPU_ARGMAX=1 \
+./target/release/spark serve --model-from-path <Qwen3.5-4B dir> --kernel-target holo-3.1-4b \
+  --max-seq-len 8192 --max-num-seqs 8 --max-batch-size 8 \
+  --kv-cache-dtype bf16 --lm-head-dtype bf16 --gpu-memory-utilization 0.93
+```
+
+**(b) Lossy: the int4 stack.** Int4 for the FFN, GDN and attention projections, MTP with one draft, `mintok` and the MTP width policy. Measured in the fair final run: 381 tok/s total at 8 users and 98 for one user, against 222 and 40 for the FP8 FFN with `mintok`. **Lossy:** mean KL 0.0337 against BF16, top-1 agreement 14.4 percent, 1 of 24 test prompts never diverges, accuracy on real tasks not measured. The FP8 route is not set, so it stays off.
+
+```bash
+AVAROK_MTP_MAX_SEQS=8 \
+AVAROK_DENSE_AFFINE4_FROM_BF16=1 \
+AVAROK_GDN_AFFINE4_FROM_BF16=1 \
+AVAROK_ATTN_AFFINE4_FROM_BF16=1 \
+AVAROK_MIN_TOKENS_GPU_ARGMAX=1 \
+AVAROK_MTP_WIDTH_POLICY=1 \
+./target/release/spark serve --model-from-path <Qwen3.5-4B dir> --kernel-target holo-3.1-4b \
+  --max-seq-len 8192 --max-num-seqs 8 --max-batch-size 8 \
+  --kv-cache-dtype bf16 --lm-head-dtype bf16 --gpu-memory-utilization 0.93 \
+  --speculative --num-drafts 1
+```
+
+**(c) Faster prompt reading, with either setup.** Add this line to the environment of (a) or (b). It speeds up prefill (time to first token -13.0 percent on a prompt of about 5,349 tokens, FP8 FFN route, FP8 KV, one run per arm) and does nothing for decode. It changes numerics slightly (KL 0.00089 against the row off), so it is opt-in. It was measured on its own, not together with the recipes above.
+
+```bash
+AVAROK_GDN_PREFILL_TC=1
+```
+
+**About `mintok`.** Both recipes include `AVAROK_MIN_TOKENS_GPU_ARGMAX=1`. It matters for fixed-length benchmarks and any other greedy request that sets `min_tokens`; for requests without `min_tokens` it changes nothing. Like every November row it stays opt-in: this PR flips no default.
+
+## 12. What did not work, and what is not finished
+
+**Rejected: no gain beyond the noise bar, or a loss.** All of these stay off.
+
+| Change | Result |
+|---|---|
+| CUDA graph topology classes and exec update | flat, inside the noise bar |
+| GDN state written on accept, for speculation | its oracles are bit-exact, but the serve is flat |
+| A graphed MTP propose chain | flat, bit-identical to off |
+| Batched recurrent state, a batched GDN GEMM, attention split-K | inside the noise at short context (C=8: 185 to 181, 185 to 185, 185 to 185) |
+| Fused RMSNorm and FP8 quant in prompt reading | no speed effect: time to first token 882 to 885 ms at 3,878 tokens, 1,202 to 1,202 at 5,349, 1,844 to 1,838 at 8,045; KL 0.00000, 24 of 24 prompts identical |
+| FP8 LM head (`--lm-head-dtype fp8`) | +10.0 percent for one user (38.9 to 42.8 tok/s) but -27.1 percent total at 8 users (208.5 to 152.1); mean KL 0.00067, about 0.6 GB more VRAM, because the head is a runtime FP8 mirror of the BF16 checkpoint. It helps one user and hurts eight, so it is not a default |
+| The "Sharp" chat template (MMLU-Pro pilot, 60 questions, 1 seed, 4B, thinking on) | stock template 53.3 percent, Sharp 38.3, Sharp without its terse instruction 51.7. Sharp against stock: -15.0 points (paired bootstrap 95 percent interval -26.7 to -3.3, McNemar p = 0.035). A small pilot that cannot support an accuracy claim, but it shows no benefit |
+
+**Not finished.**
+
+- **The 27B never ran on this card.** The GGUF file needs about 29.5 GiB once the loader expands it, against about 15 GiB free, and the pre-flight refusal is correct. The route I chose is EXL3 at 3.00 bits per weight; its loader is not written. There is no 27B tok/s number.
+- **The host KV tier stores but does not restore on this model.** In the tier tests the host tier wrote blocks (960 written, and 9 lookups found them) but restored none, because those lanes did not set `AVAROK_SSM_TIER=1` and the 4B is a hybrid model, so every hit lacked a recurrent-state snapshot. The setting is now in both lanes and the reruns are queued. A separate run with the SSM tier on shows a real engine gap: on multi-turn reuse, every user's turns 1 to 3 got 0 cached tokens on prompts of 7,059 to 7,571 tokens, and the log says a prefix hit of 992 tokens had no SSM snapshot at that boundary, so the whole prefix was recomputed. On a hybrid model a prefix-cache hit is only useful if a recurrent-state snapshot exists at the same boundary, and today it often doesn't.
+- **Long prompts fail before the memory runs out.** With BF16 KV, a needle was served and recalled at 31,650 prompt tokens (12.6 s) and the request failed at 95,000 with "Inference cancelled" (HTTP 500). With FP8 KV it recalled at 95,684 tokens (51.9 s) and 159,807 (112.4 s, with 15.0 of 16 GB in use) and failed at 261,632 with the same error. Neither failure has been triaged.
+- **LFM3 does not serve yet.** Its short-convolution kernel is exact in its microtest. The shape check that stopped the model build is fixed (it now compares the table with the checkpoint's padded rows, with unit tests); serving LFM3 on the card has not been run yet.
+- **DFlash at 8 users** failed its screen, because its baseline is the memory refusal it documents. A fit option boots with a 1,024-token context cap, and no speed was measured.
+- **The compiler-bug fix was not re-verified by the queue.** The re-verification step stopped after one second on a missing variable in the lane runner, while the runner still reported "0 failures". The fix rests on its author's microtests and memcheck (section 10.10).
+- **No ABBA confirm runs.** The full-rigor runs took about 70 minutes per arm and were replaced by the row screens. Every number in section 10 is a screen.
+- **Int4 accuracy on real tasks** was not measured, only KL against BF16 and the coherence suite.
+- **Never measured on the GPU on their own:** the fused SwiGLU-quant kernel, the memory rows and the batched QKV.
+- **Targets not reached.** I aimed for 500 tok/s total at 8 users; the best is 381, and that is the lossy stack. For prompt reading the 4,800 tok/s target is met only by the opt-in tensor-core GDN prefill, on a prompt of about 5,349 tokens (section 10.5b); at the 3,921-token prompt of sprint 1 it was not measured.
+
+**Kept off although faster.** Block-sparse prefill cut time to first token at 32K from 18,155 to 17,077 ms (-5.9 percent, one run per arm), but its attention is approximate, so it stays off.
+
+## 13. Limits and next steps
+
+The card runs covered the dynamic-shared-memory prefill (a 3,920-token recall on both models), floor discovery and the launch path, the TMA fallback (every GDN layer resolved a non-TMA state spine, `gated_delta_rule_chunk_delta_h_vfused`), the 16 GB fit, the FP8 kernels and the FP8 route, batches of up to eight streams in BF16 and with the FP8 FFN, and MTP speculative decoding, all on one card and one host. A `compute-sanitizer --tool memcheck` pass over a long-prompt prefill, which I still want before the FP8 row flips because the converted prefill kernels change how shared memory is reached, did not run: under WSL 2 the sanitizer reported the device as unsupported and asked for the Windows WDDM debugger interface to be enabled (`EnableDebuggerInterface.bat`, as an administrator). The serve itself answered all three checks under the sanitizer, but without instrumentation that proves nothing about memory safety. It needs that host setting, or a native Linux host. What they didn't cover: the llama.cpp routes on the card (the `curl` list in Appendix A, not run here) and other Ada parts. Long prompts were measured later (section 12).
+
+The FP8 routes now cover the dense FFN, the GDN projections and the attention projections, each behind its own row; the LM head stays BF16 by default (section 12 has why). No mock-backend test covers `load_layers` end to end with the routes on yet.
+
+What is left. The profile in section 10.9 says the GPU is already about 95 percent busy at 8 users, so the remaining speed is in the kernels, not in the host:
+
+1. **The BF16 GEMV at 21 percent of GPU time** on the int4 stack, most likely the BF16 LM head. An FP8 head helps one user and hurts eight today (section 12), so this needs a batched head kernel, not just the flag.
+2. **The 4-bit GEMVs, about 44 percent together.** They are the bulk of the stack's time.
+3. **The GDN decode kernel, 13 percent**, launched about 285,000 times in 35 seconds at about 15 us each.
+4. **The tensor-core FFN kernel:** a clean repeat of the screens, so the gain has one number instead of "about 3 to 15 percent".
+5. **Reruns.** Queued: the host KV tier lanes with `AVAROK_SSM_TIER=1`. Not yet queued: the compiler-bug re-verification, repeated runs and a 3,921-token run of the tensor-core GDN prefill (it has one run per arm), and a like-for-like screen of `fp8covtc` with `mintok` in both arms.
+6. **Correctness before speed:** triage the long-prompt failures at 95,000 (BF16 KV) and 261,632 tokens (FP8 KV), fix the hybrid prefix-cache snapshot gap, serve LFM3 on the card (its shape check is fixed, section 12), and run a task-level accuracy check for the int4 stack.
+7. **The 27B through EXL3 at 3.00 bits per weight.** Not started beyond the choice of route.
+8. **A matched quantized comparison** with llama.cpp, so the int4 stack can be judged against something other than Atlas itself.
 
 Two smaller fixes surfaced on the way. The Qwen3.5 dense loader prints an "FP8 prefill GEMM" line for the GDN projections and the attention prefill prints "W8A16" whatever the weights are, which misled the first write-up of these results. And the pre-load decode-ring fit still sizes against the BF16 checkpoint on the FP8-from-BF16 route, as the post-load audit did before this branch's fix.
 
@@ -528,7 +799,7 @@ Start with the probe. It defaults to `--hw ada` when `kernels/ada` exists:
 PATH=$CUDA_HOME/bin:$PATH python3 scripts/check_arch_portability.py --arch sm_89 -j 2
 ```
 
-You should see `hw=ada arch=sm_89: 192 unique compiles, 192 pass, 0 fail in nvcc, 0 fail in ptxas` and exit 0. Point it at the gb10 tree with `--hw gb10` to see the walls: 534 unique compiles and 60 ptxas failures, exit 1.
+You should see `hw=ada arch=sm_89: 223 unique compiles, 223 pass, 0 fail in nvcc, 0 fail in ptxas` and exit 0. Point it at the gb10 tree with `--hw gb10` to see the walls: 534 unique compiles and 60 ptxas failures, exit 1.
 
 Then the strict PTX gate, which also runs a self-test with a negative fixture (`known_bad_post_hopper.cu`, which has to fail on `sm_89`). Every kernel should compile with zero failures and zero rejected entry functions:
 
@@ -624,53 +895,10 @@ curl -si localhost:8888/completion -d '{"prompt":"x","mirostat":2}' | head -12  
 
 Also check whether the first generated token carries logprobs. If the scheduler returns none for it, `completion_probabilities` keeps the slot with a `null` logprob.
 
+The opt-in setups measured in section 10 are in section 11, as copy-paste environment lines.
+
 ## Appendix B: the change set
 
-The work is these 27 commits on top of `main`, oldest first, followed by this guide and the commit that links it.
-
-Ada target:
-
-- `core: raise launches to a kernel's exported dynamic-smem floor`
-- `plugin: register ada as an architecture class`
-- `kernels: add the ada (sm_89) target as a gb10 symlink mirror`
-- `tests: hold kernels/ada to the inherited-target rules`
-- `gate: register a negative fixture for sm_89`
-- `kernels(ada): keep the prefill attention tiles in dynamic shared memory`
-- `kernels(ada): compile the TMA state spine only for sm_90 and later`
-- `docs: describe the ada target and re-measure the static smem ceiling`
-
-16 GB fit:
-
-- `spark-model: do not build the NVFP4 dense-FFN fallback under a BF16 overlay`
-- `spark-model: add the SSM snapshot memory budget (pure sizing)`
-- `spark-server: cap the decode ring and Marconi slots by memory in preflight`
-
-Portability probe:
-
-- `scripts: add check_arch_portability.py, a compile-only arch probe`
-
-llama.cpp API:
-
-- `server: llama.cpp error envelope; guard its routes behind auth and fault latch`
-- `server: accept llama.cpp /tokenize and /detokenize shapes`
-- `server: add llama.cpp /apply-template, /props, /embedding; /health says ok`
-- `server: parse llama.cpp /completion requests; refuse what Atlas cannot do`
-- `server: add POST /completion, llama.cpp's native completion route`
-- `docs: llama.cpp server compatibility table`
-
-FP8 path:
-
-- `kernels/ada: add register-dequant FP8 decode GEMVs for sm_89`
-- `kernels/ada: add a pipelined W8A8 FP8 prefill GEMM for sm_89`
-- `spark-model: add a CPU reference for the block-scaled FP8 kernels`
-- `spark-model: take the sm_89 FP8 GEMV and GEMM handles in the dense FFN`
-- `spark-model: quantize a BF16 dense FFN to block-scaled FP8 at load`
-- `spark-model: add the sm_89 FP8 GPU oracle and timing example`
-- `kernels/ada: declare the FP8 drop-ins and the BF16 -> FP8 row`
-
-Ada serving:
-
-- `kernels/ada: default the BF16 dense-FFN prefill to cuBLASLt`
-- `spark-server: credit the FP8 FFN route's freed bytes in the audit`
+As of `cf655f62e`, this branch has 230 commits above upstream `main` (`git rev-list --count d82294561..HEAD`). `docs/porting/consumer-gpu-status.md` lists them lane by lane, with the measured results for each lane. The first 27 are the sprint-1 change set that sections 3 to 9 describe (25 code and test commits for the Ada target, the 16 GB fit, the portability probe, the llama.cpp API, the FP8 path and Ada serving, then this guide and the commit that links it); the rest are later work, including the November work of sections 10 to 12.
 
 The target's reference entry is in [`docs/HARDWARE.md`](../HARDWARE.md#the-ada-sm_89-target), and [`docs/porting/amd-strix-halo-scale.md`](amd-strix-halo-scale.md) covers the AMD port.

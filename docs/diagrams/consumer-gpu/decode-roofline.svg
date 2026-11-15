@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 900" width="1200" height="900" font-family="Inter, ui-sans-serif, system-ui, Segoe UI, Helvetica, Arial, sans-serif" role="img" aria-labelledby="t d">
   <title id="t">Single-stream decode ceiling at 288 GB/s</title>
-  <desc id="d">A log-log plot of the decode ceiling, tokens per second equals 288 GB/s divided by the weight bytes read per token. The 0.8B model reads 1.50 GB per token in BF16, a ceiling of 191 tokens per second, and 1.24 GB with its FFN in FP8, a ceiling of 232. The 4B model reads 8.41 GB in BF16, a ceiling of 34.2, and 6.15 GB with an FP8 FFN, a ceiling of 46.9. Projected points for FP8 attention and GDN projections reach 4.84 GB and 59.5 on the 4B, and 4.21 GB and 68.5 with an FP8 LM head. The circles are ceilings computed from model shapes, without KV cache and recurrent state traffic. Diamonds below them are single-stream decode measured on an RTX 4060 Ti 16 GB, median of five runs: 141.8 and 169.1 tokens per second for the 0.8B in BF16 and with an FP8 FFN (73 to 74% of the ceiling, a 1.19x gain), and 28.6 and 38.4 for the 4B (82 to 84%, 1.34x).</desc>
+  <desc id="d">A log-log plot of the decode ceiling, tokens per second equals 288 GB/s divided by the weight bytes read per token. The 0.8B model reads 1.50 GB per token in BF16, a ceiling of 191 tokens per second, and 1.24 GB with its FFN in FP8, a ceiling of 232. The 4B model reads 8.41 GB in BF16, a ceiling of 34.2, and 6.15 GB with an FP8 FFN, a ceiling of 46.9. Hollow circles mark computed ceilings for rows beyond the sprint-1 measurements: FP8 attention and GDN projections reach 4.84 GB and 59.5 on the 4B, and 4.21 GB and 68.5 with an FP8 LM head. The November runs measured both on the eight-slot server: with FP8 attention and GDN projections one user decodes at 50 tokens per second (a diamond under the 59.5 point), and the FP8 LM head gave plus 10 percent for one user and minus 27 percent total at eight users. The circles are ceilings computed from model shapes, without KV cache and recurrent state traffic. Diamonds below them are single-stream decode measured on an RTX 4060 Ti 16 GB, median of five runs: 141.8 and 169.1 tokens per second for the 0.8B in BF16 and with an FP8 FFN (73 to 74% of the ceiling, a 1.19x gain), and 28.6 and 38.4 for the 4B (82 to 84%, 1.34x).</desc>
 
   <rect width="1200" height="900" fill="#0F1216"/>
 
@@ -77,8 +77,13 @@
     <text x="899" y="448" fill="#12B981" text-anchor="end">38.4</text>
   </g>
 
+  <!-- measured in November (fp8cov, one user on the eight-slot server): same x as point 6, y from the same log scale -->
+  <line x1="842.2" y1="396.8" x2="842.2" y2="403" stroke="#12B981" stroke-width="1.5" stroke-dasharray="2 3"/>
+  <rect x="836.2" y="404.4" width="12" height="12" fill="#12B981" stroke="#0F1216" stroke-width="1.5" transform="rotate(45 842.2 410.4)"/>
+  <text x="857" y="415" font-size="11.5" font-weight="650" fill="#12B981">50</text>
+
   <!-- in-plot key, lower left (empty region under the line) -->
-  <rect x="180" y="330" width="420" height="186" rx="4" fill="#0F1216" stroke="#2E353F"/>
+  <rect x="180" y="330" width="470" height="186" rx="4" fill="#0F1216" stroke="#2E353F"/>
   <g font-size="11.5">
     <text x="196" y="352" fill="#C9CCD4" font-weight="650">0.8B (hidden 1024, 24 layers)</text>
     <text x="196" y="372" fill="#BE9DF8">1</text><text x="212" y="372" fill="#C9CCD4">BF16 weights: 1.50 GB, ceiling 191 tok/s</text>
@@ -87,10 +92,10 @@
     <text x="196" y="434" fill="#C9CCD4" font-weight="650">4B (hidden 2560, 32 layers)</text>
     <text x="196" y="454" fill="#BE9DF8">4</text><text x="212" y="454" fill="#C9CCD4">BF16 weights: 8.41 GB, ceiling 34.2 tok/s</text>
     <text x="196" y="472" fill="#12B981">5</text><text x="212" y="472" fill="#C9CCD4">FP8 FFN: 6.15 GB, ceiling 46.9 (1.37x)</text>
-    <text x="196" y="490" fill="#12B981">6</text><text x="212" y="490" fill="#82868F">+ FP8 attention and GDN: 4.84 GB, 59.5</text>
-    <text x="196" y="508" fill="#12B981">7</text><text x="212" y="508" fill="#82868F">+ FP8 LM head: 4.21 GB, 68.5</text>
+    <text x="196" y="490" fill="#12B981">6</text><text x="212" y="490" fill="#82868F">+ FP8 attention and GDN: 4.84 GB, 59.5; measured 50</text>
+    <text x="196" y="508" fill="#12B981">7</text><text x="212" y="508" fill="#82868F">+ FP8 LM head: 4.21 GB, 68.5; measured +10% (1 user), -27% (8 users)</text>
   </g>
-  <text x="1050" y="134" font-size="11" fill="#82868F" text-anchor="end">filled: this work; hollow: next steps, not built</text>
+  <text x="1050" y="134" font-size="11" fill="#82868F" text-anchor="end">filled: sprint 1; hollow: computed ceilings of later rows (6 and 7 were measured in November, see the key)</text>
   <text x="1050" y="152" font-size="11" fill="#82868F" text-anchor="end">diamonds: measured on an RTX 4060 Ti 16 GB</text>
 
   <!-- ===== bytes table ===== -->
@@ -150,4 +155,5 @@
   <text x="40" y="828" font-size="11.5" fill="#82868F">Real decode lands below the line: the KV cache, the recurrent GDN state (about 51 MiB per sequence on the 4B, read and written each step),</text>
   <text x="40" y="846" font-size="11.5" fill="#82868F">activations and launch gaps all cost time, and no kernel reaches the full 288 GB/s. The ratio between two points is the more reliable number.</text>
   <text x="40" y="870" font-size="11.5" fill="#82868F">Measured: single-stream decode on a 25-token prompt, median of five, RTX 4060 Ti 16 GB. Each model keeps its fraction of the ceiling in both formats (1.19x and 1.34x measured).</text>
+  <text x="40" y="888" font-size="11.5" fill="#82868F">The diamond labeled 50 is one user on the November eight-slot server (FP8 FFN, GDN and attention), not this median of five: guide sections 10 and 12.</text>
 </svg>
