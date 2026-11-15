@@ -2,7 +2,7 @@
 // Design after LMCache lmcache/v1/cache_engine.py (store after the GPU cache insert, retrieve before the prefill) and lmcache/integration/vllm/vllm_v1_adapter.py (the hit counted in whole blocks, contiguous with the GPU match) (commit 3aefae1, Apache-2.0); no code copied.
 // Technique described in arXiv:2609.04852 (KVMem). Independent implementation from the published description; no source copied from kvmem/kvmem-llama.cpp (that repository carries no license).
 
-//! Responsibility: the host-RAM KV tier's model glue (port plan 3.7.5, lane L26b): the hooks
+//! Responsibility: the host-RAM KV tier's model glue (lane L26b): the hooks
 //! that copy newly cached prefix blocks into lane L26a's [`KvHostTier`] and the prefetch that
 //! restores a prompt's host-held blocks into the radix tree before the normal prefix lookup.
 //!
@@ -69,7 +69,7 @@ use crate::traits::SequenceState;
 use restore::Env;
 use state::Live;
 
-/// What one prefetch did (contract 3.7.5).
+/// What one prefetch did.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TierPrefetch {
     pub outcome: PrefetchOutcome,

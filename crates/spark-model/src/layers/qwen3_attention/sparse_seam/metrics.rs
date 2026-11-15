@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Responsibility: the seam's `/metrics` series (`atlas_sparse_*`, master plan
-//! section 4.2) and the counters behind them.
+//! Responsibility: the seam's `/metrics` series (`atlas_sparse_*`) and the counters
+//! behind them.
 //!
 //! The counters are host-side: a plan is counted when a hook runs, which is
 //! every eager step and every capture, not every graph replay. Selected pages

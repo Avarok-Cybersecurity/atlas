@@ -9,7 +9,7 @@
 //! M = 4 for the 4B decode shapes, each call reading a distinct weight copy (more than 64 MB in rotation,
 //! twice the RTX 4060 Ti's 32 MB L2), rotated A B B A against `fp8_gemv_ada` on the same shapes.
 //!
-//! The acceptance bar (master plan L17a): the gate+up M = 1 row at or above 85% of `fp8_gemv_ada`'s GB/s
+//! The acceptance bar: the gate+up M = 1 row at or above 85% of `fp8_gemv_ada`'s GB/s
 //! in the same run. A miss is reported as `BAR MISS`; it does not fail the correctness gates.
 
 use anyhow::{Context, Result};

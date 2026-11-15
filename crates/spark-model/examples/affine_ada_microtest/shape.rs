@@ -19,7 +19,7 @@ use crate::util::{
 };
 
 pub const ROWS: [usize; 6] = [1, 2, 4, 5, 8, 16];
-/// The group the plan's shape list runs at; groups 32 and 128 repeat the gates on a few shapes.
+/// The group the shape list runs at; groups 32 and 128 repeat the gates on a few shapes.
 pub const GROUP: u16 = 64;
 
 fn opts(group: u16) -> W4Opts {

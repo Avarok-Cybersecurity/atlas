@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! Responsibility: the consumer verify-slot fit (port lane L24) reproduced on
-//! the 27B's real state sizes and the 4060 Ti's budget (report 77 section
-//! 12.1), and the pin that an unpublished cap leaves every target's slot count
+//! the 27B's real state sizes and the 4060 Ti's budget, and the pin that an unpublished cap leaves every target's slot count
 //! exactly as before. The process-wide cell is never written here: a test that
 //! published it would change `mtp_state_slots` for every other test.
 
@@ -47,7 +46,7 @@ fn the_27b_state_blob_is_the_logged_151_5_mib() {
     assert_eq!(verify_bytes(1, 3), 643_301_376);
 }
 
-/// The 4060 Ti budget of 77 section 12.1: 15,660 MiB free (the guide's
+/// The 4060 Ti budget: 15,660 MiB free (the guide's
 /// measured figure), the UD-IQ4_XS file minus the 2.37 GiB BF16 embedding the
 /// `embed_host_offload` row moves to the host, the FP8 KV floor (4,096 tokens
 /// x 32 KiB a token over 16 attention layers) and the Qwen MTP headroom at
@@ -137,8 +136,8 @@ fn the_budget_saturates_instead_of_wrapping() {
     assert_eq!(verify_budget_bytes(100, 10, 10, 10, 10), 30);
 }
 
-/// The pin the plan asks for (B8): with no cap published, which is every
-/// target but ada, the slot count is the pre-sprint pure core, and the kill
+/// The pin: with no cap published, which is every
+/// target but ada, the slot count is the unchanged pure core, and the kill
 /// switch ignores a cap.
 #[test]
 fn an_unpublished_cap_leaves_every_slot_count_as_before() {

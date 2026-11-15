@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Port-sprint additions to the admission tests (master plan L05).
+//! Additions to the admission tests.
 //!
 //! 1. The long-context regression vectors of the ExLlamaV3 token-budget fix
 //!    (117,760-token cache, 91,400-token prompt, 65,536 tokens requested; the

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // T-AT: Atlas-native. The prompt formats are the plain instruction styles these datasets are normally used with;
-// the corpus design follows 80-routing.md section 8 (GSM8K, MMLU, MMLU-Pro, MATH L4-5, HumanEval, MBPP, GPQA).
+// the corpus covers GSM8K, MMLU, MMLU-Pro, MATH L4-5, HumanEval, MBPP and GPQA.
 //! Responsibility: step 1 of the routing gate (B0): build about 600 labeled prompts from local dataset files, collect
 //! the 4B's greedy replies from a running Atlas server (`collect`), grade them (`grade`) and summarize (`summary`).
 //!

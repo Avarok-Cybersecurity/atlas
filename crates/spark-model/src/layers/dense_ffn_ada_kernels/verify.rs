@@ -37,7 +37,7 @@
 //! ([`super::Fp8FfnKernels::resolve`] calls [`prime`]) and read back here, a
 //! cache hit, per call. Nothing is looked up with the row off.
 //!
-//! # API (master plan 3.7.3)
+//! # API
 //!
 //! `forward_km_fp8(layer, x, m, out, ctx, stream) -> Result<bool>`: `x` is
 //! `[m, hidden]` BF16, `out` is `[m, hidden]` BF16 (callers pass

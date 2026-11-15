@@ -2,7 +2,7 @@
 // Algorithm: RetroInfer, arXiv 2505.02922 (VLDB 2026).
 
 //! Responsibility: one RetroInfer selection for the K+1 rows of a speculative
-//! verify (master plan L33, report 74 R9), so draft and verify attend through
+//! verify (L33), so draft and verify attend through
 //! the same approximate model: each row selects on its own query, the
 //! retrieval zone is the union of the rows' retrieval clusters, the estimation
 //! zone is the first row's ranked clusters that the union did not take, and

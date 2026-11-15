@@ -2,7 +2,7 @@
 // Algorithm after Quest (page min/max upper-bound selection) and the page-sparse prototype in
 // arczhi/llama-tierkv scripts-5060ti/proto/proto_page_sparse.cu (MIT, Copyright (c) 2023-2026 The
 // ggml authors; file has no header of its own). Independent CPU reference for Atlas's kernels; the
-// formula is the one written in the port sprint's report 77: score_p = sum_c max(q_c * kmin_c,
+// formula is the Quest page upper bound: score_p = sum_c max(q_c * kmin_c,
 // q_c * kmax_c). No prototype source was read.
 
 //! Responsibility: the CPU reference of the Quest kernels (port lane L30),

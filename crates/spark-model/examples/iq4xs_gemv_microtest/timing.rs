@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Responsibility: the keep-packed GGUF microtest's DRAM-bound timing rows (port lane L19): GB/s of
+//! Responsibility: the keep-packed GGUF microtest's DRAM-bound timing rows: GB/s of
 //! packed weight bytes for the decode GEMV at M = 1 and M = 8 on the 4B FFN shapes, for IQ4_XS, Q4_K and
 //! Q6_K, the served block shape against the warp-per-row A/B arm, each call reading a distinct weight
 //! copy (more than 64 MB in rotation, twice the RTX 4060 Ti's 32 MB L2), rotated A B B A.
 //!
-//! The bars (report 77, section 12.5, rows R2 and R3): the block shape at M = 1 reaches 85% of the card's
+//! The bars: the block shape at M = 1 reaches 85% of the card's
 //! 288 GB/s, and its M = 8 call takes at most 25% longer than its M = 1 call (one weight pass for eight
 //! rows). A miss prints `BAR MISS`; it does not fail the correctness gates.
 

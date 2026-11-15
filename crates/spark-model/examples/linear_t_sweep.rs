@@ -3,7 +3,7 @@
 //! projection shapes, DRAM-true, and report where each route stops sharing its
 //! weight pass.
 //!
-//! The question it answers (queue row Q7): is C=8 MTP bandwidth- or
+//! The question it answers: is C=8 MTP bandwidth- or
 //! compute-limited on Ada? A route that reads its weights once for T rows keeps
 //! `T1_lin_x = T * median(T=1) / median(T)` near T; one that is compute- or
 //! launch-limited falls away. The output also names, per T, the fastest route

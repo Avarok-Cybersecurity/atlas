@@ -308,8 +308,8 @@ fn grammar_and_no_drafts_rows_never_touch_the_state() {
 
 #[test]
 fn either_per_request_switch_takes_a_sequence_out_of_speculation() {
-    // Lane L05's request: `seq.disable_mtp || seq.port.no_drafts`. The first
-    // survives a swap-in today, the second once lane L27's hunk lands.
+    // The per-request switch: `seq.disable_mtp || seq.port.no_drafts`. The first
+    // survives a swap-in today, the second does not yet.
     let (mut a, _rx) = crate::scheduler::test_support::test_seq(vec![1], 8, None, 4);
     assert!(!super::no_drafts(&a));
     a.disable_mtp = true;

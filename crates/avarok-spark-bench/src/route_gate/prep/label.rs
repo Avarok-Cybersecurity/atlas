@@ -161,9 +161,7 @@ pub fn cmd_summary(labels: &std::path::Path) -> Result<i32> {
 
 /// `hints`: where each dataset comes from (prints only, never downloads).
 pub fn cmd_hints() -> Result<i32> {
-    println!(
-        "Datasets are read from local files only; downloading needs owner approval (master plan section 6)."
-    );
+    println!("Datasets are read from local files only; this tool never downloads them.");
     println!(
         "Place each under --data-dir as <source>.jsonl|.jsonl.gz|.json|.csv, or a <source>/ directory."
     );

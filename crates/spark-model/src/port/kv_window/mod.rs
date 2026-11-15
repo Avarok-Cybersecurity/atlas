@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Design after the TierKV pager of arczhi/llama-tierkv (kv-paging-design.md; MIT, Copyright (c) 2023-2026 The ggml authors): a VRAM desk of head sinks, a recent window and recalled pages over a host-RAM shelf for a logical context far past what VRAM holds, taken from the port plan's description (report 77 section 2.5); no code copied or fetched.
+// Design after the TierKV pager of arczhi/llama-tierkv (kv-paging-design.md; MIT, Copyright (c) 2023-2026 The ggml authors): a VRAM desk of head sinks, a recent window and recalled pages over a host-RAM shelf for a logical context far past what VRAM holds, taken from a written description of the design; no code copied or fetched.
 // Design after LMCache (https://github.com/LMCache/LMCache, commit 3aefae1, Apache-2.0) for the host-side copy rules (see `fetch.rs`); no code copied.
 
-//! Responsibility: the host-resident window desk (port plan lane L36, row `kv_window_desk`,
+//! Responsibility: the host-resident window desk (lane L36, row `kv_window_desk`,
 //! APPROXIMATE attention, never on by default on any target): its serve flags and environment
 //! knobs, its registration with the sparse-attention seam, the decode block hook, and its
 //! `/metrics` series.
@@ -28,7 +28,7 @@
 //! # Not verified here
 //! The mock tests prove the bookkeeping (identity below the window, demote then fetch restores
 //! every byte, positions and references preserved). Recall quality needs a page scorer (lane
-//! L30's Quest bounds, through `selector::PageScorer`) and the GPU pass on the 27B (plan Q14).
+//! L30's Quest bounds, through `selector::PageScorer`) and the GPU pass on the 27B (not yet run).
 
 pub mod desk;
 pub mod fetch;

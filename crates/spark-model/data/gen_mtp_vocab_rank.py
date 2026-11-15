@@ -4,12 +4,12 @@
 
 The MTP draft head under `mtp_vocab_rank = "freq"` holds the LM-head rows of
 the most frequent tokens instead of the first N token ids. This script builds
-the ranking Atlas ships as v1 (owner decision D5): the top ids of Cinference's
+the ranking Atlas ships as v1: the top ids of Cinference's
 `ranking.train.counts.i64` (Apache-2.0 data; token counts by NInfer authors,
 source corpus not published), ordered exactly as Cinference's
 `select_shortlist` orders them, with the tokenizer's added tokens forced in.
 
-It also runs the CPU tokenizer identity check the plan requires before the
+It also runs the CPU tokenizer identity check that must pass before the
 table may be used with a Qwen3.5 checkpoint: the counts were made with the
 Qwen3.6-27B tokenizer, so every (id, token) pair the three Cinference
 manifests print must decode to the same text through the local Qwen3.5

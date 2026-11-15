@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Responsibility: the per-request logprob confidence summary (master plan
-//! L05, "B1") and the three `/metrics` series it feeds.
+//! Responsibility: the per-request logprob confidence summary
+//! and the three `/metrics` series it feeds.
 //!
 //! After the first K generated tokens of a request (default 32,
 //! `AVAROK_CONF_SUMMARY_K`) the summary reports

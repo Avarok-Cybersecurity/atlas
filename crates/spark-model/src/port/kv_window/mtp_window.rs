@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Design after the TierKV pager of arczhi/llama-tierkv (kv-paging-design.md; MIT, Copyright (c) 2023-2026 The ggml authors): MTP draft contexts are kept out of paging (the draft cache must stay aligned with the target), taken from the port plan's description (report 77 section 2.5); no code copied or fetched.
+// Design after the TierKV pager of arczhi/llama-tierkv (kv-paging-design.md; MIT, Copyright (c) 2023-2026 The ggml authors): MTP draft contexts are kept out of paging (the draft cache must stay aligned with the target), taken from a written description of the design; no code copied or fetched.
 
-//! Responsibility: the windowed MTP draft KV of the window desk (port plan lane L36).
+//! Responsibility: the windowed MTP draft KV of the window desk (lane L36).
 //!
 //! The desk never pages the MTP drafter's own KV (its block table is separate from the
 //! target's, and TierKV's experience is that paging draft contexts misaligns them with the
@@ -10,7 +10,7 @@
 //! `MtpHead::set_kv_window` process default (`layers/mtp_head/window.rs`), set here before the
 //! model is built. Drafts only steer speculation (the target verifies every token), so the bound
 //! changes acceptance, never the output distribution. With the desk off nothing is set and the
-//! drafter reads its whole KV, byte-identical to the pre-sprint path.
+//! drafter reads its whole KV, byte-identical to the path without this module.
 
 /// The drafter window for a desk that is `on` with a recent window of `window_tokens`
 /// positions: `None` (no bound, the identity) when the desk is off or the window is zero.

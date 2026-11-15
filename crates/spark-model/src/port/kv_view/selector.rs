@@ -2,7 +2,7 @@
 // Technique described in arXiv:2609.04852 (KVMem). Independent implementation from the published description; no source copied from kvmem/kvmem-llama.cpp (that repository carries no license).
 
 //! Responsibility: the bounded view's `KvSelector` (port lane L32), the one
-//! object the sparse-attention seam (lane L29, master plan 3.7.6) calls, and
+//! object the sparse-attention seam (lane L29) calls, and
 //! the entry points the scheduler reaches through `ModelPortExt`.
 //!
 //! Seam hooks:

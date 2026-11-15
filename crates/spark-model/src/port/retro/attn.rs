@@ -319,7 +319,7 @@ pub fn estimation_attention_rows(
     launch_attention(gpu, &k, &a, stream)
 }
 
-/// Contract entry (master plan L34): the single-pass union softmax of report 74 R5 for ONE
+/// Contract entry: the single-pass union softmax for ONE
 /// query row `q` (`[num_q_heads][256]` BF16) over the exact buffer minus its last
 /// `exact.row_trim` entries and the estimation zone of `zones`, writing BF16
 /// `[num_q_heads][256]` to `out` and, when given, F32 `[num_q_heads]` LSE.

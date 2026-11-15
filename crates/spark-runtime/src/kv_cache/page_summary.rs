@@ -5,10 +5,10 @@
 // summary is keyed by the physical KV block that leads each page (graph-safe: every index a kernel
 // needs comes from the device block table), with a per-head completeness mask, a content
 // fingerprint and a slot lock, by Atlas contributors. No prototype source was read; the formula is
-// taken from the port sprint's report 77 (section 5.2, BR-4).
+// taken from a written description of the method.
 
-//! Responsibility: the device layout of the Quest page summaries (port lane
-//! L30, row `attn_page_sparse`, off by default on every target): per attention
+//! Responsibility: the device layout of the Quest page summaries (row
+//! `attn_page_sparse`, off by default on every target): per attention
 //! layer, per page-leading physical KV block and per KV head, the channel-wise
 //! minimum and maximum of the page's keys as f16 (`kmin`, `kmax`), plus a
 //! 32-byte meta record. Pure layout arithmetic and the one allocation; the

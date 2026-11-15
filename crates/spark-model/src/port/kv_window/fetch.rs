@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Design after LMCache lmcache/v1/distributed/l1_manager/base.py (commit 3aefae1, Apache-2.0): a copy is published only after it completed, and the memory it touches is kept until then; no code copied.
 
-//! Responsibility: the window desk's copies (port plan lane L36). [`HostSide`] is the desk's
+//! Responsibility: the window desk's copies (lane L36). [`HostSide`] is the desk's
 //! host half: a slab arena of registered host memory and a page API
 //! (`spark_runtime::kv_host_tier::pages`) on a copy stream of its own. [`Pending`] is one copy
 //! in flight, and [`settle`] applies the finished ones to a sequence's block table:

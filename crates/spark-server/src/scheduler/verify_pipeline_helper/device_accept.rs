@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Responsibility: the device-side speculative acceptance hook of the verify pick (lane L12, row
+//! Responsibility: the device-side speculative acceptance hook of the verify pick (row
 //! `mtp_device_accept`): plan the span, hand it to the model's device path, walk the results.
 //!
 //! `verify_pick_all_with_pipeline` calls [`try_device_picks`] FIRST, before its greedy shortcuts and
@@ -9,7 +9,7 @@
 //!
 //! * greedy rows: the same picks as the slow tail, bit for bit (same edits, same f32 operations, the
 //!   same first-index-wins argmax), including a span that crosses `</think>`;
-//! * sampled rows: the same distribution per position (decision D10), one-hot draft acceptance with the
+//! * sampled rows: the same distribution per position, one-hot draft acceptance with the
 //!   residual when a draft is passed, a direct sample otherwise; the RNG is keyed by (seed or a fresh
 //!   key, absolute position), not the host sampler's stream.
 //!

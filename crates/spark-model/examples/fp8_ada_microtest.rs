@@ -19,7 +19,7 @@
 //!    output's term magnitude.
 //!  * **The extent**: every output carries 64 sentinel bytes either side.
 //!
-//! TIMINGS (L07 retrofit, master plan queue row Q1): every row is DRAM-true.
+//! TIMINGS: every row is DRAM-true.
 //! The weights rotate through byte-identical copies totaling more than twice
 //! the L2 (the old rows re-read one copy 20 times, which is how the 4B down
 //! projection showed 927 GB/s on a 288 GB/s card), the two kernels are timed

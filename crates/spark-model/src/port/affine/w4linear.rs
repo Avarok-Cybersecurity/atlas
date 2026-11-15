@@ -8,8 +8,7 @@
 // the group sums and slice partials are carved from the caller's `W4Scratch` workspace; `decode_pair`
 // recognises an affine partner through `W4Linear::as_any`.
 
-//! Responsibility: [`AffineLinear`], the affine 4-bit implementation of `W4Linear` (contract 3.7.2 of the
-//! port plan), and [`release`], which frees an affine `W4Box`'s device buffers once.
+//! Responsibility: [`AffineLinear`], the affine 4-bit implementation of `W4Linear`, and [`release`], which frees an affine `W4Box`'s device buffers once.
 //!
 //! Decode (rows 1..=16): one group-sums launch, then the GEMV (`kernels::gemv`). The scratch it uses is
 //! `W4Scratch::ws` only (`ws_bytes` checked): the sums at offset 0, the slice partials after them. The

@@ -8,7 +8,7 @@
 //! as a CPU forward that returns the final-RMSNorm hidden state of every token.
 //!
 //! What a readout is: the final RMSNorm of the base model applied to the output of layer 12 at the last token of each
-//! role block (80-routing.md section 3.1). Only `model.language_model.*` tensors are read; the vision tower and every
+//! role block. Only `model.language_model.*` tensors are read; the vision tower and every
 //! head tensor are never touched. Weights stay BF16 in memory; activations are f32, with an optional `bf16` mode that
 //! rounds at the operator boundaries a bf16 torch model would.
 

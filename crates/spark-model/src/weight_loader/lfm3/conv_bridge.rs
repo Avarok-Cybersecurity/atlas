@@ -5,7 +5,7 @@
 //! (`crate::port::lfm3_conv`): gather the checkpoint tensors of a `conv` layer
 //! into `Lfm3ConvWeights`, build the layer with `Lfm3ConvLayer::new`, and
 //! install the optional E4M3 decode copies of its two projections with
-//! `set_fp8_proj` (master plan 3.7.7 and L38's `init.rs`).
+//! `set_fp8_proj` (see L38's `init.rs`).
 //!
 //! What the layer expects of its weights, and what this file supplies:
 //!

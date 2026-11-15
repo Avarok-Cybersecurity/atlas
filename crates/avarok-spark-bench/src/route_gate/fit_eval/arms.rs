@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// T-AT: Atlas-native. Evaluation design after 80-routing.md section 5 item 4 (the B0 gate) and section 8.
+// T-AT: Atlas-native. The evaluation design is Atlas's own (the B0 gate and the corpus choice).
 //! Responsibility: the arms that are not a plain logistic head: the dataset prior, the nested best-single-candidate
 //! selection over the Stage-1 probabilities, the neutral fill for unscored rows, and the within-source AUROC.
 

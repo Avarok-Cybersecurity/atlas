@@ -8,7 +8,7 @@
 //! It selects everything: every decode and verify plan is a `View` whose
 //! table is a copy of the real block table and lengths, made on the stream
 //! into selector-owned fixed device buffers, exactly the shape a real
-//! selector uses (graph rule, master plan 3.7.6). Every paged prefill chunk
+//! selector uses (the graph rule). Every paged prefill chunk
 //! gets a `PrefillPlan::View` of the full table. Greedy output must therefore
 //! be byte-identical to a serve without it; any difference is a seam bug. It
 //! also exercises the registration, the KV-budget charge and the metrics.

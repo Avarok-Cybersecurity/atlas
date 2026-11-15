@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// T-AT: Atlas-native. Evaluation design after 80-routing.md section 5 item 4 (the B0 gate) and section 8.
+// T-AT: Atlas-native. The evaluation design is Atlas's own (the B0 gate and the corpus choice).
 //! Responsibility: the whole study on in-memory data: the arms, their AUROCs and intervals, calibration, and the gate
 //! (AUROC >= 0.70 and >= the length/keyword baseline + 0.05, with the verdict and caveats).
 

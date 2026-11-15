@@ -6,7 +6,7 @@
 //! counters), the per-stream upload buffers for host block tables (chunk-0
 //! prefill only), and which K pool each attention layer was first seen with.
 //!
-//! Graph rule (master plan 3.7.6): every pointer handed to a captured kernel
+//! Graph rule: every pointer handed to a captured kernel
 //! is fixed for the arena's lifetime. The View arena's regions sit at constant
 //! offsets, independent of the step's shape, so two captures of the same shape
 //! always see the same table and lengths. Allocation happens only on an eager

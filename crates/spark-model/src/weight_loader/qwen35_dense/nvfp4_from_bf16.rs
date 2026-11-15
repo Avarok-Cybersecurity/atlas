@@ -13,11 +13,11 @@
 //! **WHY.** Single-stream decode streams every weight once per token. NVFP4 is 4.5 bits a weight, so the
 //! 4B's FFN (4.53 GB of BF16) becomes 1.27 GB, 3.26 GB less per token and in VRAM, against FP8's 2.26 GB.
 //! Whether the software-dequant GEMV reaches the bandwidth that makes that a win on Ada (no FP4 datapath)
-//! is the never-measured question of queue row Q2. An expectation, not a measurement.
+//! has never been measured. An expectation, not a measurement.
 //!
 //! **THE PRICE.** E2M1 with per-16 E4M3 scales is a numerics change well below FP8, so the route is a target
 //! declaration, false on every target, with `AVAROK_DENSE_NVFP4_FROM_BF16=0|1` as the A/B. The flip receipt
-//! (master plan 3.5): Q2 at >= 85% of the measured bandwidth, then the D7 gate (NLL delta <= 2x the FP8
+//! needs the GEMV at >= 85% of the measured bandwidth, then a quality gate (NLL delta <= 2x the FP8
 //! route's, full-vocab KL, coherence, recall).
 //!
 //! **PRECEDENCE.** The FP8 FFN route wins, then the affine 4-bit FFN route; this route serves the FFN only

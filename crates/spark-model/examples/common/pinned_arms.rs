@@ -8,7 +8,7 @@
 //! (`benchmarks/benchmark_pin_memory.py`) runs each arm in its own process,
 //! because the first pin in a process pays for context setup and a second pin
 //! of the same range is served from pages the first already faulted in. The
-//! measured question is LMCache brief P (report 73): does pinning tens of GiB
+//! measured question (as in LMCache): does pinning tens of GiB
 //! block startup, and does WSL2 refuse it?
 //!
 //! The four arms: `alloc_once` (one `cuMemAllocHost`), `alloc_chunked` (64 MiB
@@ -29,7 +29,7 @@ unsafe extern "C" {
     fn cuMemHostUnregister(p: *mut c_void) -> i32;
 }
 
-/// LMCache pins 64 MB chunks (`LazyMemoryAllocator`, report 73).
+/// LMCache pins 64 MB chunks (`LazyMemoryAllocator`).
 pub const CHUNK_BYTES: usize = 64 << 20;
 const GIB: f64 = 1_073_741_824.0;
 

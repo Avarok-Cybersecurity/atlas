@@ -2,7 +2,7 @@
 
 //! Responsibility: the process-wide record of what the 4-bit (`W4Linear`) routes installed at load, and its
 //! `/metrics` text: `atlas_w4_weight_bytes{role,format}`, `atlas_w4_selfcheck_failures_total` and
-//! `atlas_affine4_prefill_int8_fallbacks_total` (lane L23b's namespace, master plan 4.2).
+//! `atlas_affine4_prefill_int8_fallbacks_total` (lane L23b's namespace).
 //!
 //! The loader (`weight_loader/qwen35_dense/w4_install.rs`) [`publish`]es one entry per layer type at the end
 //! of every load, replacing the previous load's entries (a model swap reloads). With every 4-bit row off,

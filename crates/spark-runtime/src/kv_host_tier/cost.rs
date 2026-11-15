@@ -7,8 +7,8 @@
 //! estimate "restore these blocks" against "recompute these tokens". A model may gate only after
 //! it proved itself on held-out data: every observation is predicted BEFORE it updates the model,
 //! and over the last N such predictions the p95 relative error must be within the bound and no
-//! pair of materially different observations may be predicted in reverse order (port plan
-//! review C6). Until both models pass, the gate always restores: a restore replays exact bytes,
+//! pair of materially different observations may be predicted in reverse order.
+//! Until both models pass, the gate always restores: a restore replays exact bytes,
 //! so restoring without proof is never wrong, only possibly slower.
 
 use std::collections::VecDeque;

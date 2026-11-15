@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Design after the TierKV pager of arczhi/llama-tierkv (kv-paging-design.md; MIT, Copyright (c) 2023-2026 The ggml authors): pages leave the desk in batches and come back as deltas of the selected set, taken from the port plan's description (report 77 section 2.5); no code copied or fetched.
+// Design after the TierKV pager of arczhi/llama-tierkv (kv-paging-design.md; MIT, Copyright (c) 2023-2026 The ggml authors): pages leave the desk in batches and come back as deltas of the selected set, taken from a written description of the design; no code copied or fetched.
 
 //! Responsibility: the window desk's two moves for one sequence (lane L36), split from
 //! `desk.rs` for the 500-line cap: [`Desk::demote`] (a batch of resident blocks to host pages,

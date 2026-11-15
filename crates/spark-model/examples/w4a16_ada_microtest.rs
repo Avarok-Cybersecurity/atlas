@@ -2,7 +2,7 @@
 //! The never-measured Ada number: Atlas's NVFP4 W4A16 GEMV family against
 //! `fp8_gemv_ada`, DRAM-true, M = 1..32, with row-invariance proved bit for bit.
 //!
-//! Master plan queue row Q2 and brief B4 step 0 (report 75): if NVFP4 reaches
+//! The question: if NVFP4 reaches
 //! at least 85% of the measured ceiling at M=1 and stays a single weight pass at
 //! M=8, the Marlin port is limited to GPTQ/AWQ compatibility and M = 16 to 64.
 //! This example prints that receipt; it never flips a row.
@@ -59,7 +59,7 @@ use sweep_alloc::{AllocCfg, Io, alloc_io, alloc_weights, free_io, free_weights};
 use sweep_report::{Family, Row, SHAPES, weight_bytes};
 use sweep_routes::{Ctx, Handles, Route, SCALE2, make_arm};
 
-/// The receipt bars of brief B4 step 0.
+/// The receipt bars.
 const PCT_BAR: f64 = 85.0;
 /// "Single weight pass at M=8": the time at M=8 may exceed the time at M=1 by at
 /// most this factor (one pass is about 1.0; two passes are 2.0).

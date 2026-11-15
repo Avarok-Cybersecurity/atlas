@@ -12,11 +12,11 @@
 //!
 //! **ON FAILURE** the serve does not abort. The verdict is logged, `atlas_w4_selfcheck_failures_total`
 //! counts it, and every weight of that layer type is wrapped in [`PerRow`], whose `decode(rows)` runs
-//! `rows` single-row decodes: verify keeps the M = 1 bits, at the M = 1 cost per row (the "existing
-//! per-row path" of the brief). The other layer types keep their batched decode.
+//! `rows` single-row decodes: verify keeps the M = 1 bits, at the M = 1 cost per row (the existing
+//! per-row path). The other layer types keep their batched decode.
 //!
-//! This is TensorFold's "row-invariant verify + load-time real-weight self-check" (report 72, bench 9),
-//! implemented for every 4-bit format (the module name keeps the brief's). Lane L23b.
+//! This is TensorFold's "row-invariant verify + load-time real-weight self-check",
+//! implemented for every 4-bit format (the module name is the original, affine-only one). Lane L23b.
 
 use std::collections::HashMap;
 

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Portions derived from Cinference (https://github.com/satellitedown/cinference, commit 383e5db), itself derived from NInfer by Neroued and contributors (https://github.com/Neroued/ninfer), Apache License 2.0. Source: src/core/decode_graph.cpp:62-80 (`DecodeGraphDefinition::topology_signature`). Changes: translated from C++ to Rust over a backend-neutral `(node type, function)` list instead of a live `cudaGraph_t`, and the node count is folded into the one returned hash rather than returned beside it, by Atlas contributors.
 
-//! Responsibility: the types of the port sprint's `GpuBackend` extensions (contract 3.7.1 of
-//! the port plan) and the backend-neutral bodies the trait's defaulted methods delegate to.
+//! Responsibility: the types of the `GpuBackend` extensions
+//! and the backend-neutral bodies the trait's defaulted methods delegate to.
 //!
 //! Four groups, each defaulted so the mock and the Metal backend compile unchanged:
 //!

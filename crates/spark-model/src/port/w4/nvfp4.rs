@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! Responsibility: [`Nvfp4Linear`], the existing NVFP4 weight (`QuantizedWeight`: packed E2M1 `[N, K/2]`,
-//! E4M3 per-16 scales `[N, K/16]`, one F32 tensor scale) and its `w4a16_*` kernels, wrapped as a `W4Linear`
-//! (port plan contract 3.7.2), so the 4-bit dispatch of lanes L21/L22 can serve it like any other packed
+//! E4M3 per-16 scales `[N, K/16]`, one F32 tensor scale) and its `w4a16_*` kernels, wrapped as a `W4Linear`,
+//! so the 4-bit dispatch of lanes L21/L22 can serve it like any other packed
 //! format. Lane L23b. No new kernel and no new weight format: every launch below is an existing launcher in
 //! `layers/ops` over a kernel every CUDA target already compiles (`kernels/<hw>/common/w4a16_gemv.cu`,
 //! `w4a16_gemm.cu`, `dequant_nvfp4_bf16.cu`; on Ada these are the gb10 files, software E2M1 dequant).

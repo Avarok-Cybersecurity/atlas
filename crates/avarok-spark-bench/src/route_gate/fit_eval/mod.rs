@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// T-AT: Atlas-native. Evaluation design after 80-routing.md section 5 item 4 (the B0 gate) and section 8.
+// T-AT: Atlas-native. Evaluation design written for Atlas (the B0 gate of the routing study); no upstream code.
 //! Responsibility: step 4 of the routing gate (B0): does a routing signal predict "the 4B fails this prompt"?
 //!
 //! Target: `y = true` when the 4B FAILED the prompt. Every score is oriented "higher = more likely to fail". The
@@ -20,10 +20,10 @@
 //! | `raw_cv_best` | 1 - p of the single candidate with the best TRAIN AUROC in each fold (nested selection) |
 //! | `logreg_stage1_p` | logistic head on the 56 candidate probabilities |
 //!
-//! The plan names `p(qwen3.8-27b)` as the raw arm, but the release has no such candidate (11 named models, 45
+//! The study design names `p(qwen3.8-27b)` as the raw arm, but the release has no such candidate (11 named models, 45
 //! withheld), so the proxies above stand in; this is reported, not hidden.
 //!
-//! Gate (master plan L04): `AUROC(gate arm) >= 0.70` AND `>= AUROC(len_kw) + 0.05`. Nothing is believed until the
+//! Gate: `AUROC(gate arm) >= 0.70` AND `>= AUROC(len_kw) + 0.05`. Nothing is believed until the
 //! signal-head oracle (`route_gate goldens`) has passed; without its report the verdict is UNVERIFIED.
 
 mod arms;

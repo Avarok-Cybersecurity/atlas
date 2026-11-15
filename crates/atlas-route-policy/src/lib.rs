@@ -10,7 +10,7 @@
 //! 4. [`choose`] with the predictions (computed over E only), prices, residency, queues, the last target and the
 //!    event.
 //!
-//! The rules (master plan lane L40, routing report section 4.3):
+//! The rules:
 //! - the target is a member of E by construction; an empty E is [`Decision::Unavailable`] (the front answers 503),
 //!   never a fallback outside E;
 //! - local-only (policy flag, privileged class, `x-atlas-locality: local`) gives E = local backends only;

@@ -6,7 +6,7 @@
 //! Method credit: the per-T linear sweep and its `T1_lin_x` scaling metric come
 //! from Cinference (`bench/README.md`, "Linear Op benchmark", and
 //! `docs/maintainer/linear-tuning.md` sections 1 to 4). The shapes are the
-//! Qwen3.5-4B projections, N x K as listed in the master plan (L07).
+//! Qwen3.5-4B projections, N x K as listed in `SHAPES`.
 #![allow(dead_code)]
 
 use serde_json::{Value, json};
@@ -48,7 +48,7 @@ pub struct Shape {
 
 /// The 4B shapes (hidden 2560): FFN gate or up, FFN down, the GDN input
 /// projection, the 4096-wide output projection, and the LM head. The role names
-/// are the plan's; only N and K matter to the kernels.
+/// are labels only; only N and K matter to the kernels.
 pub const SHAPES: [Shape; 5] = [
     Shape {
         id: "ffn_up",

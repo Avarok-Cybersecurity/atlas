@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! GPU oracle and timings for the keep-packed GGUF 4-bit route on Ada (port lane L19, row
+//! GPU oracle and timings for the keep-packed GGUF 4-bit route on Ada (row
 //! `gguf_native_iq4`): the IQ4 / Q5_K dequant (`kernels/ada/common/dequant_iq4xs_q5k_bf16_ada.cu`), the
 //! q8_1 activation quantizers (`kquant_q8_1_ada.cu`), the decode GEMVs (`kquant_mmvq_q4_ada.cu`) and the
 //! MMQ prefill GEMMs (`iq4_xs_mmq_ada.cu`), through `port::gguf_q4` and its `W4Linear` face.

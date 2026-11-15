@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Responsibility: the window desk's host memory (port plan lane L36): a [`HostArena`] of
+//! Responsibility: the window desk's host memory: a [`HostArena`] of
 //! fixed-size page slots carved from large slabs, each slab one anonymous mapping page-locked
 //! through `GpuBackend::host_register` (so page copies are truly asynchronous DMA).
 //!

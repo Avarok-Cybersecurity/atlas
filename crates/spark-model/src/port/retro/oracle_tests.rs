@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! Responsibility: tests of the RetroInfer CPU oracle: build invariants and
-//! determinism, the three synthetic attention patterns of master plan L33
+//! determinism, the three synthetic attention patterns of L33
 //! (Gaussian clusters recalled near 1, uniform keys failing on purpose, a
 //! sink-dominated pattern), and the degenerate cases where the merged formula
 //! must equal dense softmax exactly.

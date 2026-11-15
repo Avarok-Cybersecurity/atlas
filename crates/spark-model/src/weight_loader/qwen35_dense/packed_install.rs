@@ -21,7 +21,7 @@
 //! already applied, L19's R1), but the GDN layer takes a PAIR (`in_proj_qkvz`, `out_proj`) and `out_proj`
 //! stays BF16 (its column reorder is not a row copy), so a GDN layer with packed inputs is refused by name
 //! ([`gdn_packed_refusal`]); the row is not usable on a file whose GDN projections are packed until that
-//! pair has an install (open item, queue row Q14). GPTQ and EXL3 checkpoints are not readable into the
+//! pair has an install (an open item). GPTQ and EXL3 checkpoints are not readable into the
 //! store today (the store has no I32 dtype, so a GPTQ `qweight` cannot enter it; the EXL3 reader has no
 //! store arm), so `port::marlin::from_gptq` / `from_awq` have no install site here (lane L18b's R3, open).
 

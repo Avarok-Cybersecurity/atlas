@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Responsibility: the packed-weight linear contract of the port sprint
-//! (`port/consumer-opt`, master plan 3.7.2): [`W4Format`], [`W4Scratch`], the
+//! Responsibility: the packed-weight linear contract of the port work
+//! (`port/consumer-opt`): [`W4Format`], [`W4Scratch`], the
 //! [`W4Linear`] trait, [`W4Box`] and [`W4Opts`].
 //!
 //! # Who is on which side

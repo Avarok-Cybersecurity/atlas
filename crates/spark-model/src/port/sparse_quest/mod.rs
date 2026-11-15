@@ -7,7 +7,7 @@
 
 //! Responsibility: Quest page-sparse decode attention (port lane L30), the
 //! `attn_page_sparse` row. APPROXIMATE: off by default on every target and
-//! never default on (master plan 3.1, 3.5).
+//! never default on.
 //!
 //! # What it does
 //! Long-context decode on the 4060 Ti is bound by reading the whole KV history

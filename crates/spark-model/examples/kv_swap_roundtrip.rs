@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! GPU receipt for the `kv_batched_swap` row (lane L25): the sequence swap image saved and
+//! GPU receipt for the `kv_batched_swap` row: the sequence swap image saved and
 //! restored on the real driver through the per-region path (row off: `read_block` /
 //! `write_block` per block per layer, blocking SSM copies, exactly what
 //! `model/trait_impl/sequence/state_io.rs` does with the row off) and through the batched path
@@ -20,7 +20,7 @@
 //! * G2 the batched restore of the per-region file, and the per-region restore of the batched
 //!   file, reproduce every KV and SSM byte;
 //! * G3 (largest length, null sink, save and restore) batched >= 5x the per-region path and
-//!   >= 8 GB/s, the row's flip receipt (master plan 3.5). G3 is reported, never waived.
+//!   >= 8 GB/s, the row's flip receipt. G3 is reported, never waived.
 //!
 //! Exit code 1 on any FAIL.
 

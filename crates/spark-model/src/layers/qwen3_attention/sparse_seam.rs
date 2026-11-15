@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Responsibility: the sparse-attention seam (port sprint lane L29), the one
+//! Responsibility: the sparse-attention seam (lane L29), the one
 //! place an approximate KV selector plugs into the Qwen3 full-attention decode,
 //! verify and prefill paths: Quest page selection (L30), the bounded view
 //! (L31/L32), RetroInfer (L33/L34), the host window desk (L36) and the tree
-//! verify device plan (W02). The contract is master plan section 3.7.6; the
-//! names below are binding, and every addition to it is marked "extension".
+//! verify device plan. The names below are the seam's contract and are
+//! binding, and every addition to it is marked "extension".
 //!
 //! # Off is byte-identical
 //! Every call site is one `if let Some(sel) = sparse_seam::active()` branch in

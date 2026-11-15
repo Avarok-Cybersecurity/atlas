@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Algorithm after Quest (page min/max upper-bound selection). The bound is the formula written in the
-// port sprint's report 77 (section 5.2 and BR-4): score_p = sum_c max(q_c * kmin_c, q_c * kmax_c). The
+// Algorithm after Quest (page min/max upper-bound selection). The bound is the Quest page upper
+// bound: score_p = sum_c max(q_c * kmin_c, q_c * kmax_c). The
 // cross-layer combination (a per-layer z-score over the candidate pages, averaged over layers) is
 // Atlas's own. No prototype source was read.
 

@@ -25,7 +25,7 @@ use crate::port::w4_stats::W4Role;
 /// The `why` of a route whose row is off (L23a's and the NVFP4 table's literal).
 pub const ROW_OFF: &str = "row off";
 
-/// The per-load facts one route's decision table reads (lane L23a's request R1).
+/// The per-load facts one route's decision table reads (lane L23a).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PlanInputs {
     /// The checkpoint is plain BF16 (`Nvfp4Variant::Bf16Raw`).
@@ -69,7 +69,7 @@ impl RoutePlan {
     }
 }
 
-/// Where an install runs (lane L23a's request R1).
+/// Where an install runs (lane L23a).
 #[derive(Clone, Copy)]
 pub struct LayerCtx<'a> {
     pub gpu: &'a dyn GpuBackend,

@@ -2,7 +2,7 @@
 // Algorithm after Quest (page min/max upper-bound selection) and the page-sparse prototype in
 // arczhi/llama-tierkv scripts-5060ti/proto/proto_page_sparse.cu (MIT, Copyright (c) 2023-2026 The
 // ggml authors; file has no header of its own). Rewritten for Atlas; the selection budget (sink
-// pages, top-k pages, recent window, minimum context) follows the port sprint's report 77 BR-4.
+// pages, top-k pages, recent window, minimum context) takes the defaults set below.
 
 //! Responsibility: the Quest selector's configuration (port lane L30): the
 //! four serve flags (`--attn-sparse-topk-pages`, `--attn-sparse-min-ctx`,

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! Responsibility: the `atlas_retro_*` `/metrics` series of the RetroInfer
-//! port (master plan 4.2: the namespace is L33's), kept in this module's
+//! port (the namespace is L33's), kept in this module's
 //! atomics and formatted here (spark-model is below spark-server, so it writes
 //! its own `# HELP` / `# TYPE` lines in the `port_metrics` style). With the
 //! row off every series renders as zero, and the labeled families render their

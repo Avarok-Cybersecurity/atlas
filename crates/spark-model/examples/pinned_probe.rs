@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Pinned host memory and host-device copy rates under WSL2: queue row Q5, the
-//! viability gate for the host-RAM KV tier (L25, L26a, L26b, L27).
+//! Pinned host memory and host-device copy rates under WSL2: the
+//! viability gate for the host-RAM KV tier.
 //!
 //! Two measurements.
 //!  1. Pinning. 1, 4 and 16 GiB pinned as one call and as 64 MiB chunks, by
@@ -10,8 +10,8 @@
 //!     may refuse large pins; a refusal is a result (`rc` and its name), and a size
 //!     that does not fit `MemAvailable` with a 4 GiB margin is skipped, not tried.
 //!  2. Copy rates. H2D and D2H GB/s from pinned memory at 32 KiB x N descriptors
-//!     for each method: one big copy, an N-call loop, and `copy_batch_*` (L08's
-//!     `cuMemcpyBatchAsync`, only when `supports_copy_batch()`), plus pinned
+//!     for each method: one big copy, an N-call loop, and `copy_batch_*` (the
+//!     `cuMemcpyBatchAsync` wrapper, only when `supports_copy_batch()`), plus pinned
 //!     against registered against pageable sources. Rotated rounds, CUDA events.
 //!
 //! Gates (planted controls, see `common/planted.rs`): every method round-trips
@@ -52,7 +52,7 @@ use planted::{Gates, Verdict};
 const DESC: usize = 32 << 10;
 /// Descriptor counts: 2 MiB, 8 MiB, 32 MiB and 128 MiB per call.
 const COUNTS: [usize; 4] = [64, 256, 1024, 4096];
-/// The host-tier viability bar of the plan: the row stays off below this.
+/// The host-tier viability bar: the row stays off below this.
 const VIABLE_GBS: f64 = 6.0;
 const GIB: f64 = 1_073_741_824.0;
 

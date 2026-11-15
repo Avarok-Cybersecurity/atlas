@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! Responsibility: the host tier's counters and gauges and their Prometheus text
-//! (`atlas_kv_tier_*`, port plan 4.2; the `_disk_*` names are lane L27's). Each tier owns one
+//! (`atlas_kv_tier_*`; the `_disk_*` names belong to the disk tier). Each tier owns one
 //! [`TierStats`]; the tier created for serving registers it, and [`render_prometheus`] (called
-//! from `api/port_metrics.rs` by lane L26b's line) prints it, or zeros when no tier exists, so
+//! from `api/port_metrics.rs`) prints it, or zeros when no tier exists, so
 //! the series are present on every target.
 
 use std::fmt::Write as _;

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Responsibility: the packed-weight (`W4Linear`, master plan contract 3.7.2)
+//! Responsibility: the packed-weight (`W4Linear` contract)
 //! arm of the GDN layer's two large projections, `in_proj_qkvz`
 //! (`[qkvz, hidden]`) and `out_proj` (`[hidden, value]`): installing the pair
 //! on a layer, reserving its scratch, and the one dispatch every projection
@@ -128,7 +128,7 @@ impl Qwen3SsmLayer {
     /// Install the packed `in_proj_qkvz` (`[ssm_qkvz_size, hidden]`, rows in
     /// the layer's QKVZ order: sequential `[Q|K|V|Z]` on a sequential layer,
     /// the checkpoint's interleaved order otherwise) and `out_proj`
-    /// (`[hidden, value_dim]`), contract 3.7.2. From here every projection
+    /// (`[hidden, value_dim]`). From here every projection
     /// site of the layer serves them (module docs).
     ///
     /// Returns the bytes of the BF16 slots the layer held and no longer
@@ -260,8 +260,8 @@ impl Qwen3SsmLayer {
         Ok(p.spec.device_bytes())
     }
 
-    /// The name the loader's GDN arm calls (`w4_install.rs`, lane L23b, plan
-    /// 3.7.2 request R3): reserve the shared W4 scratch before any capture.
+    /// The name the loader's GDN arm calls (`w4_install.rs`, lane L23b): reserve
+    /// the shared W4 scratch before any capture.
     /// Exactly [`Self::prepare_w4_proj`]; the bytes are of no use to the loader.
     pub fn finalize_w4_proj_load(&self, gpu: &dyn GpuBackend, stream: u64) -> Result<()> {
         self.prepare_w4_proj(gpu, stream).map(|_| ())

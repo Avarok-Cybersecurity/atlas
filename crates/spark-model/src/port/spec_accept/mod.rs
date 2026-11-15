@@ -10,7 +10,7 @@
 //!
 //! * Greedy rows: bit-identical to the host pick (same edits in the same f32 operations, the same
 //!   first-index-wins argmax).
-//! * Sampled rows: distribution-exact (decision D10): accept a one-hot draft with probability p(d),
+//! * Sampled rows: distribution-exact: accept a one-hot draft with probability p(d),
 //!   else sample the residual; with no draft, sample p. The RNG is keyed by (request seed or a fresh
 //!   key, absolute position, purpose), so it differs from the host sampler's `StdRng` stream.
 //!

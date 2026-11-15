@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Design after the TierKV pager of arczhi/llama-tierkv (kv-paging-design.md; MIT, Copyright (c) 2023-2026 The ggml authors): a VRAM desk of head sinks, a recent window and recalled pages, every other page on a host-RAM shelf, deltas only on recall, taken from the port plan's description (report 77 section 2.5); no code copied or fetched.
+// Design after the TierKV pager of arczhi/llama-tierkv (kv-paging-design.md; MIT, Copyright (c) 2023-2026 The ggml authors): a VRAM desk of head sinks, a recent window and recalled pages, every other page on a host-RAM shelf, deltas only on recall, taken from a written description of the design; no code copied or fetched.
 
-//! Responsibility: the window desk's per-sequence state machine (port plan lane L36). One
+//! Responsibility: the window desk's per-sequence state machine (lane L36). One
 //! [`Desk`] serves one KV cache; [`Desk::maintain`] runs from the decode block hook
 //! (`model/block_mgmt.rs::ensure_blocks_through_decode`) before every decode or verify forward,
 //! on the host, and:

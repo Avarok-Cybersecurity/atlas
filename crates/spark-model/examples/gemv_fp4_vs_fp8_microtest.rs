@@ -14,7 +14,7 @@
 //! are launched via the same KernelLaunch path the production wrappers use
 //! (identical grid/block/arg order).
 //!
-//! L07 retrofit (master plan queue row Q1): the weights ROTATE through distinct
+//! Timings: the weights ROTATE through distinct
 //! copies totaling more than twice the L2 (`common/cold_l2.rs`), so every call
 //! is a DRAM read, and the two arms are timed in rotated, interleaved order
 //! (five rounds, 3 warm-ups, 20 calls per sample, CUDA events). The run refuses

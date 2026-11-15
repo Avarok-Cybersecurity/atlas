@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! GPU oracle + timings for the window desk (port plan lane L36, row `kv_window_desk`).
+//! GPU oracle + timings for the window desk (row `kv_window_desk`).
 //!
 //! WHAT THIS PINS (each row prints PASS/FAIL; any FAIL exits non-zero):
 //!  * **The view kernel** `kv_window_view_compact` (`kernels/ada/common/kv_page_fetch_ada.cu`)
@@ -13,7 +13,7 @@
 //!    fresh blocks, every byte equal.
 //!
 //! TIMINGS: the demote (D2H) and fetch (H2D) GB/s of that round trip, device time from the page
-//! API's timing events, for the receipt R9 of report 77 section 12.5 (restore at least 10 GB/s).
+//! API's timing events; the restore bar is at least 10 GB/s.
 //!
 //! Run on the Ada card, in a build of the ada target:
 //!     AVAROK_TARGET_HW=ada cargo run --release -p spark-model \

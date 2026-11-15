@@ -2,7 +2,7 @@
 
 //! Responsibility: the root of the keep-packed GGUF 4-bit route (port lane L19, row `gguf_native_iq4`):
 //! IQ4_XS, Q4_K and Q6_K weights served from the GGUF file's raw super-blocks on Ada (sm_89) through the
-//! `W4Linear` contract (port plan 3.7.2).
+//! `W4Linear` contract.
 //!
 //! The kernels are thin entry points over the llama.cpp (MIT) quant engine Atlas already vendors in
 //! `kernels/gb10/qwen3.6-27b/nvfp4/q4k_vendor/` (included, never edited): the q8_1 activation quantizers

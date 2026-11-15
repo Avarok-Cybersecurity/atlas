@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Algorithm: RetroInfer, arXiv 2505.02922 (VLDB 2026).
 
-//! Responsibility: the RetroInfer `KvSelector` of the sparse-attention seam
-//! (master plan 3.7.6), registered by `api::apply` when the `retro_attn` row
-//! or `--retro-shadow` is on.
+//! Responsibility: the RetroInfer `KvSelector` of the sparse-attention seam,
+//! registered by `api::apply` when the `retro_attn` row or `--retro-shadow` is
+//! on.
 //!
 //! Per decode or verify layer call: `on_kv_written` detects a new step, matches
 //! the rows to live sequences and readies each served sequence's index for the

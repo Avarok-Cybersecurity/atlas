@@ -3,7 +3,7 @@
 //! Responsibility: the seam's layer glue. Each function gathers what one call
 //! site of `Qwen3AttentionLayer` already has in hand (the KV pools, the
 //! attention metadata, the host lengths and block tables), builds the
-//! `SeamCtx` and `SeqBatch` of master plan 3.7.6, and calls the selector's
+//! `SeamCtx` and `SeqBatch` of the seam contract, and calls the selector's
 //! hooks. A site calls these only inside its `if let Some(sel) =
 //! sparse_seam::active()` branch; a `None` result means "the seam does not
 //! serve this layer, run the dense code", so a layer the seam cannot serve

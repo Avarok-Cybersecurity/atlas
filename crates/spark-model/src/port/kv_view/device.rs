@@ -7,8 +7,8 @@
 //! One allocation, made outside any graph capture at the first prefill call
 //! after the model build, holds:
 //! - the view table arena and the view lengths every decode and verify plan
-//!   returns (the same pointers on every step: the graph rule of master plan
-//!   3.7.6). The kernel rebuilds them from the real tables on every launch,
+//!   returns (the same pointers on every step: the graph rule).
+//!   The kernel rebuilds them from the real tables on every launch,
 //!   so a replayed graph always reads this step's view;
 //! - the descriptor table and its page pool, written by the host only between
 //!   steps, on the decode stream, so a replay never reads a torn entry;

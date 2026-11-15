@@ -4,7 +4,7 @@
 //! Responsibility: the host tier's configuration: the contract's [`TierConfig`] (what the serve
 //! flags set), the [`TierOptions`] tunables (watermarks, in-flight cap, lease TTL, lazy-store and
 //! cost-model knobs, all with their documented defaults) and the process-wide setters that
-//! `port_apply` feeds (port plan 3.4: crates below spark-model never read rows; the glue resolves
+//! `port_apply` feeds (crates below spark-model never read rows; the glue resolves
 //! the `kv_host_tier` row and passes plain values down through here).
 
 use std::fmt;
@@ -100,7 +100,7 @@ pub const DEFAULT_MIN_TOKENS: u32 = 256;
 /// Restore only when the copy is estimated under this fraction of the recompute.
 pub const DEFAULT_RESTORE_GATE_RATIO: f32 = 0.5;
 
-/// The tier's serve-time configuration (contract 3.7.5).
+/// The tier's serve-time configuration.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TierConfig {
     /// Host bytes the tier may hold (`--kv-host-tier-gb`; 0 = off).
@@ -167,7 +167,7 @@ pub fn validate(cfg: &TierConfig) -> Result<()> {
     Ok(())
 }
 
-/// Tunables that are not serve flags. Every default is the value the port plan names.
+/// Tunables that are not serve flags.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TierOptions {
     pub store_mode: StoreMode,

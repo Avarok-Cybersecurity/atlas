@@ -3174,7 +3174,7 @@ pub mod gateup_fused;
 #[path = "dense_ffn_ada_kernels.rs"]
 pub mod ada_kernels;
 
-/// The packed `W4Linear` arm (port sprint, master plan 3.7.2): `set_w4` and
+/// The packed `W4Linear` arm of the port work: `set_w4` and
 /// the dispatch every entry point hooks into. A child module for the size cap.
 #[path = "dense_ffn/w4.rs"]
 pub mod w4;

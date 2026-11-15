@@ -2,7 +2,7 @@
 
 //! Responsibility: tests of the index growth policy: when the initial build
 //! and the updates run and over which range, the counts each step leaves, the
-//! kernel input it hands over, and the oracle checks of master plan L33 (an
+//! kernel input it hands over, and the oracle checks of L33 (an
 //! update equals a fresh one-segment build of its range; an index grown by
 //! updates recalls like a fresh build).
 

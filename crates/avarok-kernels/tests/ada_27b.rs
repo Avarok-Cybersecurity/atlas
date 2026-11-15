@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! The Ada (sm_89) Qwen3.8-27B target (port sprint lane L24): it must keep the
+//! The Ada (sm_89) Qwen3.8-27B target: it must keep the
 //! checkpoint behavior gb10 declares for 3.8, compile an EXISTING Ada kernel
 //! set through `kernel_source` without adding a single symlink (rule S1 of
 //! `scripts/check_cross_hardware.py`), and resolve its checkpoint without
@@ -116,7 +116,7 @@ fn the_27b_directory_is_one_real_file() {
 
 /// The kernel set is holo-3.1-4b's, so the lookups that may fail are its
 /// lookups: the carried tables must equal the source target's until the GPU
-/// pass harvests this directory (report 77 row R0).
+/// pass harvests this directory.
 #[test]
 fn expected_absent_is_the_source_targets_until_harvested() {
     let ada = declaration("ada", MODEL);

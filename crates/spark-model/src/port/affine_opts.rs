@@ -8,7 +8,7 @@
 //! once by `spark-server`'s `port_apply` through [`apply`]), else the environment (`AVAROK_W4_BITS`,
 //! `AVAROK_W4_GROUP`, `AVAROK_W4_CLIP_SEARCH`), else the default (4 bits, group 64, no clip search:
 //! plain MLX min-max). `AVAROK_W4_GDN_GROUP` sets the group of the GDN projections alone, whose
-//! quantization error feeds a recurrent state (report 72 sec 2.1 proposes group 32 there); without it
+//! quantization error feeds a recurrent state (a group of 32 is proposed there); without it
 //! the GDN route uses the common group. The int8 prompt GEMM is the `affine4_prefill_int8` row, and
 //! only the 4-bit kernels have it.
 //!

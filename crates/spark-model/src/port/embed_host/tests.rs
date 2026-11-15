@@ -473,7 +473,7 @@ fn the_metrics_name_every_series_and_start_at_zero() {
 
 #[test]
 fn the_predicted_saving_is_the_bf16_table_only_with_the_row_on_and_an_untied_head() {
-    // Qwen3.8-27B: 248,320 x 5,120 BF16 = 2.37 GiB (report 77 section 12.1).
+    // Qwen3.8-27B: 248,320 x 5,120 BF16 = 2.37 GiB.
     let b = predicted_freed_bytes_for(true, 248_320, 5_120, false);
     assert_eq!(b, 2_542_796_800);
     assert!((b as f64 / (1u64 << 30) as f64 - 2.368).abs() < 0.001);

@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Responsibility: the measured-ceiling table (port lane L24): per card,
+//! Responsibility: the measured-ceiling table: per card,
 //! model, weight format, KV dtype and speculation mode, the longest
 //! `--max-seq-len` a real serve booted with AND survived a full-length prefill
 //! at, and the preflight rule that lets such a measurement override the
 //! formula only DOWNWARD.
 //!
-//! # The method (report 77 section 7.1, the MiaAI planner)
+//! # The method (after the MiaAI planner)
 //!
 //! A formula predicts whether a configuration fits; on a 16 GB card it is
 //! right until a driver or display reservation, a fragmentation effect or an
@@ -32,8 +32,8 @@
 //! The table is EMPTY at write time: no context ceiling has been measured on
 //! Ada (`docs/porting/consumer-nvidia-ada.md`, "Largest `--max-seq-len` that
 //! serves at batch 1: not measured"). The GPU pass fills it from
-//! a script outside this repository (cell `ceiling`, rows R1 and R7 of 77 section 12.5),
-//! a clean card each time (77 7.1: a ceiling measured beside other processes
+//! a script outside this repository (cell `ceiling`), on
+//! a clean card each time (a ceiling measured beside other processes
 //! is contention, not a ceiling). With no row nothing is refused, so every
 //! serve behaves exactly as before.
 //!

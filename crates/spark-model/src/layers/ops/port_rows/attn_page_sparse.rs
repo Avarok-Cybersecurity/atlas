@@ -53,7 +53,7 @@ mod tests {
 
     #[test]
     fn every_target_declares_off() {
-        // Approximate attention is never default on (master plan 3.1, 3.5). The declaration
+        // Approximate attention is never default on. The declaration
         // is bound to a local first so the check reads the compiled-in table at run time
         // instead of being a constant assertion (clippy::assertions_on_constants).
         let declared = avarok_kernels::TARGET_DEFAULTS.port.attn_page_sparse;

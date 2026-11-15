@@ -4,7 +4,7 @@
 // offsets, the launch) and vllm/model_executor/layers/quantization/utils/marlin_utils.py:692-740
 // (`apply_gptq_marlin_linear`: the FP32 reduce default, no atomic add). Copyright contributors to the
 // vLLM project, Apache-2.0; Copyright (C) Marlin.2024 Elias Frantar, Apache-2.0.
-// Changes: an implementation of Atlas's `W4Linear` contract (port plan 3.7.2); decode uses the
+// Changes: an implementation of Atlas's `W4Linear` contract; decode uses the
 // row-invariant policy of `config.rs`; `dequant_bf16` is a host reconstruction of the device image.
 
 //! Responsibility: [`MarlinLinear`], the Marlin int4 implementation of `W4Linear`, and [`release`].

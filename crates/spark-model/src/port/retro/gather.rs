@@ -282,7 +282,7 @@ pub fn launch_gather(
         .launch(stream)
 }
 
-/// Contract entry (master plan L34): the sink, the retrieval clusters' members and the tail
+/// Contract entry: the sink, the retrieval clusters' members and the tail
 /// of ONE logical sequence into `exact`, BF16 or FP8-dequantized, in `state::ExactBuf`'s
 /// order. `s` is the sequence's rows (one row, or the K+1 rows of a verify; the gather covers
 /// the longest, and the attention trims per row with `ExactBuf::row_trim`). `zones` must be

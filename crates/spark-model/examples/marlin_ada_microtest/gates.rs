@@ -134,7 +134,7 @@ pub fn entries(gpu: &dyn GpuBackend, r: &mut Lcg, s: &W4Scratch, t: &mut Tally) 
     Ok(())
 }
 
-/// The decode path on one shape and type: numerics at the plan's M values (with a planted control),
+/// The decode path on one shape and type: numerics at the tested M values (with a planted control),
 /// row invariance, its vLLM contrast, and a five-run byte repeat.
 pub fn decode(
     gpu: &dyn GpuBackend,

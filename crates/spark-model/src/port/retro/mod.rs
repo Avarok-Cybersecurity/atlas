@@ -25,7 +25,7 @@
 //! state [`runtime`], device operations [`device`] and custom attention
 //! [`attend`], and [`metrics`] (`atlas_retro_*`).
 //!
-//! Kernels (L34a, L34b, by contract, master plan 3.13): `build` and `select`
+//! Kernels (L34a, L34b, by contract): `build` and `select`
 //! (k-means build, zone selection), `gather` and `attn` (exact-zone gather,
 //! estimation-zone attention), with the types of [`state`] and [`config`].
 

@@ -2,8 +2,8 @@
 
 //! Responsibility: the root of the EXL3 trellis weight route (port lane L20b, row `weights_exl3`): EXL3
 //! matrices (ExLlamaV3's QTIP-style trellis codes, 1 to 8 bits a weight, half-bit steps with the mul1
-//! codebook) served from their packed codes on Ada (sm_89) through the `W4Linear` contract (port plan
-//! 3.7.2), after ExLlamaV3 (MIT) via TensorFold's CUDA translation (Apache-2.0). See EXL3-ATTRIBUTION.md.
+//! codebook) served from their packed codes on Ada (sm_89) through the `W4Linear` contract,
+//! after ExLlamaV3 (MIT) via TensorFold's CUDA translation (Apache-2.0). See EXL3-ATTRIBUTION.md.
 //!
 //! How a call runs: the input row is rotated into the Hadamard domain and scaled by `suh`
 //! (`exl3_ada_rot_in_bf16`, fp16 out), the decode-row linear decodes each 16 x 16 tile straight into mma

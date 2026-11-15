@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Route design after TensorFold (https://github.com/ashhart/TensorFold), commit 3885dce: a BF16
 // checkpoint's linears quantized to MLX affine codes once at load and served on the lane MMA
-// GEMV (report 72, brief W). Idea only; no TensorFold code is in this file. The kernels and the
+// GEMV. Idea only; no TensorFold code is in this file. The kernels and the
 // quantizer it calls are lanes L17a's, L17b's and L17c's (`port::affine`, see
 // TENSORFOLD-ATTRIBUTION.md).
 
@@ -20,11 +20,11 @@
 //!
 //! **WHY.** Decode is bandwidth bound. At 4 bits and group 64 the 4B FFN keeps 39.8 MB a layer
 //! against 141.6 MB of BF16 (and 70.8 MB of FP8): 3.26 GB less per decode token than BF16 over 32
-//! layers, 1.0 GB less than the FP8 route. An expectation, to be measured (report 72 sec 2.1).
+//! layers, 1.0 GB less than the FP8 route. An expectation, to be measured.
 //!
 //! **THE PRICE.** Round-to-nearest 4-bit codes are a numerics change larger than E4M3, so the
 //! route is a target declaration (`[defaults] dense_affine4_from_bf16`, false on every target)
-//! with `AVAROK_DENSE_AFFINE4_FROM_BF16=0|1` as the A/B; the receipt that flips it is the D7 gate.
+//! with `AVAROK_DENSE_AFFINE4_FROM_BF16=0|1` as the A/B; what flips it is a quality gate (NLL, KL, coherence, recall).
 //!
 //! **DECLINES** (the table, [`decide`], first failing clause wins): not a BF16 checkpoint; tensor
 //! parallel (no sharded affine weight exists); a pending LoRA adapter (`set_lora_weights` has no

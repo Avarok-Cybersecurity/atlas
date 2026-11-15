@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Design after the TierKV pager of arczhi/llama-tierkv (kv-paging-design.md; MIT, Copyright (c) 2023-2026 The ggml authors): a VRAM desk of head sinks, a recent window and recalled pages over a host-RAM store of every evicted page, taken from the port plan's description of it (report 77 section 2.5); no code copied or fetched.
+// Design after the TierKV pager of arczhi/llama-tierkv (kv-paging-design.md; MIT, Copyright (c) 2023-2026 The ggml authors): a VRAM desk of head sinks, a recent window and recalled pages over a host-RAM store of every evicted page, taken from a written description of it; no code copied or fetched.
 // Design after LMCache lmcache/v1/distributed/l1_manager/base.py (commit 3aefae1, Apache-2.0): a host copy is published only after the copy that writes it completed, and its memory is kept while any copy may still read it; no code copied.
 
 //! Responsibility: page-granular demote and fetch for the middle KV blocks of a LIVE sequence
-//! (port plan lane L36, the host-resident window desk; contract 3.7.5 `KvHostTier::pages`).
+//! (the host-resident window desk; reached through `KvHostTier::pages`).
 //!
 //! The prefix tier (`KvHostTier`) keeps whole cached prefixes for a LATER request. This API
 //! serves the request that is running: the window desk (`spark-model/src/port/kv_window/`)
@@ -122,7 +122,7 @@ pub struct PageApi {
 }
 
 impl PageApi {
-    /// An API over the tier's arena and copy stream (lane L26a builds one per `KvHostTier`).
+    /// An API over the tier's arena and copy stream (one is built per `KvHostTier`).
     pub fn new(deps: PageDeps) -> Self {
         Self::with_parts(
             deps,

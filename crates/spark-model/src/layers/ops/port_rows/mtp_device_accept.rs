@@ -2,7 +2,7 @@
 //! The `mtp_device_accept` row: pick MTP verify positions on the device (lane L12,
 //! `kernels/ada/common/spec_accept_sample_ada.cu`) instead of copying the verify logits to the host,
 //! for rows with no grammar, logit_bias, LZ/DRY or stateful thinking stage. Greedy picks are
-//! bit-identical to the host pipeline; sampled picks are distribution-exact (decision D10). Resolution:
+//! bit-identical to the host pipeline; sampled picks are distribution-exact. Resolution:
 //! `AVAROK_MTP_DEVICE_ACCEPT` under the toggle grammar (`0`/`false`/`off`/`no` = off, anything else =
 //! on), else the target's declaration. The lane has no CLI flag.
 use crate::layers::ops::target_defaults::Resolved;

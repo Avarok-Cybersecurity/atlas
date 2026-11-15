@@ -2,7 +2,7 @@
 //! Responsibility: crate root of the L04 routing-gate study (route_gate), a pure-Rust CPU port of the NumPy harness.
 //!
 //! Question: can a cheap signal tell, before generation, that the 4B Qwen3.5 model will FAIL a prompt? The routing
-//! extension is released only if it can. Gate (master plan L04): AUROC of "4B fails" for the readout plus a logistic
+//! extension is released only if it can. Gate: AUROC of "4B fails" for the readout plus a logistic
 //! head `>= 0.70` AND `>= length/keyword baseline + 0.05`. Nothing here is in the Atlas serving path; everything runs
 //! on the CPU, with no GPU, no NumPy, no torch and no transformers. The `route_gate` binary (`src/bin/route_gate.rs`)
 //! drives the subcommands `build`, `collect`, `grade`, `summary`, `rows`, `goldens`, `tokens` and `fit`.

@@ -87,7 +87,7 @@ mod tests {
 
     #[test]
     fn every_target_declares_off() {
-        // The sprint never flips this row on any target (master plan 3.5).
+        // No target turns this row on by default.
         assert_eq!(avarok_kernels::TARGET_DEFAULTS.port.copy_draft, "off");
     }
 }

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! Responsibility: the block-sparse prefill `/metrics` series (lane L35's `atlas_prefill_sparse_*`
-//! namespace, master plan 4.2):
+//! namespace):
 //!
 //! * `atlas_prefill_sparse_layers_total` (counter): attention layer calls of a prefill chunk that ran
 //!   block-sparse;

@@ -6,7 +6,7 @@
 //! Responsibility: the reconstructed request serializer of the release (`arc-role-blocks-v2`, projection
 //! `canonical_v2`, `harness_shell: include`, `environment: scrub_v2`) and the choice between it and the old stand-in.
 //!
-//! What the 54 golden token counts and the signal goldens say (evidence in the report `88-serializer-tokens.md`):
+//! What the 54 golden token counts and the signal goldens say (the goldens are the evidence):
 //!
 //! * A request is a list of role blocks, `<|im_start|>{role}\n{body}<|im_end|>\n`, one per message, and the readout
 //!   is the last token of the last block (its trailing newline).

@@ -46,7 +46,7 @@ impl KvHostTier {
         started
     }
 
-    /// The restore cost gate (port plan review C6): restore `tokens` tokens held in `blocks`
+    /// The restore cost gate: restore `tokens` tokens held in `blocks`
     /// blocks, or recompute them? Counts declines on `/metrics`.
     pub fn gate(&self, tokens: usize, blocks: usize) -> GateDecision {
         let inner = self.inner.lock();

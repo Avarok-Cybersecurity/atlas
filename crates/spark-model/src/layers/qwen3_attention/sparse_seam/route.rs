@@ -191,7 +191,7 @@ impl ViewLedger {
                 tracing::warn!(
                     "sparse attention: `{selector}` captured attention layer {attn_layer} at {rows} \
                      rows with View {view:?}, but an earlier capture of the same shape used {prev:?}; \
-                     selectors must back View plans with fixed buffers (graph rule, master plan 3.7.6)"
+                     selectors must back View plans with fixed buffers (the graph rule)"
                 );
                 false
             }

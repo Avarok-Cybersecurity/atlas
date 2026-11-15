@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! Responsibility: the packed-weight (W4) q/k/v/o projections of a full-attention layer (port lane
-//! L22b, contract 3.7.2 of the port plan): the per-layer slot set [`AttnW4`], the installers
+//! L22b, the `W4Linear` contract): the per-layer slot set [`AttnW4`], the installers
 //! [`Qwen3AttentionLayer::try_set_w4_proj`] and [`Qwen3AttentionLayer::set_w4_proj`], the load-time
 //! scratch reservation [`Qwen3AttentionLayer::prepare_w4_proj`], and the install rules. The
 //! dispatch helpers every q/k/v/o call site runs live in the child `w4_proj_dispatch.rs`.
@@ -188,7 +188,7 @@ pub(crate) fn shape_refusal(
 }
 
 impl Qwen3AttentionLayer {
-    /// Install packed q/k/v/o weights (contract 3.7.2). Returns the BF16 bytes the layer no longer
+    /// Install packed q/k/v/o weights. Returns the BF16 bytes the layer no longer
     /// reads, which the caller may free (0 when the loader already freed them). An `Err` names the
     /// refusal and leaves the layer exactly as it was: already installed, an MLA or K=V layer, a
     /// quantized sidecar of any kind, or projection shapes that do not fit together. Call

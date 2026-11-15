@@ -7,7 +7,7 @@
 //!
 //! The embedding table is read one row per token, so it does not need device
 //! bandwidth. On Qwen3.8-27B it is `[248320, 5120]` BF16, 2.37 GiB: the single
-//! most wasteful item on a 16 GB card (report 77 section 12.1). With the row
+//! most wasteful item on a 16 GB card. With the row
 //! on, the loader (`weight_loader/qwen35_dense/loaders_b.rs::load_embedding`,
 //! lane L23b) calls [`install_from_store`]: the table is copied from the
 //! store's device tensor into page-locked host memory, the region's
@@ -33,11 +33,11 @@
 //! `[rows, hidden]` BF16 table, the checkpoint ties its LM head to the
 //! embedding (the head would then be read over PCIe every token), or the
 //! backend refuses mapped memory (Metal, the mock, and possibly WSL2 for a
-//! region this large, receipt Q5). A refusal is counted
+//! region this large). A refusal is counted
 //! (`atlas_embed_host_refusals_total`), and because a 16 GB card serving the
 //! 27B with MTP has no room for the 2.37 GiB the row was meant to free,
 //! [`after_load`] turns a refusal into a startup error when the serve is
-//! speculative (plan 3.7.7: "the row refuses to start with `--speculative`").
+//! speculative (the row refuses to start with `--speculative`).
 //!
 //! # Lifetime
 //!
@@ -222,7 +222,7 @@ pub fn predicted_freed_bytes_for(on: bool, vocab: usize, hidden: usize, tied_hea
     }
 }
 
-/// Lane L23b's loader hook (plan 3.7.7, L23b REQUESTS R3): with the row on,
+/// Lane L23b's loader hook: with the row on,
 /// move the store's embedding table `name` (`[rows, hidden]` BF16) to mapped
 /// host memory and return its device alias as the `embed_tokens` weight.
 /// `Ok(None)` = declined; the loader keeps the device table.

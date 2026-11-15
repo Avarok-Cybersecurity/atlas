@@ -3,11 +3,11 @@
 // Portions copied and adapted from TensorFold (https://github.com/ashhart/TensorFold), commit 3885dce, zig/src/core/copy_index.zig:1-80. Copyright 2026 TensorFold contributors. Licensed under the Apache License, Version 2.0; code written before TensorFold 0.6.0 is also available under the MIT License. See COPY-DRAFT-ATTRIBUTION.md. Changes for Atlas: see `index.rs` and `legacy.rs`.
 // Technique described in arXiv:2609.04852 (KVMem). Independent implementation from the published description; no source copied from kvmem/kvmem-llama.cpp (that repository carries no license).
 
-//! Responsibility: the merged copy drafter (port sprint lane L13): one
+//! Responsibility: the merged copy drafter: one
 //! per-sequence index over committed tokens feeding three plans, plus the
 //! scheduler entry points that apply them.
 //!
-//! Sources merged into one design (master plan 3.7.4): Cinference's prompt
+//! Sources merged into one design: Cinference's prompt
 //! lookup (hashed suffix windows, period continuation, the decayed per-window
 //! estimate and its lookup rounds), TensorFold's copy index (the "latest
 //! earlier occurrence" contract, chain fill of the MTP chain, the legacy
@@ -19,7 +19,7 @@
 //!   copy continuation of the same width when the source agrees on at least
 //!   `min_match` tokens and the yield gate says the copy pays. Serial rounds
 //!   go through [`plan_serial`], batched rows through [`substitute_batched`]
-//!   (one call line in `verify_k4_batch_step.rs`, lane L10).
+//!   (one call line in `verify_k4_batch_step.rs`).
 //! * `LookupRound`: a single sequence whose estimate is confident (>= 0.96)
 //!   verifies up to `max_len` copy tokens alone through the existing
 //!   variable-width verify (`step_verify_dflash`), discarding the drafter's
@@ -79,9 +79,9 @@ impl SeqCopyState {
     }
 }
 
-/// The request asked for no speculative step (lane L05's per-request
+/// The request asked for no speculative step (the per-request
 /// `atlas_speculative: false`). Both switches are set from it:
-/// `seq.port.no_drafts` (lost on a swap-in until lane L27's hunk lands) and
+/// `seq.port.no_drafts` (lost on a swap-in for now) and
 /// the older `seq.disable_mtp` (kept across swap-out and swap-in), so a
 /// sequence is out when either is set. No copy plan is ever chosen for it.
 #[inline]

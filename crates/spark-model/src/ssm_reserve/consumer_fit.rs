@@ -7,12 +7,12 @@
 //! # Why
 //!
 //! On a 16 GB card Qwen3.8-27B leaves about 1.7 GiB beside 12.5 GiB of 4-bit
-//! weights (report 77 section 12.1). Its per-sequence GDN state is 144 MiB in
+//! weights. Its per-sequence GDN state is 144 MiB in
 //! FP32, and one verify slot at `--num-drafts 3` keeps three more h snapshots,
 //! four conv snapshots and a checkpoint blob: about 600 MiB. The default
 //! `--max-batch-size 8` sizes eight such slots (4.7 GiB), so the serve either
-//! refuses at preflight or starves the KV cache. "MTP and eight streams do not
-//! coexist at 4.25 bits" (77 section 12.3): what does fit is speculation for
+//! refuses at preflight or starves the KV cache. MTP and eight streams do not
+//! coexist at 4.25 bits: what does fit is speculation for
 //! the first slot or two, with the other streams plain-decoding.
 //!
 //! The scheduler already gates every speculative step on all active slots
@@ -27,7 +27,7 @@
 //! only when the verify pools would not fit their share of the memory beside
 //! the weights; a fit that keeps every slot publishes nothing. GB10, Hopper,
 //! B200 and B300 never publish, so [`super::mtp_state_slots`] returns exactly
-//! the pre-sprint number there (pinned by `consumer_fit_tests.rs`). On the 4060
+//! the unchanged number there (pinned by `consumer_fit_tests.rs`). On the 4060
 //! Ti the measured 4B serves (batch 1 and 8, BF16 and FP8 FFN, with and
 //! without `--speculative`) keep every slot. `AVAROK_MTP_POOL_FULL_WIDTH`
 //! ignores the cap with the rest of the pool diet, and

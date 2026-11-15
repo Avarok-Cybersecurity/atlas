@@ -7,8 +7,7 @@
 
 //! Responsibility: the Quest `KvSelector` (port lane L30, row
 //! `attn_page_sparse`, APPROXIMATE, off by default on every target), plugged
-//! into the sparse-attention seam (`layers/qwen3_attention/sparse_seam.rs`,
-//! master plan 3.7.6).
+//! into the sparse-attention seam (`layers/qwen3_attention/sparse_seam.rs`).
 //!
 //! - `on_kv_written`: fold the keys just written into their pages' summaries
 //!   (decode and verify: positions from the device lengths, so it is captured

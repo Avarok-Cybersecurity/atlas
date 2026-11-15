@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Responsibility: the speculative round plan seam (master plan 3.7.4) and
+//! Responsibility: the speculative round plan seam and
 //! the serial-round glue `step_mtp` calls around each per-sequence verify.
 //!
 //! [`RoundPlan`] names what one round verifies; [`RoundOutcome`] is what it
@@ -11,7 +11,7 @@
 //!   chain in place (`CopyChain`, same width, same dispatch) or run a
 //!   `LookupRound` itself through `step_verify_dflash` (then `begin_serial`
 //!   returns `None` and the caller skips its own dispatch);
-//! * with lane L06's D-Cut v2 row (`mtp_dcut_cost_model`) on, a single
+//! * with the D-Cut v2 row (`mtp_dcut_cost_model`) on, a single
 //!   sequence's MTP chain is cut to `mtp_dcut::cost::budget`, and every serial
 //!   round feeds `observe_verify` (all plans) and `observe_outcome` (MTP
 //!   rounds with drafter confidences).

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Route design after TensorFold (https://github.com/ashhart/TensorFold), commit 3885dce (report 72,
-// brief W). Idea only; no TensorFold code is in this file.
+// Route design after TensorFold (https://github.com/ashhart/TensorFold), commit 3885dce.
+// Idea only; no TensorFold code is in this file.
 
 //! Responsibility: the load-time BF16 -> affine route for the GDN (linear-attention) projections:
 //! whether a load takes it, which layers qualify, and the quantize-then-free install.
@@ -17,7 +17,7 @@
 //!
 //! **THE PRICE.** A GDN projection error feeds a recurrent state, so this is a numerics lever of its
 //! own (`[defaults] gdn_affine4_from_bf16`, false everywhere, `AVAROK_GDN_AFFINE4_FROM_BF16=0|1`),
-//! held to the D7 gate plus a long-context degeneration check. `AVAROK_W4_GDN_GROUP` lets the GDN
+//! held to a quality gate (NLL, KL, coherence, recall) plus a long-context degeneration check. `AVAROK_W4_GDN_GROUP` lets the GDN
 //! projections use a finer group (32) than the FFN (`port::affine_opts`).
 //!
 //! **DECLINES.** The shared table (`affine4_from_bf16::decide`); `gdn_fp8_from_bf16` on wins. Per

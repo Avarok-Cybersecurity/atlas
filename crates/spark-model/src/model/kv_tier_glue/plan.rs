@@ -7,7 +7,7 @@
 //! Given what the radix tree already holds on the GPU, how many of the next
 //! blocks the host tier holds, and how deep the deepest SSM snapshot for this
 //! prefix reaches, decide which block range (if any) to restore. The rule is
-//! the hybrid-model boundary rule of the plan (3.7.5, L26b):
+//! the hybrid-model boundary rule (L26b):
 //!
 //! - attention KV needs the whole prefix, so a restore covers blocks
 //!   `[gpu, to)` contiguous with what the GPU already holds;

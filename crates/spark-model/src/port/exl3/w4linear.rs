@@ -8,8 +8,7 @@
 // zero-at-rest split counters; decode serves 1..=16 rows, prefill 17..=128 rows on the same kernel (the
 // same bits) and declines above; the BF16 dequant fallback is Atlas's.
 
-//! Responsibility: [`Exl3Linear`], the EXL3 trellis implementation of `W4Linear` (contract 3.7.2 of the
-//! port plan), its upload from host bytes ([`Exl3Linear::upload`]), and [`release`], which frees an EXL3
+//! Responsibility: [`Exl3Linear`], the EXL3 trellis implementation of `W4Linear`, its upload from host bytes ([`Exl3Linear::upload`]), and [`release`], which frees an EXL3
 //! `W4Box`'s device buffers once.
 //!
 //! A call is two launches on the caller's stream: the input rotation (`x` bf16 -> `xh` fp16 in

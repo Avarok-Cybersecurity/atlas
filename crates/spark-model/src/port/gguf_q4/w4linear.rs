@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! Responsibility: [`GgufQ4Linear`], the keep-packed GGUF IQ4_XS / Q4_K / Q6_K implementation of `W4Linear`
-//! (contract 3.7.2 of the port plan, lane L19), its constructors, and the registry `decode_pair` uses to
+//! (lane L19), its constructors, and the registry `decode_pair` uses to
 //! recognise a GGUF partner.
 //!
 //! Decode (rows 1..=8): the activation rows are quantized to `block_q8_1` into `W4Scratch::ws`, then one

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Responsibility: the disk tier's counters and gauges (lane L27) and their `/metrics` text
-//! (`atlas_kv_tier_disk_*`, port plan 4.2). Each [`super::DiskTier`] owns one [`DiskStats`];
+//! Responsibility: the disk tier's counters and gauges and their `/metrics` text
+//! (`atlas_kv_tier_disk_*`). Each [`super::DiskTier`] owns one [`DiskStats`];
 //! [`render_prometheus`] sums every live tier's values. spark-runtime sits below spark-server, so
 //! it formats its own Prometheus text with the same `# HELP` / `# TYPE` lines as
 //! `api/port_metrics.rs`. With no disk tier opened every series renders as zero.

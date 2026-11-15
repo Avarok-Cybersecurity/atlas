@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! Responsibility: run the consumer-card verify-slot fit before the reserve is
-//! priced, and publish its cap (port lane L24; the fit and its cell live in
+//! priced, and publish its cap (the fit and its cell live in
 //! `spark_model::ssm_reserve::consumer_fit`).
 //!
 //! Called from `preflight_reserve` right after the FP16 h-state preconditions
@@ -144,7 +144,7 @@ mod tests {
 
     const MIB: usize = 1024 * 1024;
 
-    /// The decision on the 27B at batch 8 on the 4060 Ti (77 section 12.1):
+    /// The decision on the 27B at batch 8 on the 4060 Ti:
     /// one covered slot, the pools shrink from 8 slots to 1.
     #[test]
     fn the_27b_at_batch_8_covers_one_slot() {

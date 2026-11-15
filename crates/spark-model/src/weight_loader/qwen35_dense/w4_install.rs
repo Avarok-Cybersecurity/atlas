@@ -1,19 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Responsibility: the one place the dense Qwen3.5 loader meets the 4-bit (`W4Linear`, port plan
-//! contract 3.7.2) routes: the per-layer installs the loader's hook lines call (affine FFN / GDN /
+//! Responsibility: the one place the dense Qwen3.5 loader meets the 4-bit (`W4Linear`)
+//! routes: the per-layer installs the loader's hook lines call (affine FFN / GDN /
 //! attention by lane L23a's quantizers, the NVFP4 FFN by this lane, keep-packed GGUF FFN
 //! tensors), the load-time self-check, the residency tally, the summary lines and the `/metrics`
 //! record. The per-load plan and its types live in the child `w4_plan.rs`, re-exported here.
 //!
-//! **THE TYPES L23a CODES AGAINST** (its R1, master plan 3.7.2) are [`PlanInputs`],
+//! **THE TYPES L23a CODES AGAINST** are [`PlanInputs`],
 //! [`RoutePlan`] and [`LayerCtx`]. L23a's `plan` functions are silent and look nothing up with
 //! their row off; its `install` functions quantize, adopt and free, and do NOT install into the
 //! layer, tally residency or self-check: this module does all three, so the boot line, the gauge
 //! and the self-check have one owner.
 //!
 //! **ORDER.** The FFN weights are installed with `DenseFfnLayer::set_w4` BEFORE the layer's
-//! `finalize_q4k_load` / `finalize_nvfp4_mmq_load` (lane L21's request R1: those then reserve the
+//! `finalize_q4k_load` / `finalize_nvfp4_mmq_load` (a request from lane L21: those then reserve the
 //! shared W4 scratch and skip the NVFP4 repacks); the GDN and attention pairs are installed right
 //! after their layer is built, followed by the layer's own scratch reservation, so no CUDA graph
 //! capture allocates.

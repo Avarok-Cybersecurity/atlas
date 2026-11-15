@@ -12,7 +12,7 @@
 //! untouched; so is every prompt shorter than `--prefill-sparse-min-tokens`.
 //!
 //! APPROXIMATE, OFF EVERYWHERE. The `[defaults] prefill_sparse_attn` row is `false` on every target and
-//! never defaults on (master plan 3.5). With it off, [`config`] reports disabled and the layer's hook
+//! never defaults on. With it off, [`config`] reports disabled and the layer's hook
 //! returns before reading anything else, so the dense path is byte-identical to the base. With it on,
 //! the arm runs only where the module is in the image (Ada); elsewhere one log line says it is absent
 //! and the dense kernel runs. A threshold of 1.0 means "keep everything" and takes the DENSE kernel, so

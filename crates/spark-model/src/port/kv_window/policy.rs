@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Design after the TierKV pager of arczhi/llama-tierkv (kv-paging-design.md; MIT, Copyright (c) 2023-2026 The ggml authors): head protection of the first 2,048 positions, a recent window decoupled from the logical context, and staging rate-limited to once per 1,024 positions and only after evictions, taken from the port plan's description (report 77 section 2.5); no code copied or fetched.
+// Design after the TierKV pager of arczhi/llama-tierkv (kv-paging-design.md; MIT, Copyright (c) 2023-2026 The ggml authors): head protection of the first 2,048 positions, a recent window decoupled from the logical context, and staging rate-limited to once per 1,024 positions and only after evictions, taken from a written description of the design; no code copied or fetched.
 
 //! Responsibility: the window desk's pure policy. For one long sequence it decides which
 //! logical KV blocks stay on the GPU (the head sinks, the recent window, the recalled pages),

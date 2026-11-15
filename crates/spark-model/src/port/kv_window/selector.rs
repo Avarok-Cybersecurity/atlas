@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Design after the TierKV pager of arczhi/llama-tierkv (kv-paging-design.md; MIT, Copyright (c) 2023-2026 The ggml authors): attention over the pages on the desk only, every key keeping the RoPE position it was written with, taken from the port plan's description (report 77 section 2.5); no code copied or fetched. Atlas reads the desk through a compacted block table over its paged KV instead of staging pages into ordinary KV cells.
+// Design after the TierKV pager of arczhi/llama-tierkv (kv-paging-design.md; MIT, Copyright (c) 2023-2026 The ggml authors): attention over the pages on the desk only, every key keeping the RoPE position it was written with, taken from a written description of the design; no code copied or fetched. Atlas reads the desk through a compacted block table over its paged KV instead of staging pages into ordinary KV cells.
 
-//! Responsibility: the window desk's attention side (port plan lane L36): the `KvSelector`
-//! registered with the sparse-attention seam (contract 3.7.6), its device buffers, the
+//! Responsibility: the window desk's attention side (lane L36): the `KvSelector`
+//! registered with the sparse-attention seam, its device buffers, the
 //! compacted-table view the decode and verify attention reads, and the recall scorer seam.
 //!
 //! # The view
@@ -13,7 +13,7 @@
 //! uploaded: each row's table without its hole entries, in order, and its length minus
 //! `block_size` per removed (always full) block. Keys keep their RoPE positions, so attending
 //! the compacted table is exact attention over the pages on the desk; verify rows of one
-//! sequence share one table, so one selection serves every row (contract 3.7.6).
+//! sequence share one table, so one selection serves every row.
 //!
 //! # Graph rule
 //! The kernel reads the hole id from a device slot and writes into fixed buffers of one

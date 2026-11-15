@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Route design after TensorFold (https://github.com/ashhart/TensorFold), commit 3885dce (report 72,
-// brief W). Idea only; no TensorFold code is in this file.
+// Route design after TensorFold (https://github.com/ashhart/TensorFold), commit 3885dce.
+// Idea only; no TensorFold code is in this file.
 
 //! Responsibility: the load-time BF16 -> affine route for the full-attention q/k/v/o projections:
 //! whether a load takes it, which layers qualify, and the quantize-then-free install.
@@ -16,7 +16,7 @@
 //! measured.
 //!
 //! **THE PRICE.** A numerics lever of its own (`[defaults] attn_affine4_from_bf16`, false everywhere,
-//! `AVAROK_ATTN_AFFINE4_FROM_BF16=0|1`), independent of the FFN and GDN rows; D7 gate.
+//! `AVAROK_ATTN_AFFINE4_FROM_BF16=0|1`), independent of the FFN and GDN rows; held to a quality gate (NLL, KL, coherence, recall).
 //!
 //! **DECLINES.** The shared table (`affine4_from_bf16::decide`); `attn_fp8_from_bf16` on wins. Per
 //! layer, any K (`hidden` for q/k/v, `heads * head_dim` for o) that is not a whole number of groups

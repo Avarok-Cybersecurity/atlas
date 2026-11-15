@@ -5,7 +5,7 @@
 // multi-row execution). Apache-2.0; see TENSORFOLD-ATTRIBUTION.md. Changes: no code copied; the gates are
 // written for Atlas's affine route.
 
-//! GPU oracle and timings for the Ada affine 4-bit route (port lane L17a): the quantizer, pack, group
+//! GPU oracle and timings for the Ada affine 4-bit route: the quantizer, pack, group
 //! sums and dequant kernels (`kernels/ada/common/affine_pack_ada.cu`) and the lane GEMV
 //! (`kernels/ada/common/affine4_lane_ada.cu`), through `port::affine` and its `W4Linear` face.
 //!
@@ -47,7 +47,7 @@ use anyhow::{Result, ensure};
 use spark_model::port::affine::AffineKernels;
 use spark_runtime::cuda_backend::AvarokCudaBackend;
 
-/// The decode shapes of the plan: N x K.
+/// The decode shapes: N x K.
 const NS: [usize; 5] = [9216, 2560, 12288, 4096, 129];
 const KS: [usize; 3] = [2560, 9216, 4096];
 /// `--quick`: one split-heavy, one unsplit and one ragged shape.

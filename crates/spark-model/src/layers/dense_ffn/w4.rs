@@ -32,7 +32,7 @@
 //! kernels the M = 1 decode runs, with its own row slice, so speculative
 //! decoding at temperature 0 matches plain decoding on this route.
 //!
-//! # The FP8 verify GEMV (master plan 3.7.3)
+//! # The FP8 verify GEMV
 //!
 //! [`DenseFfnLayer::fp8_verify_arm`] offers a native-FP8 layer's 2..8-row
 //! verify to `ada_kernels::verify::forward_km_fp8` (lane L15). That function

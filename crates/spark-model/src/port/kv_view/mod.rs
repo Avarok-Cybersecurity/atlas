@@ -50,7 +50,7 @@ pub mod history;
 mod live;
 pub mod metrics;
 mod plans;
-// Lane L31's query capture (declared here by contract, master plan L31 brief).
+// Lane L31's query capture (declared here by contract).
 pub mod query_capture;
 mod select;
 pub mod selector;

@@ -3,12 +3,12 @@
 // Design translated from vLLM (https://github.com/vllm-project/vllm, commit 8a36f08), vllm/v1/kv_offload/cpu/gpu_worker.py and vllm/v1/simple_kv_offload/manager.py, Copyright contributors to the vLLM project, Apache-2.0; no code copied. Changes: one in-process Rust tier over a pinned page pool, event-owned DMA on a dedicated copy stream, Atlas paged-KV block regions as the copy unit.
 // Technique described in arXiv:2609.04852 (KVMem). Independent implementation from the published description; no source copied from kvmem/kvmem-llama.cpp (that repository carries no license).
 
-//! Responsibility: the host-RAM KV tier core (port plan contract 3.7.5): a pinned host copy of
+//! Responsibility: the host-RAM KV tier core: a pinned host copy of
 //! prefix-cached paged-KV blocks, keyed by [`BlockKey`], that a later request restores into
 //! fresh GPU blocks by one batched H2D instead of re-running prefill.
 //!
-//! This crate never reads a `[defaults]` row. The spark-model glue (lane L26b,
-//! `model/kv_tier_glue.rs`) resolves the `kv_host_tier` row, builds a [`TierConfig`] from the
+//! This crate never reads a `[defaults]` row. The spark-model glue
+//! (`model/kv_tier_glue.rs`) resolves the `kv_host_tier` row, builds a [`TierConfig`] from the
 //! serve flags (`port_apply` publishes it with [`config::set`]), creates one [`KvHostTier`] per
 //! model and drives it. With no tier created, nothing in this module runs.
 //!
@@ -57,14 +57,14 @@ pub mod cold_store;
 pub mod config;
 mod control;
 pub mod cost;
-/// Disk tier and warm restart (lane L27): implements [`ColdStore`].
+/// Disk tier and warm restart: implements [`ColdStore`].
 pub mod disk;
 mod events;
 mod evict;
 pub mod fingerprint;
 mod index;
 pub mod lazy;
-/// Page-granular demote and fetch for a live sequence's middle blocks (lane L36).
+/// Page-granular demote and fetch for a live sequence's middle blocks.
 pub mod pages;
 mod policy;
 pub mod restore;
@@ -95,7 +95,7 @@ pub use restore::{RestoreState, RestoreTicket};
 pub use stats::{TierSnapshot, TierStats, render_prometheus};
 pub use writeback::StoreReport;
 
-/// What [`pages::PageApi::new`] receives from the tier (lane L36 builds its page API on the
+/// What [`pages::PageApi::new`] receives from the tier (the page API is built on the
 /// tier's host arena and copy stream, so page traffic shares the tier's budget and DMA order).
 pub struct PageDeps {
     pub arena: Arc<dyn HostArena>,
@@ -182,7 +182,7 @@ pub struct KvHostTier {
 }
 
 impl KvHostTier {
-    /// Contract 3.7.5 constructor: a tier over `pool` (lane L25's pinned pool), whose blocks are
+    /// Constructor: a tier over `pool` (the pinned pool), whose blocks are
     /// `block_bytes` long (all layers, K then V), copying on `copy_stream` (a non-legacy stream
     /// from `GpuBackend::create_copy_stream`). Tunables come from [`TierOptions::from_globals`]
     /// (the store mode published by `port_apply`); the tier's `/metrics` series are registered.
@@ -407,7 +407,7 @@ impl KvHostTier {
         self.inner.lock().release_restore(t.id());
     }
 
-    /// Attach the cold store (lane L27's disk tier). Keys it already holds for this tier's
+    /// Attach the cold store (the disk tier). Keys it already holds for this tier's
     /// namespace (set it first with [`Self::set_namespace`]) become promotable at once.
     pub fn set_cold_store(&self, s: Arc<dyn ColdStore>) {
         let mut inner = self.inner.lock();
@@ -422,7 +422,7 @@ impl KvHostTier {
         inner.cold = Some(s);
     }
 
-    /// Page-granular API for live sequences (lane L36).
+    /// Page-granular API for live sequences.
     pub fn pages(&self) -> &pages::PageApi {
         &self.pages
     }
