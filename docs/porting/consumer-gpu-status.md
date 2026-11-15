@@ -46,7 +46,7 @@ Each row gives the lane id and what it is, its label, the evidence with its setu
 | 16 GB memory fit, later sizing rows (sized MTP headroom, skip unused MTP block, draft head rows, `--no-vision`) | EXPERIMENTAL | On in every GPU run, but no standalone before and after number | `AVAROK_MEMORY_FIT_CONSUMER=0` turns it off |
 | Qwen3.5 GGUF config mapping | MEASURED | Real 27B file: 866 tensors, 0 unmapped; the live server builds its model config from the GGUF metadata (qwen3_5, 64 layers, hidden 5120) | Automatic for GGUF |
 | llama.cpp-compatible API (`/completion`, `/tokenize`, `/props` and others) | EXPERIMENTAL | 2,768 server tests pass; live, the benchmark uses `/tokenize` and reads `/props` on every serve; the conformance script and `/completion` grammar, stream and `/embedding` have not run on a GPU | Added routes |
-| Compiler fix: CUDA 13.3 `ptxas` miscompile in `fp8_gemv_ada_batchm_7` | MEASURED | Illegal-address faults fixed (`cb4dea889`); memcheck 0 errors; scan of 216 PTX files found 0 hazards | Always on |
+| Workaround for a suspected CUDA 13.3 `ptxas` code-generation issue in `fp8_gemv_ada_batchm_7` | MEASURED (the fix); cause SUSPECTED, no independent reproducer | Illegal-address faults fixed (`cb4dea889`); memcheck 0 errors; scan of 216 PTX files found 0 hazards | Always on |
 
 ### Instrumentation and routing study (L04 to L07)
 
