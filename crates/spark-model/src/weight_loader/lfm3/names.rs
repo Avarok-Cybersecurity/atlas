@@ -87,7 +87,14 @@ pub struct Geometry {
     pub heads: usize,
     pub kv_heads: usize,
     pub head_dim: usize,
+    /// The served vocabulary: logits width, sampling and masking. The server
+    /// caps it to the tokenizer's token count (125033 on LFM3), so it can be
+    /// smaller than the checkpoint's table.
     pub vocab: usize,
+    /// Rows of the checkpoint's embedding (and any LM head): the padded
+    /// `vocab_size` its own config.json states (128000 on LFM3). Padding rows
+    /// are never read as logits (`vocab` bounds that).
+    pub table_rows: usize,
     pub conv_width: usize,
 }
 
@@ -100,6 +107,11 @@ impl Geometry {
             kv_heads: config.num_key_value_heads,
             head_dim: config.head_dim,
             vocab: config.vocab_size,
+            table_rows: if config.embed_rows > 0 {
+                config.embed_rows
+            } else {
+                config.vocab_size
+            },
             conv_width: config.linear_conv_kernel_dim,
         }
     }
@@ -216,7 +228,7 @@ pub fn global_expectations(g: &Geometry) -> Vec<Expect> {
     vec![
         Expect {
             name: EMBED.to_string(),
-            shape: vec![g.vocab, g.hidden],
+            shape: vec![g.table_rows, g.hidden],
             alt_shape: None,
             role: Role::Embed,
         },
@@ -248,6 +260,14 @@ pub fn problems(config: &ModelConfig, lookup: &dyn Fn(&str) -> Found) -> Vec<Str
         ));
     }
     let mut out = Vec::new();
+    // The served vocabulary is a prefix of the table: it may stop short of the
+    // padded rows (tokenizer cap) but never run past them.
+    if g.vocab > g.table_rows {
+        out.push(format!(
+            "served vocabulary {} exceeds the embedding table's {} rows",
+            g.vocab, g.table_rows
+        ));
+    }
     for e in &expects {
         let Some((shape, dtype)) = lookup(&e.name) else {
             out.push(format!("{} is missing", e.name));
@@ -265,10 +285,10 @@ pub fn problems(config: &ModelConfig, lookup: &dyn Fn(&str) -> Found) -> Vec<Str
         }
     }
     if let Some((shape, dtype)) = lookup(LM_HEAD) {
-        if shape != [g.vocab, g.hidden] {
+        if shape != [g.table_rows, g.hidden] {
             out.push(format!(
                 "{LM_HEAD} has shape {shape:?}, expected [{}, {}]",
-                g.vocab, g.hidden
+                g.table_rows, g.hidden
             ));
         }
         if !matches!(dtype, WeightDtype::BF16 | WeightDtype::FP8E4M3) {

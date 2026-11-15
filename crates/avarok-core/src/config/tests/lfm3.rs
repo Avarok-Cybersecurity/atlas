@@ -105,6 +105,9 @@ fn dimensions_match_the_checkpoint() {
     assert_eq!(c.hidden_size, 2048);
     assert_eq!(c.intermediate_size, 7680);
     assert_eq!(c.vocab_size, 128_000);
+    // The table height the loader checks stays 128000 after the server caps
+    // `vocab_size` to the tokenizer's count (125033).
+    assert_eq!(c.embed_rows, 128_000);
     assert_eq!(c.num_attention_heads, 16);
     assert_eq!(c.num_key_value_heads, 4);
     assert_eq!(c.head_dim, 128);

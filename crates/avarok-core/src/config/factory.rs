@@ -14,6 +14,7 @@ impl ModelConfig {
             num_hidden_layers: 48,
             intermediate_size: 5120,
             vocab_size: 151936,
+            embed_rows: 0,
             num_attention_heads: 16,
             num_attention_heads_per_layer: Vec::new(),
             num_key_value_heads: 2,

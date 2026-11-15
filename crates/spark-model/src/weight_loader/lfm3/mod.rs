@@ -43,6 +43,8 @@ mod tests;
 mod tests_fp8;
 #[cfg(test)]
 mod tests_layers;
+#[cfg(test)]
+mod tests_vocab;
 
 use anyhow::Result;
 use avarok_core::config::ModelConfig;

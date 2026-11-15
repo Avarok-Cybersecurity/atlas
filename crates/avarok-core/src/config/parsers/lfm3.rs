@@ -304,6 +304,10 @@ pub(crate) fn parse_lfm3(raw: &Value) -> Result<ModelConfig> {
     config.num_hidden_layers = n_layers;
     config.intermediate_size = inter;
     config.vocab_size = vocab;
+    // The checkpoint's table height. The server later caps `vocab_size` to the
+    // tokenizer's count (125033 on the 128000-row LFM3 table); the loader
+    // checks tensor shapes against this value, not the capped one.
+    config.embed_rows = vocab;
     config.num_attention_heads = heads;
     config.num_attention_heads_per_layer.clear();
     config.num_key_value_heads = kv_heads;

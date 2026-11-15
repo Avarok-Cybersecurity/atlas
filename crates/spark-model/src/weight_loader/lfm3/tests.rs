@@ -223,7 +223,10 @@ fn the_tables_upload_once_and_the_store_owns_them() {
 
 /// Run `names::problems` over a lookup that serves every expected tensor as
 /// BF16 with its expected shape, after `mutate` has had a go at each answer.
-fn problems_with(config: &ModelConfig, mutate: impl Fn(&str, &mut names::Found)) -> Vec<String> {
+pub(super) fn problems_with(
+    config: &ModelConfig,
+    mutate: impl Fn(&str, &mut names::Found),
+) -> Vec<String> {
     let g = Geometry::of(config);
     let mut expects = global_expectations(&g);
     for i in 0..config.num_hidden_layers {
