@@ -108,7 +108,7 @@ pub fn emit_token(
     // Silently skip </think> tokens outside thinking mode (same as process_decode_logits).
     if !a.inside_thinking && a.think_end_token == Some(tok) {
         a.think_skip_count += 1;
-        if a.think_skip_count >= 50 {
+        if !sched.levers.disable_watchdogs && a.think_skip_count >= 50 {
             a.finished = true;
             // Name the cut -- MTP twin of the decode_logits_step site; see
             // `GUARD_STOP_THINK_SKIP` for why an unnamed skip-site finish
