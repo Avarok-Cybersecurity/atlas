@@ -305,7 +305,12 @@ impl NcclBackend {
             ensure!(self.check_async_error(comm), "NCCL asynchronous failure");
             nccl::stream_ready(self.legacy_stream)
         };
-        let pause = || std::thread::sleep(Duration::from_millis(1));
+        // A141: a fixed 1ms sleep on every non-ready poll cost +10.6 ms/step
+        // on the decode hot path (10 broadcasts/step, each essentially never
+        // ready on the first query but usually done within microseconds).
+        // adaptive_pause() spins briefly, then yields, then falls back to an
+        // increasing-but-capped sleep — see collective_wait::AdaptiveBackoff.
+        let pause = crate::collective_wait::adaptive_pause();
         let completion = if idle_command {
             crate::collective_wait::poll_idle_command(ready, pause)
         } else {
