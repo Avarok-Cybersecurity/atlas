@@ -5,6 +5,17 @@ params = "27B"
 active_params = "27B"
 architecture = "Hybrid Attention + GDN + Dense FFN + MRoPE"
 
+# Needle that disambiguates this target from the qwen3.8-27b target added
+# alongside it: both declare (model_type "qwen3_5", hidden_size 5120) — the
+# two checkpoints' config.json files are byte-identical across every field
+# resolution can see — so the tie is broken on the checkpoint reference
+# (HF id / --model-name / model dir), case-insensitively. Without this,
+# validate_collision_match_names fails the build. "qwen3.5-27b" is NOT
+# included (unlike gb10/qwen3.6-27b): there is no strix qwen3.5-27b target,
+# so claiming that needle would silently route 3.5 checkpoints onto the 3.6
+# kernel set.
+match_names = ["qwen3.6-27b"]
+
 # Architecture mirrors the existing Qwen3.5-27B (hybrid GDN + full-attention,
 # 4:1 pattern). Diff vs Qwen3.5-27B: vocab 152K → 248K, MRoPE-interleaved
 # enabled by default in the upstream config (Qwen3.5-27B picked up MRoPE only
