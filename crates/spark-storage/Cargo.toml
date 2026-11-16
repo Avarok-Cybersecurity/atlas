@@ -43,7 +43,7 @@ half = "2"
 # all three crates and rewriting the eight predictor/projection call sites --
 # its own change, not a dependency bump. spark-runtime, whose only rand
 # dependency is `rand` itself, is on 0.9.
-rand = "0.8"
+rand = "0.9"
 rand_chacha = "0.3"
 rand_distr = "0.4"
 
