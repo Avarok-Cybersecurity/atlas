@@ -79,7 +79,7 @@ jobs:
         # not a red main that blocks unrelated work. Every downstream step is
         # gated on this one's outcome and the job concludes green either way.
         continue-on-error: true
-        uses: Avarok-Cybersecurity/AutoRepoRAG@7b74c743c9d2b0fe2775ee1a62715eca15e98799 # v1.0.0
+        uses: Avarok-Cybersecurity/AutoRepoRAG@711dbe0c9e6d0597af6051cd1e28a95b92afc865 # v2.2.1
         with:
           collection: atlas-coderag
           # output-name is a basename: the action writes <name>.jsonl,
@@ -128,7 +128,7 @@ jobs:
 
       - name: Upload CI copy (30-day artifact)
         if: steps.rag.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: atlas-coderag
           path: |
