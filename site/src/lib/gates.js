@@ -197,6 +197,24 @@ export function panelsFor(benchId, records) {
     if (peak.length > 0) {
       panels.push({ title: 'peak aggregate throughput', unit: 'tok/s', metrics: peak });
     }
+    // ITL p90 at the widest rung, the client's SSE-derived figure beside the
+    // server's own accounting (#1218): two independent measurements of one
+    // quantity, drawn together so a gap between them can be seen. The rung is
+    // read from the records, never pinned (decode-floor's reason). One panel
+    // per variant: colour is the model's and the dash is spent on client vs
+    // server, leaving nothing to tell DFlash2 from no-drafter on one panel.
+    for (const v of splitByVariant(records)) {
+      const c = widestItlRung(v.records);
+      if (c === null) continue;
+      panels.push({
+        title: v.label ? `ITL p90 at c${c} (${v.label})` : `ITL p90 at c${c}`,
+        unit: 'ms',
+        metrics: [
+          { key: `c${c}_tpot_p90_ms`, label: 'client (SSE)', variant: v.bench },
+          { key: `c${c}_server_tpot_p90_ms`, label: 'server', variant: v.bench, dashed: true }
+        ]
+      });
+    }
     return panels;
   }
   // Unknown future benchmark: chart its first numeric metric so new suites
@@ -217,6 +235,19 @@ export const ladderPoints = (record) =>
     })
     .filter(Boolean)
     .sort((a, b) => a.c - b.c);
+
+// c{C}_tpot_p90_ms (client, from the SSE stream) and c{C}_server_tpot_p90_ms
+// (the server's own count), same metrics map. The widest rung any record
+// carries either key for, or null when none does.
+const ITL_KEY = /^c(\d+)_(?:server_)?tpot_p90_ms$/;
+function widestItlRung(records) {
+  const rungs = records
+    .flatMap((r) => Object.keys(r.metrics ?? {}))
+    .map((k) => ITL_KEY.exec(k))
+    .filter(Boolean)
+    .map((m) => +m[1]);
+  return rungs.length > 0 ? Math.max(...rungs) : null;
+}
 
 /**
  * The records for a benchmark, with every COMPLETE shard partition folded into
