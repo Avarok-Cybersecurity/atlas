@@ -1,0 +1,222 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+//! Responsibility: the port sprint's (`port/consumer-opt`) `spark serve` flags,
+//! flattened into `ServeArgs` as its `port_sprint` field (`ServeArgs::port` is
+//! the HTTP listen port).
+//!
+//! Its own struct so the lanes' flags never touch `serve_args.rs` (allow-listed
+//! over the cap). Every flag is an `Option` or has a default that changes
+//! nothing: an absent flag publishes nothing, so the row's environment
+//! variable and then the target's declaration decide, exactly as without the
+//! flag. Each flag is published by one line in `main_modules/port_apply.rs`.
+//! Lines are inserted immediately BEFORE the marker below by the coordinator's
+//! fragment apply pass.
+
+/// The port lanes' serve flags.
+#[derive(clap::Args, Debug, Clone, Default, PartialEq)]
+pub struct PortArgs {
+    /// MTP draft-head vocabulary (`mtp_vocab_rank` row): `id` holds the first
+    /// `--mtp-vocab` token ids, `freq` the most frequent tokens of the shipped
+    /// ranking (Qwen3.5 tokenizer only; logs and keeps `id` otherwise). Absent:
+    /// `AVAROK_MTP_VOCAB_RANK`, then the target's declaration.
+    #[arg(long = "mtp-vocab-rank", value_name = "RANK", value_parser = ["id", "freq"])]
+    pub mtp_vocab_rank: Option<String>,
+    /// Copy drafter for speculative rounds (lane L13): `off`, `chain` (fill
+    /// the MTP verify chain from an earlier copy of the context), `rounds`
+    /// (verify a confident copy of up to `--copy-draft-max-len` tokens alone,
+    /// single sequence) or `auto` (both). Absent: the `copy_draft` row
+    /// (`AVAROK_COPY_DRAFT`, else the target's declaration, `off`). Outputs
+    /// stay the target's own: every copied token is verified.
+    #[arg(long = "copy-draft", value_name = "MODE")]
+    pub copy_draft: Option<String>,
+    /// Copy drafter: tokens a copy source must agree on before it may fill the
+    /// MTP chain (2 to 64; default 8, or `AVAROK_COPY_DRAFT_MIN_MATCH`).
+    #[arg(long = "copy-draft-min-match", value_name = "N")]
+    pub copy_draft_min_match: Option<u32>,
+    /// Copy drafter: the longest lookup round, in tokens (1 to 15; default 15,
+    /// or `AVAROK_COPY_DRAFT_MAX_LEN`).
+    #[arg(long = "copy-draft-max-len", value_name = "N")]
+    pub copy_draft_max_len: Option<u32>,
+    /// Copy drafter: the factor by which a copy chain's expected accepted
+    /// tokens must beat the MTP chain's (default 1.3, or
+    /// `AVAROK_COPY_DRAFT_ADVANTAGE`).
+    #[arg(long = "copy-draft-advantage", value_name = "X")]
+    pub copy_draft_advantage: Option<f32>,
+    /// Affine W4 routes (lane L23a): code width of the load-time BF16 -> affine
+    /// quantizer, 2, 3, 4, 5, 6 or 8 (default 4, or `AVAROK_W4_BITS`). Widths
+    /// other than 4 need `--w4-group 64`. Changes nothing unless an affine
+    /// route row is on (`AVAROK_DENSE_AFFINE4_FROM_BF16`,
+    /// `AVAROK_GDN_AFFINE4_FROM_BF16`, `AVAROK_ATTN_AFFINE4_FROM_BF16`).
+    #[arg(long = "w4-bits", value_name = "BITS")]
+    pub w4_bits: Option<u8>,
+    /// Affine W4 routes: inputs per scale and bias, 32, 64 or 128 at 4 bits,
+    /// 64 at the other widths (default 64, or `AVAROK_W4_GROUP`;
+    /// `AVAROK_W4_GDN_GROUP` sets the GDN projections' group alone).
+    #[arg(long = "w4-group", value_name = "N")]
+    pub w4_group: Option<u16>,
+    /// Affine W4 routes: shrink candidates the quantizer tries per group,
+    /// keeping the least squared error (0 = plain MLX min-max, the default,
+    /// or `AVAROK_W4_CLIP_SEARCH`; at most 10 at 4 bits, 8 otherwise). Load
+    /// time only.
+    #[arg(long = "w4-clip-search", value_name = "N")]
+    pub w4_clip_search: Option<u8>,
+    /// Packed LM head (lane L24): keep a GGUF checkpoint's Q6_K output head as
+    /// the file's raw super-blocks and serve it with the Ada keep-packed GEMV
+    /// (`port::packed_head`; 1.04 GB instead of 2.54 GB read per token on
+    /// Qwen3.8-27B). Needs the keep-packed GGUF route (`AVAROK_GGUF_NATIVE_IQ4`)
+    /// and `--lm-head-dtype bf16`; refused with `--speculative`, whose drafter
+    /// reads the head as BF16. Off: the head is expanded as before.
+    #[arg(long = "lm-head-packed")]
+    pub lm_head_packed: bool,
+    /// Pinned host pool (lane L25): MiB page-locked per `cuMemHostRegister`
+    /// call, 1 to 4096 (default 64). Each pool chunk is pinned by its own call,
+    /// on a background thread after the first chunks; a run never spans two
+    /// chunks, so this is also the largest run, and the batched KV swap's
+    /// staging (two halves) never exceeds one chunk.
+    #[arg(long = "pinned-pool-chunk-mb", value_name = "MIB")]
+    pub pinned_pool_chunk_mb: Option<u32>,
+    /// Host-RAM KV tier budget in GiB (lane L26b; 0 or absent = off). The tier serves only
+    /// with the `kv_host_tier` row on (`AVAROK_KV_HOST_TIER`) and the prefix cache on; the
+    /// budget must leave 8 GiB of host RAM.
+    #[arg(long = "kv-host-tier-gb", value_name = "GIB")]
+    pub kv_host_tier_gb: Option<u32>,
+    /// Host KV tier: the shortest restore, in tokens (default 256).
+    #[arg(long = "kv-tier-min-tokens", value_name = "N")]
+    pub kv_tier_min_tokens: Option<u32>,
+    /// Host KV tier: D2H write-back bytes one scheduler step may start, in MiB (default 32).
+    #[arg(long = "kv-tier-writeback-mb-per-step", value_name = "MIB")]
+    pub kv_tier_writeback_mb_per_step: Option<u32>,
+    /// Host KV tier eviction policy: `lru` (default), `arc` or `heat`.
+    #[arg(long = "kv-tier-policy", value_name = "POLICY")]
+    pub kv_tier_policy: Option<String>,
+    /// Host KV tier store mode: `eager` (default: copy newly cached blocks at once) or `lazy`
+    /// (copy them only when they approach GPU eviction).
+    #[arg(long = "kv-tier-store", value_name = "MODE")]
+    pub kv_tier_store: Option<String>,
+    /// Disk KV tier (lane L27, row `kv_tier_disk`, `AVAROK_KV_TIER_DISK`):
+    /// directory where host-tier blocks evicted from host RAM are kept, one
+    /// record file each, and adopted again by the next start of the same
+    /// model. Needs `--kv-tier-disk-gb` and the host KV tier; refused under
+    /// `--hermetic`. One server per directory. Ignored while the row is off.
+    #[arg(long = "kv-tier-dir", value_name = "DIR")]
+    pub kv_tier_dir: Option<std::path::PathBuf>,
+    /// Disk KV tier: byte budget in GiB (least recently used records are
+    /// removed first). Ignored while the `kv_tier_disk` row is off.
+    #[arg(long = "kv-tier-disk-gb", value_name = "GIB")]
+    pub kv_tier_disk_gb: Option<u64>,
+    /// Quest page-sparse decode (lane L30, row `attn_page_sparse`, approximate,
+    /// off by default): pages of 64 tokens kept by score per sequence, layer
+    /// and step, 0 to 4096 (default 32). Only with `AVAROK_ATTN_PAGE_SPARSE=1`.
+    #[arg(long = "attn-sparse-topk-pages", value_name = "PAGES")]
+    pub attn_sparse_topk_pages: Option<u32>,
+    /// Quest page-sparse decode: the selector attends densely (an identity
+    /// view, bit-identical) at or below this many tokens of context (default
+    /// 32768).
+    #[arg(long = "attn-sparse-min-ctx", value_name = "TOKENS")]
+    pub attn_sparse_min_ctx: Option<u32>,
+    /// Quest page-sparse decode: leading 64-token pages always kept (attention
+    /// sinks), 0 to 1024 (default 1).
+    #[arg(long = "attn-sparse-sink-pages", value_name = "PAGES")]
+    pub attn_sparse_sink_pages: Option<u32>,
+    /// Quest page-sparse decode: trailing tokens always kept (the recent
+    /// window, from a page boundary), 1 to 1048576 (default 2048).
+    #[arg(long = "attn-sparse-recent-tokens", value_name = "TOKENS")]
+    pub attn_sparse_recent_tokens: Option<u32>,
+    /// Bounded KV view (lane L32, APPROXIMATE attention): tokens each user
+    /// turn's view keeps (sink + recent window + the best blocks). Absent or
+    /// 0: off. Serves only with the `kv_view_selection` row on
+    /// (`AVAROK_KV_VIEW=1`), on Ada.
+    #[arg(long = "kv-view-budget-tokens", value_name = "TOKENS")]
+    pub kv_view_budget_tokens: Option<u32>,
+    /// Bounded KV view: leading tokens always kept, the attention sinks
+    /// (default 128).
+    #[arg(long = "kv-view-sink-tokens", value_name = "TOKENS")]
+    pub kv_view_sink_tokens: Option<u32>,
+    /// Bounded KV view: newest tokens kept in full at each selection (default
+    /// 2048).
+    #[arg(long = "kv-view-recent-tokens", value_name = "TOKENS")]
+    pub kv_view_recent_tokens: Option<u32>,
+    /// Bounded KV view: query rows taken from the end of the final user
+    /// message to score the blocks (default 512, at most 2048).
+    #[arg(long = "kv-view-query-tokens", value_name = "TOKENS")]
+    pub kv_view_query_tokens: Option<u32>,
+    /// RetroInfer retrieval attention (lane L33, row `retro_attn`,
+    /// `AVAROK_RETRO_ATTN`): APPROXIMATE full-attention decode from
+    /// `--retro-min-context` tokens on (exact sink, tail and retrieval
+    /// clusters, centroid estimates for the next clusters). Off by default;
+    /// decode runs without CUDA graphs while it is on.
+    #[arg(long = "retro-attn")]
+    pub retro_attn: bool,
+    /// RetroInfer: fraction of clusters attended exactly (default 0.018,
+    /// `AVAROK_RETRO_RETRIEVAL_BUDGET`).
+    #[arg(long = "retro-retrieval-budget", value_name = "FRACTION")]
+    pub retro_retrieval_budget: Option<f64>,
+    /// RetroInfer: fraction of clusters estimated through their centroids
+    /// (default 0.232, `AVAROK_RETRO_ESTIMATION_BUDGET`).
+    #[arg(long = "retro-estimation-budget", value_name = "FRACTION")]
+    pub retro_estimation_budget: Option<f64>,
+    /// RetroInfer: tokens per k-means segment at index build (default 8192,
+    /// `AVAROK_RETRO_SEGMENT_TOKENS`).
+    #[arg(long = "retro-segment-tokens", value_name = "TOKENS")]
+    pub retro_segment_tokens: Option<u32>,
+    /// RetroInfer: average tokens per cluster (default 16, `AVAROK_RETRO_AVG_CLUSTER`).
+    #[arg(long = "retro-avg-cluster", value_name = "TOKENS")]
+    pub retro_avg_cluster: Option<u32>,
+    /// RetroInfer: attention-sink tokens kept exact (default 4, `AVAROK_RETRO_SINK`).
+    #[arg(long = "retro-sink", value_name = "TOKENS")]
+    pub retro_sink: Option<u32>,
+    /// RetroInfer: most recent tokens kept exact (default 64, `AVAROK_RETRO_WINDOW`).
+    #[arg(long = "retro-window", value_name = "TOKENS")]
+    pub retro_window: Option<u32>,
+    /// RetroInfer: below this context a sequence runs dense attention
+    /// (default 16384, `AVAROK_RETRO_MIN_CONTEXT`).
+    #[arg(long = "retro-min-context", value_name = "TOKENS")]
+    pub retro_min_context: Option<u32>,
+    /// RetroInfer: generated tokens clustered into the index at a time
+    /// (default 1024, `AVAROK_RETRO_UPDATE_INTERVAL`).
+    #[arg(long = "retro-update-interval", value_name = "TOKENS")]
+    pub retro_update_interval: Option<u32>,
+    /// RetroInfer shadow mode (`AVAROK_RETRO_SHADOW`): measure the retro zones
+    /// against dense attention on the CPU every `AVAROK_RETRO_SHADOW_EVERY`
+    /// (64) decode steps for the layers in `AVAROK_RETRO_SHADOW_LAYERS` (all),
+    /// published as `atlas_retro_shadow_*`. The output is unchanged; decode
+    /// runs without CUDA graphs while it is on.
+    #[arg(long = "retro-shadow")]
+    pub retro_shadow: bool,
+    /// RetroInfer: device memory for indexes, the prefix index cache and build
+    /// scratch, in MiB (default 2048, `AVAROK_RETRO_INDEX_CACHE_MB`), charged
+    /// to the KV-block budget while retro attention is on.
+    #[arg(long = "retro-index-cache-mb", value_name = "MIB")]
+    pub retro_index_cache_mb: Option<u32>,
+    /// Block-sparse prefill (lane L35, APPROXIMATE; only with the `prefill_sparse_attn` row on,
+    /// `AVAROK_PREFILL_SPARSE_ATTN=1`): a prefill chunk goes sparse when it attends to at least this
+    /// many keys. Absent: `AVAROK_PREFILL_SPARSE_MIN_TOKENS`, else 32768.
+    #[arg(long = "prefill-sparse-min-tokens", value_name = "N")]
+    pub prefill_sparse_min_tokens: Option<u32>,
+    /// Block-sparse prefill: the share of each query block's softmax mass the kept key blocks must
+    /// hold, in (0, 1]; 1.0 keeps every block and serves through the dense kernel (the identity gate).
+    /// Absent: `AVAROK_PREFILL_SPARSE_THRESHOLD`, else 0.9.
+    #[arg(long = "prefill-sparse-threshold", value_name = "X")]
+    pub prefill_sparse_threshold: Option<f32>,
+    /// Block-sparse prefill: the antidiagonal stride of the block scoring, 4, 8 or 16. Absent:
+    /// `AVAROK_PREFILL_SPARSE_STRIDE`, else 8.
+    #[arg(long = "prefill-sparse-stride", value_name = "S")]
+    pub prefill_sparse_stride: Option<u32>,
+    /// Window desk (lane L36, row `kv_window_desk`): positions of the recent window each long
+    /// sequence keeps on the GPU (default 32768; at least 1024). Serves only with the row on
+    /// (`AVAROK_KV_WINDOW_DESK`); approximate attention.
+    #[arg(long = "kv-window-tokens", value_name = "N")]
+    pub kv_window_tokens: Option<u32>,
+    /// Window desk: head positions that never leave the GPU (default 2048: system prompt and
+    /// attention sinks).
+    #[arg(long = "kv-window-head-tokens", value_name = "N")]
+    pub kv_window_head_tokens: Option<u32>,
+    /// Chat template: `sharp` (the embedded Sharp template for Qwen3.5/3.6/3.8), `sharp-no-terse` (the same
+    /// template with its terseness system prompt off), `model` (the default: the model's own template, with
+    /// the `jinja-templates/` overrides as before) or the path of a Jinja file. Mirrors `AVAROK_CHAT_TEMPLATE`;
+    /// the flag wins and an empty value counts as unset. An unknown word or an unreadable path fails startup.
+    /// A choice overrides `jinja-templates/` and the OpenAI variants. Off by default.
+    #[arg(long = "chat-template", value_name = "sharp|sharp-no-terse|model|PATH")]
+    pub chat_template: Option<String>,
+    // @port:fields
+}

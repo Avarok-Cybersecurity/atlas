@@ -461,6 +461,7 @@ impl TransformerModel {
         if capture_active {
             match self.gpu.end_capture(stream) {
                 Ok(graph) if graph.0 != 0 => {
+                    super::graph_family::note_capture(graph);
                     tracing::info!(
                         "CUDA graph captured successfully for slot={} (handle={:?})",
                         seq.slot_idx,

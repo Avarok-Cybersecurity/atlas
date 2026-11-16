@@ -68,7 +68,10 @@ fn fp8(gpu: &MockGpuBackend, n: u32, k: u32) -> Fp8Weight {
 /// A full-attention layer whose Q/K/V/O weights are block-scaled FP8 — the
 /// shape class `Qwen/Qwen3.8-27B-FP8` presents and the only one that can
 /// satisfy the deleted arms' `as_fp8()` gate.
-fn native_fp8_attention_layer(gpu: &MockGpuBackend, config: &ModelConfig) -> Qwen3AttentionLayer {
+pub(super) fn native_fp8_attention_layer(
+    gpu: &MockGpuBackend,
+    config: &ModelConfig,
+) -> Qwen3AttentionLayer {
     let dense = DenseWeight {
         weight: gpu
             .alloc(config.hidden_size * config.hidden_size * 2)

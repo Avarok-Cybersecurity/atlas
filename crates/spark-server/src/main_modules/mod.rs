@@ -9,12 +9,16 @@ pub(crate) mod kv_dtypes;
 pub(crate) mod middleware;
 pub(crate) mod model_host;
 pub(crate) mod model_swap;
+// The port sprint's (`port/consumer-opt`) flag and row publication.
+pub(crate) mod port_apply;
 pub(crate) mod promotion;
 pub(crate) mod serve;
 pub(crate) mod serve_flags;
 pub(crate) mod serve_load;
 pub(crate) mod serve_phases;
+// Hot-swap phase timing, residency and the `/v1/models` x_atlas objects (L41).
 mod serve_router;
+pub(crate) mod swap_metrics;
 
 #[cfg(test)]
 mod tests;

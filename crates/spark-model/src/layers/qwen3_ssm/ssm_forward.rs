@@ -43,7 +43,9 @@ impl Qwen3SsmLayer {
         let deinterleaved = ctx.buffers.ssm_deinterleaved();
         let qkvz_size = ctx.config.ssm_qkvz_size() as u32;
         prof!("qkvz", {
-            if let Some(ref fp8) = self.qkvz_fp8w {
+            if self.w4_proj.is_some() {
+                self.w4_qkvz_decode(ctx, normed, deinterleaved, stream)
+            } else if let Some(ref fp8) = self.qkvz_fp8w {
                 // FP8 native: w8a16_gemv + deinterleave (no fused QKVZ variant yet).
                 // `w8a16_gemv` consumes `[N/BS,K/BS] BF16` block scales
                 // (see `kernels/gb10/common/w8a16_gemv.cu` line 5).
@@ -411,7 +413,9 @@ impl Qwen3SsmLayer {
 
         // ── 8. Output projection: [value_dim → hidden_size] ──
         let out = ctx.buffers.moe_output();
-        if let Some(ref fp8) = self.out_proj_fp8w {
+        if self.w4_proj.is_some() {
+            self.w4_out_rows(ctx, normed_out, out, 1, stream)?;
+        } else if let Some(ref fp8) = self.out_proj_fp8w {
             // `w8a16_gemv` consumes `[N/BS,K/BS] BF16` block scales —
             // the canonical Qwen FP8 release format.
             fp8.scale_format.expect(

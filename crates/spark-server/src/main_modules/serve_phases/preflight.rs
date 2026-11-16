@@ -12,12 +12,16 @@ use avarok_core::config::ModelConfig;
 
 use crate::cli;
 
+mod consumer_pools;
 mod decode_ring;
+mod dflash_fit;
 mod gpu_backend;
 mod headroom;
+mod measured_ceiling;
 mod per_sequence_state;
 mod post_load_audit;
 mod refusal;
+mod spec_headroom;
 mod ssm_h_fp16;
 #[cfg(any(feature = "cuda", feature = "metal"))]
 pub(crate) use gpu_backend::init_gpu_backend;
@@ -31,6 +35,10 @@ pub(crate) struct ReservePreflight {
     pub(crate) gdn_two_phase_bytes: usize,
     pub(crate) ssm_prefill_chunk: usize,
     pub(crate) max_batch_tokens_pre: usize,
+    /// Row `AVAROK_DFLASH_FIT`: the verify width the fit chose when
+    /// `--dflash-gamma` was not given and the default did not fit. The caller
+    /// pins it into `args.dflash_gamma`. `None` with the row off, always.
+    pub(crate) dflash_gamma: Option<usize>,
 }
 
 pub(crate) fn preflight_reserve(
@@ -56,6 +64,12 @@ pub(crate) fn preflight_reserve(
     let spec_on_pool =
         args.speculative || args.self_speculative || args.ngram_speculative || args.dflash;
     ssm_h_fp16_preconditions(args, config)?;
+    // Port lane L24 (ada only, `memory_fit_consumer`): a measured context
+    // ceiling may refuse what the formula below would admit, and the verify
+    // pools are fitted to the card before `mtp_state_slots` is read, so this
+    // reserve, `SsmStatePool::new` and the scheduler see one slot count.
+    measured_ceiling::check(args, config, post_load)?;
+    let _ = consumer_pools::publish_verify_slot_fit(args, config, free_mem, post_load);
     // SSM state pool = per-seq live state (max_batch blobs) + MTP verify
     // state (intermediates + checkpoint) for the slots spec dispatch can
     // actually reach. SSOT: `ssm_reserve::mtp_state_slots` — the SAME
@@ -89,10 +103,18 @@ pub(crate) fn preflight_reserve(
     // remote checkpoint falls back to `resolved_dflash_gamma`'s 16 ceiling —
     // the same unknown-γ fallback the pool allocation uses (`γ+1 = 17`), so
     // the miss direction is over-reserve, never under.
+    //
+    // Row `AVAROK_DFLASH_FIT`: an explicit `--dflash-gamma` is the gamma the
+    // head and `SsmStatePool::new` use (`DflashBuildArgs::gamma`), so the
+    // pools are reserved at it; without the row they are reserved at the
+    // drafter's default whatever the flag says (`dflash_fit.rs`).
     let pool_num_drafts = if args.dflash {
-        peek_dflash_block_size(args.draft_model.as_deref())
-            .map(spark_model::layers::qwen3_ssm::default_dflash_gamma)
-            .unwrap_or_else(|| args.resolved_dflash_gamma(None))
+        match args.dflash_gamma.filter(|_| dflash_fit::enabled()) {
+            Some(g) => g,
+            None => peek_dflash_block_size(args.draft_model.as_deref())
+                .map(spark_model::layers::qwen3_ssm::default_dflash_gamma)
+                .unwrap_or_else(|| args.resolved_dflash_gamma(None)),
+        }
     } else {
         args.resolved_num_drafts()
     };
@@ -175,6 +197,32 @@ pub(crate) fn preflight_reserve(
         args.max_batch_size,
     )
     .total_bytes();
+    // The per-sequence SSM state blob — `num_ssm_layers x (h + conv)`, 151.5
+    // MiB on the 27B. Both snapshot regions are whole multiples of it:
+    // Marconi reserves one per cache slot, the decode ring one per active
+    // sequence per ring slot.
+    let per_seq_blob = config.num_ssm_layers() * (h_state_bytes + conv_state_bytes);
+    // Memory left beside the checkpoint. Both snapshot regions yield to a share
+    // of it (`ssm_reserve/budget.rs`): constants sized for a 120 GB part are
+    // most of a 16 GB card.
+    // On the BF16 -> FP8 FFN route the resident weights are the checkpoint
+    // minus what the route frees (2.11 GiB of the 4B's 8.68 GiB).
+    let beside_weights = spark_model::ssm_reserve::memory_beside_weights(
+        free_mem,
+        headroom::resident_weight_bytes(
+            headroom::checkpoint_bytes(post_load.model_dir).unwrap_or(0) as usize,
+            // Port lane L24 (row `embed_host_offload`; 0 with the row off or a tied
+            // head): the device copy of the embedding table the load frees. Added
+            // here, not folded into `fp8_ffn_freed`, because `consumer_pools.rs`
+            // subtracts the same bytes on top of `fp8_ffn_freed` for its own fit.
+            post_load.fp8_ffn_freed
+                + spark_model::port::embed_host::predicted_freed_bytes(
+                    config.vocab_size,
+                    config.hidden_size,
+                    config.tie_word_embeddings,
+                ),
+        ),
+    );
     // Marconi snapshot region. SSOT:
     // `spark_model::ssm_reserve::marconi_snapshot_slots` makes the SAME
     // decision (same env var, same predicate) the runtime allocation in
@@ -183,13 +231,38 @@ pub(crate) fn preflight_reserve(
     // unreachable — 2380 MiB on GLM-5.3 (16 slots x 34 KDA layers x FP32
     // h+conv) that nothing can ever restore from. Kill switch:
     // AVAROK_SSM_MARCONI_FULL.
-    let marconi = spark_model::ssm_reserve::marconi_snapshot_slots(
-        args.ssm_cache_slots,
-        spark_model::ssm_reserve::prefix_caching_active(
-            args.prefix_caching_enabled(),
-            config.kv_only_prefix_cache_is_safe(),
-        ),
+    //
+    // With the cache active the slot count still yields to its share of the
+    // memory beside the weights. The cap is published BEFORE the decision, so
+    // the reserve computed here and the allocation in `TransformerModel::new`
+    // both go through the capped answer. `AVAROK_SSM_MARCONI_FULL` opts out of
+    // the cap too, as it opts out of the skip.
+    let prefix_cache_active = spark_model::ssm_reserve::prefix_caching_active(
+        args.prefix_caching_enabled(),
+        config.kv_only_prefix_cache_is_safe(),
     );
+    if prefix_cache_active && per_seq_blob > 0 && !spark_model::ssm_reserve::marconi_reserve_full()
+    {
+        let cap = spark_model::ssm_reserve::cap_marconi_slots(
+            args.ssm_cache_slots,
+            per_seq_blob,
+            beside_weights,
+        );
+        if cap < args.ssm_cache_slots {
+            spark_model::ssm_reserve::set_marconi_slot_cap(cap);
+            tracing::warn!(
+                "SSM snapshot pool: Marconi capped at {cap} of {} slots ({:.0} MB of {:.0} MB) \
+                 so it takes at most 1/{} of the {:.2} GB beside the weights",
+                args.ssm_cache_slots,
+                (cap * per_seq_blob) as f64 / (1024.0 * 1024.0),
+                (args.ssm_cache_slots * per_seq_blob) as f64 / (1024.0 * 1024.0),
+                spark_model::ssm_reserve::MARCONI_BUDGET_DIVISOR,
+                beside_weights as f64 / (1024.0 * 1024.0 * 1024.0),
+            );
+        }
+    }
+    let marconi =
+        spark_model::ssm_reserve::marconi_snapshot_slots(args.ssm_cache_slots, prefix_cache_active);
     if let Some(reason) = marconi.skip_reason {
         tracing::info!(
             "SSM snapshot pool: Marconi region SKIPPED ({}) — {} slot(s) x {} layer(s) \
@@ -202,19 +275,15 @@ pub(crate) fn preflight_reserve(
                 / (1024 * 1024),
         );
     }
-    // The per-sequence SSM state blob — `num_ssm_layers x (h + conv)`, 151.5
-    // MiB on the 27B. Both snapshot regions are whole multiples of it:
-    // Marconi reserves one per cache slot, the decode ring one per active
-    // sequence per ring slot.
-    let per_seq_blob = config.num_ssm_layers() * (h_state_bytes + conv_state_bytes);
     let marconi_bytes = marconi.slots * per_seq_blob;
-    // Same predicate as the pool term: DFlash IS a speculative serve and
-    // pays the same graph/JIT/scratch overheads the 4 GB headroom exists for.
-    let cuda_headroom: usize = if spec_on_pool {
-        4 * 1024 * 1024 * 1024
-    } else {
-        512 * 1024 * 1024
-    };
+    // Same predicate as the pool term (`spec_headroom::cuda_headroom`): the
+    // Qwen MTP head is priced from what it allocates after the KV sizing,
+    // every other drafter keeps the flat 4 GiB.
+    let (cuda_headroom, headroom_why) = spec_headroom::cuda_headroom(args, config);
+    tracing::info!(
+        "Preflight CUDA headroom: {} MB ({headroom_why})",
+        cuda_headroom / (1024 * 1024)
+    );
     let gdn_two_phase_bytes: usize = {
         let key_dim = config.linear_num_key_heads * config.linear_key_head_dim;
         let value_dim = config.linear_num_value_heads * config.linear_value_head_dim;
@@ -257,6 +326,7 @@ pub(crate) fn preflight_reserve(
         per_seq_blob,
         fixed_reserve + buffer_arena_bytes,
         free_mem,
+        beside_weights,
         &yardstick,
     );
     tracing::info!("{}", fit.decision);
@@ -264,7 +334,32 @@ pub(crate) fn preflight_reserve(
         tracing::warn!("SSM decode-rollback ring auto-fit — {}", warning);
     }
     let ssm_snapshot_bytes = marconi_bytes + fit.slots * ring_slot_bytes;
-    let inference_reserve: usize = fixed_reserve + fit.slots * ring_slot_bytes;
+    let mut inference_reserve: usize = fixed_reserve + fit.slots * ring_slot_bytes;
+    // Row `AVAROK_DFLASH_FIT` (`dflash_fit.rs`): a narrower verify width swaps
+    // its pools and headroom into the reserve. Row off: no plan, nothing moves.
+    let (mut ssm_pool_bytes, mut cuda_headroom) = (ssm_pool_bytes, cuda_headroom);
+    let dflash_plan = dflash_fit::plan(
+        args,
+        config,
+        &dflash_fit::PlanInputs {
+            beside_weights,
+            kv_floor: headroom::kv_floor_bytes(args, config, post_load.kv_dtype),
+            arena: buffer_arena_bytes,
+            fixed: inference_reserve - ssm_pool_bytes - cuda_headroom,
+            h_blob: config.num_ssm_layers() * h_state_bytes,
+            conv_blob: config.num_ssm_layers() * conv_state_bytes,
+            mtp_state_slots,
+            h_f16_pool: spark_model::layers::qwen3_ssm::ssm_h_f16_pool_enabled(),
+            rollback: spark_model::ssm_reserve::ssm_rollback_mode(),
+            default_gamma: pool_num_drafts,
+        },
+    );
+    if let Some(p) = &dflash_plan {
+        inference_reserve =
+            inference_reserve - ssm_pool_bytes - cuda_headroom + p.ssm_pool_bytes + p.cuda_headroom;
+        ssm_pool_bytes = p.ssm_pool_bytes;
+        cuda_headroom = p.cuda_headroom;
+    }
     let total_reserve = inference_reserve + buffer_arena_bytes;
     if total_reserve > free_mem {
         return Err(refusal::reserve_refusal(
@@ -332,6 +427,7 @@ pub(crate) fn preflight_reserve(
         gdn_two_phase_bytes,
         ssm_prefill_chunk,
         max_batch_tokens_pre,
+        dflash_gamma: dflash_plan.map(|p| p.gamma),
     })
 }
 

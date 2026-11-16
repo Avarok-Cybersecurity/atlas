@@ -237,3 +237,58 @@ fn format_from_str() {
     );
     assert!(ReasoningFormat::from_str("nonsense").is_err());
 }
+
+// ── LFM3 (port sprint L37): the generation prompt ends in `<think>` ─────────
+
+#[test]
+fn lfm3_names_resolve_and_keep_their_own_identity() {
+    use std::str::FromStr;
+    for name in ["lfm3", "liquid", "LFM3"] {
+        assert_eq!(
+            ReasoningFormat::from_str(name).unwrap(),
+            ReasoningFormat::Lfm3,
+            "{name}"
+        );
+    }
+    let p = parser(ReasoningFormat::Lfm3);
+    assert_eq!(p.name(), "lfm3");
+    assert_eq!(p.start_tag(), "<think>");
+    assert_eq!(p.end_tag(), "</think>");
+}
+
+#[test]
+fn lfm3_closed_block_splits_on_end_tag() {
+    // The template ended the prompt with `<think>\n`, so the output starts
+    // inside the block.
+    let p = parser(ReasoningFormat::Lfm3);
+    let (reasoning, content) = p.extract_thinking(
+        "The user wants the capital of France.\n</think>\n\nParis.",
+        true,
+    );
+    assert_eq!(reasoning.unwrap(), "The user wants the capital of France.");
+    assert_eq!(content, "Paris.");
+}
+
+#[test]
+fn lfm3_tool_call_after_the_block_stays_in_content() {
+    let p = parser(ReasoningFormat::Lfm3);
+    let call = "<tool_call>\n<function=get_weather>\n<parameter=city>\nParis\n</parameter>\n</function>\n</tool_call>";
+    let (reasoning, content) =
+        p.extract_thinking(&format!("check the tool\n</think>\n{call}"), true);
+    assert_eq!(reasoning.unwrap(), "check the tool");
+    assert_eq!(content, call);
+}
+
+#[test]
+fn lfm3_cut_off_mid_think_is_all_reasoning_and_thinking_off_discards_it() {
+    let p = parser(ReasoningFormat::Lfm3);
+    let (reasoning, content) = p.extract_thinking("still reasoning when the budget ran out", true);
+    assert_eq!(
+        reasoning.unwrap(),
+        "still reasoning when the budget ran out"
+    );
+    assert_eq!(content, "");
+    let (reasoning, content) = p.extract_thinking("brief</think>answer", false);
+    assert!(reasoning.is_none());
+    assert_eq!(content, "answer");
+}

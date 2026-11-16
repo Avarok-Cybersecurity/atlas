@@ -156,6 +156,25 @@ impl Qwen3SsmLayer {
             );
         }
 
+        // Ada tensor-core chunked prefill (`gdn_chunk_tc_ada`): only with
+        // `[defaults] gdn_prefill_tc` on AND the Ada-only module in the image;
+        // otherwise `Ok(false)` and the FLA ladder below runs unchanged.
+        let tc = super::gdn_chunk_tc_ada::TcAdaArgs {
+            h_state,
+            h_state_is_table: false,
+            q: q_ptr,
+            k: k_ptr,
+            v: v_ptr,
+            gate: gates_buf,
+            beta: gates_buf.offset(nv * fp32),
+            out: gdn_out_buf,
+            shape: super::gdn_chunk_tc_ada::TcAdaShape::packed(1, k, nk, nv, kd, vd, conv_dim),
+            midchunk_capture: ctx.midchunk_capture.is_some() && midcap_idx.is_some(),
+        };
+        if self.prefill_gdn_tc_ada(&tc, ctx, stream)? {
+            return Ok(());
+        }
+
         // 2026-06-06: removed the concluded GDN-prefill experiment env flags
         // (AVAROK_GDN_CHUNK64 / AVAROK_FORCE_PERSISTENT / AVAROK_DISABLE_WY4) and their
         // dispatch branches. FLA is the baked default for 128-dim linear heads; the

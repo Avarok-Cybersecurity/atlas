@@ -1,0 +1,17 @@
+[package]
+name = "atlas-route-policy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Pure, deterministic routing policy for an Atlas routing front: eligibility before prediction, utility, prefer-local, swap, hysteresis and timing rules."
+
+# No dependencies on purpose. The policy is arithmetic over plain data: no I/O,
+# no clock reads (the caller passes `now`), no network code at all, so the crate
+# can be audited on its own and linked by the routing front (lane X05) without
+# pulling in a runtime. The property tests use a small seeded generator in
+# `tests/support/mod.rs` instead of `proptest`, which is not in Cargo.lock.
+
+[dependencies]
+
+[lints]
+workspace = true

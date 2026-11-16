@@ -189,6 +189,9 @@ pub struct RequestAccept {
     d1: u64,
     na: u64,
     pub regime_reprobes: u64,
+    /// Verify-pass, draft and stage-time accounting for the per-request
+    /// `MTP stats` line (`scheduler::mtp_stats`).
+    pub spec: super::mtp_stats::MtpRequestStats,
 }
 
 impl RequestAccept {
@@ -278,6 +281,9 @@ impl RequestAccept {
             "Done: {n} tokens ({reason}) {tps:.1} tok/s, TTFT={ttft_ms:.1}ms, {}",
             acct.done_suffix()
         );
+        if let Some(line) = acct.spec.summary_line() {
+            tracing::info!("{line}");
+        }
     }
 }
 

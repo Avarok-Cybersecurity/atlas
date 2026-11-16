@@ -116,6 +116,11 @@ pub(super) fn formula(slots: usize, max_batch: usize, per_seq_blob: usize) -> St
 /// (`--ssm-decode-ring-slots N`, published before preflight runs): an
 /// operator who named a depth gets that depth or a refusal, never a silent
 /// third answer.
+///
+/// `beside_weights` is the memory left beside the checkpoint
+/// ([`spark_model::ssm_reserve::memory_beside_weights`]); the ring may take
+/// a share of it whatever the yardstick says (see [`fit_ring_budgeted`]).
+#[allow(clippy::too_many_arguments)]
 pub(super) fn autofit(
     args: &cli::ServeArgs,
     requested: usize,
@@ -123,19 +128,21 @@ pub(super) fn autofit(
     per_seq_blob: usize,
     reserve_without_ring: usize,
     free_mem: usize,
+    beside_weights: usize,
     yardstick: &Yardstick,
 ) -> RingFit {
     // The two impure halves, kept OUT of `fit_ring` so the ladder is testable
     // without a process-global `OnceLock` that one test would seal for the
     // whole binary.
     let explicit = spark_model::ssm_reserve::published_decode_ring_slots().is_some();
-    let fit = fit_ring(
+    let fit = fit_ring_budgeted(
         args,
         requested,
         slot_bytes,
         per_seq_blob,
         reserve_without_ring,
         free_mem,
+        beside_weights,
         yardstick,
         explicit,
     );
@@ -145,6 +152,70 @@ pub(super) fn autofit(
         // the runtime would allocate 8 slots against a reserve that funded
         // fewer.
         spark_model::ssm_reserve::set_decode_ring_slots(fit.slots);
+    }
+    fit
+}
+
+/// [`fit_ring`] behind the memory-budget cap: the ring first yields to its
+/// share of the memory beside the weights, then to the yardstick.
+///
+/// WHY a second stage. The yardstick answers "does the reserve fit", and it
+/// answers it against the wrong number on most routes: pre-load free memory
+/// does not know the weights, and the post-load headroom is only predicted for
+/// the native-FP8 dense route. A 4B model on a 16 GB card passes both with the
+/// default 8 x 8 ring (3,264 MiB of a 7.6 GiB remainder) and then starves its
+/// KV cache. The ring is a loop re-steer safety net, so it is capped at
+/// [`spark_model::ssm_reserve::RING_BUDGET_DIVISOR`]'s share of that remainder
+/// and loses depth, never batch. See `ssm_reserve/budget.rs` for the divisor
+/// and why GB10's configurations are untouched.
+///
+/// An EXPLICIT depth skips the cap, exactly as it skips the fit: a pinned
+/// depth is honored or refused, never silently lowered.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn fit_ring_budgeted(
+    args: &cli::ServeArgs,
+    requested: usize,
+    slot_bytes: usize,
+    per_seq_blob: usize,
+    reserve_without_ring: usize,
+    free_mem: usize,
+    beside_weights: usize,
+    yardstick: &Yardstick,
+    explicit: bool,
+) -> RingFit {
+    let capped = if explicit {
+        requested
+    } else {
+        spark_model::ssm_reserve::cap_decode_ring_slots(requested, slot_bytes, beside_weights)
+    };
+    let mut fit = fit_ring(
+        args,
+        capped,
+        slot_bytes,
+        per_seq_blob,
+        reserve_without_ring,
+        free_mem,
+        yardstick,
+        explicit,
+    );
+    if capped < requested {
+        let budget = spark_model::ssm_reserve::ring_budget_bytes(beside_weights);
+        let note = format!(
+            "{} (was {:.2} GB); capped at 1/{} of the {:.2} GB beside the weights = \
+             {:.2} GB (rollback depth yields, concurrency does not). Pass \
+             --ssm-decode-ring-slots N to pin a depth.",
+            formula(fit.slots, args.max_batch_size, per_seq_blob),
+            (requested * slot_bytes) as f64 / GIB,
+            spark_model::ssm_reserve::RING_BUDGET_DIVISOR,
+            beside_weights as f64 / GIB,
+            budget as f64 / GIB,
+        );
+        // The cap and the yardstick can both bite; the operator needs both
+        // sentences, the cap's first because it is the one that fired first.
+        fit.warning = Some(match fit.warning.take() {
+            Some(fit_note) => format!("{note} Then: {fit_note}"),
+            None => note,
+        });
     }
     fit
 }

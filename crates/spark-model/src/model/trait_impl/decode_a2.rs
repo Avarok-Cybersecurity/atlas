@@ -603,8 +603,13 @@ impl TransformerModel {
                 );
             }
 
-            if use_graphs {
+            // Row `graph_exec_update` (port lane L09, `graph_family.rs`); off = the arm below.
+            if use_graphs && super::graph_family::exec_update_active(self.gpu.as_ref()) {
+                use super::graph_family::FamilyCache::BatchDecode;
+                self.graph_family_finish(BatchDecode, graphs.as_deref_mut(), graph_key, stream)?;
+            } else if use_graphs {
                 let graph = self.gpu.end_capture(stream)?;
+                super::graph_family::note_capture(graph);
                 if graph.0 != 0 {
                     tracing::info!(
                         "Captured CUDA graph for batch size {padded_n} (n={n}, slots={graph_key:?})"

@@ -11,6 +11,7 @@ use avarok_core::config::ModelConfig;
 use spark_runtime::weights::WeightStore;
 
 use crate::mistral_loader::MistralWeightLoader;
+use crate::weight_loader::Lfm3WeightLoader;
 use crate::weight_loader::LongcatWeightLoader;
 use crate::weight_loader::Qwen4ExpWeightLoader;
 use crate::weight_loader::{
@@ -116,6 +117,9 @@ pub fn loader_for_config(config: &ModelConfig) -> Result<Box<dyn ModelWeightLoad
         // mixed full/sliding attention + attention gate + 3 MTP modules.
         "step3p7" => Ok(Box::new(Step3p7WeightLoader)),
         "laguna" => Ok(Box::new(LagunaWeightLoader)),
+        // Liquid AI LFM3 (port sprint L37): gated short convs + sliding/full
+        // attention + sandwich norms + dense SwiGLU, tied BF16 head.
+        "lfm3" => Ok(Box::new(Lfm3WeightLoader)),
         // DeepSeek-V4 family (Flash) — MLA + MoE + CSA/HCA hybrid attention + mHC.
         "deepseek_v4" => Ok(Box::new(DeepSeekV4WeightLoader)),
         // GLM-5.3-Flash — NoPE MLA behind a DSA kpool indexer + KDA linear attention +
@@ -140,7 +144,7 @@ pub fn loader_for_config(config: &ModelConfig) -> Result<Box<dyn ModelWeightLoad
         )),
         _ => bail!(
             "Unsupported model type: '{}' (normalized: '{}'). \
-             Supported: qwen3_next, glm5_next, qwen3_5_moe, qwen3_5, qwen3_6_moe, holo3_1_moe, qwen3_vl_moe, nemotron_h, nemotron_h_puzzle, gemma4, mistral, minimax_m2, step3p7, laguna, deepseek_v4, qwen4_exp, m2m_100, deepseek_v41",
+             Supported: qwen3_next, glm5_next, qwen3_5_moe, qwen3_5, qwen3_6_moe, holo3_1_moe, qwen3_vl_moe, nemotron_h, nemotron_h_puzzle, gemma4, mistral, minimax_m2, step3p7, laguna, lfm3, deepseek_v4, qwen4_exp, m2m_100, deepseek_v41",
             config.model_type,
             normalized,
         ),
@@ -148,6 +152,9 @@ pub fn loader_for_config(config: &ModelConfig) -> Result<Box<dyn ModelWeightLoad
 }
 
 mod build;
+// What the DFlash drafter/target pairing check compares the drafter's
+// vocabulary against: the shared table's rows, not the served vocabulary.
+mod dflash_pairing;
 mod lm_head_setup;
 mod m2_setup;
 

@@ -295,6 +295,8 @@ pub(crate) fn ensure_blocks_through_decode(
     // `ModelLevers::kv_poison` — see `fill_fresh_block`.
     kv_poison: bool,
 ) -> Result<()> {
+    // Port L36 (row `kv_window_desk`, off everywhere): the window desk's per-step hook.
+    crate::port::kv_window::on_decode_blocks(seq, kv_cache, prefix_cache, gpu, stream)?;
     let cap = kv_cache.config().cache_blocks_per_seq.map(|c| c as usize);
     // Loop invariant: each iter either slides (frees a block) or grows
     // block_table by one. Terminates when the highest needed logical block

@@ -267,15 +267,39 @@ impl ChatTokenizer {
         reasoning_effort: Option<&str>,
         preserve_thinking: Option<bool>,
     ) -> Result<Vec<u32>> {
+        let rendered = self.render_chat_text_with_effort(
+            messages,
+            tools,
+            enable_thinking,
+            disable_tool_steering,
+            reasoning_effort,
+            preserve_thinking,
+        )?;
+        self.encode(&rendered)
+    }
+
+    /// The prompt text the model's chat template produces, before tokenization.
+    ///
+    /// This is the string half of [`Self::apply_chat_template_jinja_with_effort`]
+    /// (which encodes it): the llama.cpp `/apply-template` route returns it
+    /// as-is.
+    pub fn render_chat_text_with_effort(
+        &self,
+        messages: &[serde_json::Value],
+        tools: Option<&[serde_json::Value]>,
+        enable_thinking: bool,
+        disable_tool_steering: bool,
+        reasoning_effort: Option<&str>,
+        preserve_thinking: Option<bool>,
+    ) -> Result<String> {
         super::kimi_k3::require_chat_support(self.chat_encoding)?;
         if self.chat_encoding == ChatEncoding::DeepseekV4 {
-            let rendered = super::deepseek_v4::encode_messages(
+            return super::deepseek_v4::encode_messages(
                 messages,
                 tools,
                 enable_thinking,
                 reasoning_effort,
-            )?;
-            return self.encode(&rendered);
+            );
         }
 
         let rendered = super::chat_render::render_chat(
@@ -287,6 +311,7 @@ impl ChatTokenizer {
                 disable_tool_steering,
                 reasoning_effort,
                 preserve_thinking,
+                terse: None,
                 allow_continue_final: true,
             },
         )?;
@@ -302,7 +327,7 @@ impl ChatTokenizer {
             );
         }
 
-        self.encode(&rendered)
+        Ok(rendered)
     }
 
     /// Apply the OpenAI-variant template (if available), falling back to the default.
@@ -358,6 +383,7 @@ impl ChatTokenizer {
                     disable_tool_steering,
                     reasoning_effort,
                     preserve_thinking,
+                    terse: None,
                     allow_continue_final: false,
                 },
             )

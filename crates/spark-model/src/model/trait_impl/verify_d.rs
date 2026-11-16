@@ -385,6 +385,7 @@ impl TransformerModel {
 
             if use_graphs {
                 let graph = self.gpu.end_capture(stream)?;
+                super::graph_family::note_capture(graph);
                 if graph.0 != 0 {
                     tracing::info!(
                         "Captured CUDA graph for K=γ verify (slot={} K={})",

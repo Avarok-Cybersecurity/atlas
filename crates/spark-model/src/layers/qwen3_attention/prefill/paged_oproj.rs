@@ -9,6 +9,7 @@ use anyhow::Result;
 use spark_runtime::gpu::DevicePtr;
 
 use super::super::Qwen3AttentionLayer;
+use super::super::w4_proj::W4Slot;
 use crate::layer::ForwardContext;
 use crate::layers::ops;
 
@@ -40,7 +41,12 @@ impl Qwen3AttentionLayer {
             && self.quantize_nvfp4_k.0 != 0
             && ctx.buffers.fp8_act_bytes() >= (n as usize) * (nq as usize) * (hd as usize)
             && std::env::var("AVAROK_ATTN_W4A4").is_ok();
-        if w4a4 {
+        if let Some(w4) = self.w4_proj.get(W4Slot::O) {
+            // Packed o_proj (port lane L22b, `w4_proj.rs`): W4 prefill, BF16 dequant on a decline.
+            let (m, n_out, k_in) = (n as usize, h as usize, (nq * hd) as usize);
+            let what = "attention o_proj";
+            self.w4_prefill_rows(w4, what, ctx, attn_out, m, o_out, n_out, k_in, stream)?;
+        } else if w4a4 {
             let kd = nq * hd;
             let a4 = ctx.buffers.fp8_act();
             let a4_sf = a4.offset((n as usize) * (kd as usize) / 2);
@@ -363,3 +369,8 @@ impl Qwen3AttentionLayer {
         Ok(o_out)
     }
 }
+
+// Mock-backend dispatch tests of the packed prefill q/k/v and o arms (port lane L22b).
+#[cfg(test)]
+#[path = "paged_w4_tests.rs"]
+mod w4_tests;

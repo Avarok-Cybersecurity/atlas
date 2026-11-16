@@ -1,0 +1,676 @@
+Atlas includes third-party software. Each section names its source and license.
+
+Atlas itself is licensed under the GNU Affero General Public License, version 3
+only (AGPL-3.0-only); see LICENSE. The sections below cover code that Atlas
+copies or translates from other projects under permissive licenses. Each
+section names the upstream project, its copyright holder, its license, the
+license text under LICENSES/, and the Atlas files that carry the code. For an
+Apache-2.0 source, the section also reproduces the relevant parts of that
+project's own NOTICE file.
+
+vLLM (D-Cut v2: cost-optimal verify budget and online acceptance calibration)
+  Source: https://github.com/vllm-project/vllm, commit 8a36f08
+  Files: vllm/v1/worker/gpu/spec_decode/adaptive_verification.py,
+         vllm/v1/worker/gpu/spec_decode/acceptance_estimator.py
+  Copyright contributors to the vLLM project. Licensed under the Apache
+  License, Version 2.0 (LICENSES/Apache-2.0.txt).
+  Atlas files: crates/spark-server/src/scheduler/mtp_dcut_cost.rs,
+         crates/spark-server/src/scheduler/mtp_accept_estimator.rs
+  Changes: translated from Python/Triton to Rust; the cost table is learned
+  online; the budget is chosen on the host per verify batch. See
+  DCUT-V2-ATTRIBUTION.md.
+
+Cinference (CUDA Graph topology signature)
+  Source: https://github.com/satellitedown/cinference, commit 383e5db
+  File: src/core/decode_graph.cpp:62-80 (DecodeGraphDefinition::topology_signature)
+  Licensed under the Apache License, Version 2.0 (LICENSES/Apache-2.0.txt).
+  Atlas files: crates/spark-runtime/src/gpu/port_ext.rs,
+         crates/spark-runtime/src/cuda_backend/gpu_impl_graph_update.rs
+  Changes: translated from C++ (CUDA runtime API) to Rust over the CUDA
+  driver API; the node count is folded into the one returned hash. See
+  GPU-BACKEND-EXT-ATTRIBUTION.md.
+  From Cinference's NOTICE:
+    Cinference
+    https://github.com/satellitedown/cinference
+
+    Cinference is derived from NInfer by Neroued and its contributors:
+    https://github.com/Neroued/ninfer
+    NInfer is distributed under the Apache License, Version 2.0. The original
+    LICENSE is retained unchanged in this distribution.
+
+Cinference / NInfer (MTP draft-vocabulary ranking: data, selection, remap)
+  Source: https://github.com/satellitedown/cinference, commit 383e5db
+  Files: tools/freq_corpus/fixtures/ranking/ranking.train.counts.i64 (data),
+         tools/convert/proposal.py (select_shortlist, add_proposal),
+         src/ops/kernel/speculative_round.cuh (proposal_remap_token_ids_kernel)
+  Licensed under the Apache License, Version 2.0 (LICENSES/Apache-2.0.txt).
+  The ranking data are token counts by NInfer authors; the source corpus is
+  not published.
+  Atlas files: crates/spark-model/data/mtp_vocab_rank_qwen35.u32 (the top
+         131,072 ids of the counts), crates/spark-model/data/
+         mtp_vocab_rank_qwen35.json (provenance), crates/spark-model/data/
+         gen_mtp_vocab_rank.py, crates/spark-model/src/layers/mtp_head/
+         vocab_rank.rs, ranked_head.rs, kernels/ada/common/draft_vocab_remap.cu
+  Changes: the ranking reduced to an id table for Atlas's NVFP4 draft head;
+  selection translated from NumPy to Python and Rust; a tokenizer identity
+  check added; the remap kernel rewritten for u32 argmax rows. See
+  MTP-DRAFT-VOCAB-ATTRIBUTION.md.
+  Cinference's NOTICE, first paragraph:
+    Cinference
+    https://github.com/satellitedown/cinference
+
+    Cinference is derived from NInfer by Neroued and its contributors:
+    https://github.com/Neroued/ninfer
+    NInfer is distributed under the Apache License, Version 2.0. The original
+    LICENSE is retained unchanged in this distribution.
+
+Cinference / NInfer (device-side speculative acceptance)
+  Source: https://github.com/satellitedown/cinference, commit 383e5db
+  Files: src/ops/kernel/speculative_round.cuh (speculative_accept_greedy_drafts_kernel),
+         src/ops/kernel/sampling_device.cuh (sampling_uniform, sampling_better,
+         sampling_pick_from_support)
+  Licensed under the Apache License, Version 2.0 (LICENSES/Apache-2.0.txt).
+  Atlas files: kernels/ada/common/spec_accept_sample_ada.cu,
+         crates/spark-model/src/port/spec_accept/reference.rs
+  Changes: translated for Atlas's paged verify rows and SamplingParams
+  (temperature, top-k, top-p, min-p as spark_runtime::sampler applies them,
+  no top-20 cap), with an exact radix top-k, the host pre-sample pipeline as a
+  sparse edit list, a bit-identical greedy argmax and a Rust CPU model. See
+  SPEC-ACCEPT-ATTRIBUTION.md.
+  Cinference's NOTICE, first paragraph:
+    Cinference
+    https://github.com/satellitedown/cinference
+
+    Cinference is derived from NInfer by Neroued and its contributors:
+    https://github.com/Neroued/ninfer
+    NInfer is distributed under the Apache License, Version 2.0. The original
+    LICENSE is retained unchanged in this distribution.
+
+== Cinference / NInfer (copy drafter: prompt lookup and lookup rounds) ==
+
+Source:  https://github.com/satellitedown/cinference, commit 383e5db
+         src/models/qwen3_5/program/speculative/prompt_lookup.{h,cpp}
+License: Apache License, Version 2.0 (LICENSES/Apache-2.0.txt)
+
+From the Cinference NOTICE file:
+
+  Cinference
+  https://github.com/satellitedown/cinference
+
+  Cinference is derived from NInfer by Neroued and its contributors:
+  https://github.com/Neroued/ninfer
+  NInfer is distributed under the Apache License, Version 2.0. The original
+  LICENSE is retained unchanged in this distribution.
+
+Atlas files: crates/spark-server/src/scheduler/copy_draft/{mod.rs, index.rs,
+  estimator.rs, policy.rs}
+Changes: translated from C++ to Rust; a 16-token window added; exact-content
+  collision chains; a bounded index; the per-window estimate scored lazily
+  against the committed stream; lookup rounds routed through Atlas's
+  variable-width verify. See COPY-DRAFT-ATTRIBUTION.md.
+
+== TensorFold (copy drafter: copy index and legacy n-gram index) ==
+
+Source:  https://github.com/ashhart/TensorFold, commit 3885dce
+         zig/src/core/copy_index.zig
+License: Apache License, Version 2.0 (LICENSES/Apache-2.0.txt); code written
+  before TensorFold 0.6.0 is also available under the MIT License
+  (LICENSES/TensorFold-pre0.6-MIT.txt)
+
+From the TensorFold NOTICE file:
+
+  TensorFold
+  Copyright 2026 TensorFold contributors
+  https://github.com/ashhart/TensorFold
+
+  TensorFold is licensed under the Apache License, Version 2.0 (LICENSE) from
+  0.6.0. Releases up to 0.5.0 were MIT-licensed, and code written before 0.6.0
+  keeps its MIT notice in LICENSES/MIT.txt. Third-party code and its licenses
+  are listed in THIRD_PARTY_NOTICES.md.
+
+Atlas files: crates/spark-server/src/scheduler/copy_draft/{mod.rs, index.rs,
+  legacy.rs}
+Changes: translated from Zig to Rust; the latest-earlier-occurrence contract
+  kept over hashed windows; the legacy n-gram index walks per-bigram position
+  lists earliest first so it returns the token Atlas's earlier scan returns.
+  See COPY-DRAFT-ATTRIBUTION.md.
+
+== z-lab/Qwen3.5-4B-DFlash (drafter configuration text) ==
+
+Source:  https://huggingface.co/z-lab/Qwen3.5-4B-DFlash (Z Lab and Modal)
+License: Apache License, Version 2.0 (LICENSES/Apache-2.0.txt)
+
+Atlas copies one file from this repository: the drafter's config.json, byte
+for byte, as a unit-test fixture for the DFlash drafter configuration parser
+and tensor shape check:
+  crates/spark-model/src/weight_loader/dflash_loader/fixtures/qwen3_5_4b_dflash_config.json
+No weights are bundled with Atlas; the drafter is fetched at run time when an
+operator passes --dflash (or given with --draft-model). The model repository
+ships no NOTICE file (checked 2026-11-12: README.md, config.json and
+model.safetensors only). The DFlash method is described in arXiv:2602.06036;
+Atlas's drafter head is its own implementation (see CITATIONS.md).
+Atlas change: none to the fixture; the loader tests in loader_tests.rs pin the
+values it carries.
+
+------------------------------------------------------------------------------
+Cinference and NInfer: L2 evict-first weight loads for the Ada FP8 GEMVs
+
+Upstream: Cinference, https://github.com/satellitedown/cinference, commit
+383e5db, derived from NInfer, https://github.com/Neroued/ninfer.
+Copyright: Neroued and the NInfer contributors; modifications by satellitedown
+for Cinference. The upstream LICENSE carries no further copyright line.
+License: Apache License, Version 2.0; see LICENSES/Apache-2.0.txt.
+Source: src/ops/common/memory.cuh lines 72-99 (the
+`createpolicy.fractional.L2::evict_first` policy for weights read once, and the
+CUDA 13.1 ptxas caveat on cache-hint operands).
+Atlas files: kernels/ada/common/fp8_gemv_ada.cu (the `_l2ef` twins only) and
+kernels/ada/common/fp8_gemv_ada_batchm.cu (the `_l2ef_` entries), where the
+policy feeds `ld.global.nc.L1::no_allocate.L2::cache_hint` loads instead of
+`cp.async`. kernels/ada/common/rmsnorm_quant_fp8_ada.cu follows the idea of
+Cinference's src/ops/linear/fp8/fp8_rmsnorm_quantize.cu; no code was copied.
+Notes: CINFERENCE-L2-HINT-ATTRIBUTION.md.
+
+From the Cinference NOTICE file:
+
+    Cinference
+    https://github.com/satellitedown/cinference
+
+    Cinference is derived from NInfer by Neroued and its contributors:
+    https://github.com/Neroued/ninfer
+    NInfer is distributed under the Apache License, Version 2.0. The original
+    LICENSE is retained unchanged in this distribution.
+
+------------------------------------------------------------------------------
+Cinference and NInfer: tensor-core chunked GDN prefill for Ada
+
+Upstream: Cinference, https://github.com/satellitedown/cinference, commit
+383e5db, derived from NInfer, https://github.com/Neroued/ninfer.
+Copyright: Neroued and the NInfer contributors; modifications by satellitedown
+for Cinference. The upstream LICENSE carries no further copyright line.
+License: Apache License, Version 2.0; see LICENSES/Apache-2.0.txt.
+Atlas files: kernels/ada/common/gdn_chunk_tc_ada.cu (copied and changed),
+crates/spark-model/src/layers/qwen3_ssm/gdn_chunk_tc_ada.rs (launch geometry,
+translated). Changes and line ranges: CINFERENCE-GDN-CHUNK-ATTRIBUTION.md.
+
+From the Cinference NOTICE file:
+
+    Cinference
+    https://github.com/satellitedown/cinference
+
+    Cinference is derived from NInfer by Neroued and its contributors:
+    https://github.com/Neroued/ninfer
+    NInfer is distributed under the Apache License, Version 2.0. The original
+    LICENSE is retained unchanged in this distribution.
+
+== TensorFold (affine 4-bit route) ==
+
+Source:  https://github.com/ashhart/TensorFold, commit 3885dce
+License: Apache License, Version 2.0 (LICENSES/Apache-2.0.txt); code written
+         before TensorFold 0.6.0 is also available under the MIT License
+         (LICENSES/TensorFold-pre0.6-MIT.txt)
+
+TensorFold's NOTICE file reads:
+
+  TensorFold
+  Copyright 2026 TensorFold contributors
+  https://github.com/ashhart/TensorFold
+
+  TensorFold is licensed under the Apache License, Version 2.0 (LICENSE) from 0.6.0.
+  Releases up to 0.5.0 were MIT-licensed, and code written before 0.6.0 keeps its
+  MIT notice in LICENSES/MIT.txt. Third-party code and its licenses are listed in
+  THIRD_PARTY_NOTICES.md.
+
+Atlas copies and adapts TensorFold's MLX-affine CUDA kernels (the lane MMA
+GEMV, its split-K and multi-projection forms, the tile pack, the group sums,
+the prompt GEMMs and the 2/3/5/6/8-bit forms) and translates its Zig host
+code (the MLX quantizer, the tiled layout and split rule, the launchers) into
+Rust. The files that carry it are listed, with the upstream paths and line
+ranges and the changes made, in TENSORFOLD-ATTRIBUTION.md:
+  kernels/ada/common/affine_frag_ada.cuh, affine4_lane_ada.cu,
+         affine_pack_ada.cu (lane L17a)
+  kernels/ada/common/affine_prefill_ada.cu, affine_swiglu_sums_ada.cu
+         (lane L17b)
+  kernels/ada/common/affine_n_ada.cu, affine_codes_ada.cuh (lane L17c)
+  crates/spark-model/src/port/affine/ (the host side of all three lanes)
+The affine format itself (per-group bf16 scale and bias, value = s * q + b)
+is MLX's (Apple, MIT); see CITATIONS.md.
+
+vLLM Marlin W4A16 kernels
+  Source: https://github.com/vllm-project/vllm, commit 8a36f08
+  Files: csrc/quantization/marlin/marlin_template.h, dequant.h, marlin_mma.h,
+         marlin_dtypes.cuh, marlin.cuh, kernel.h, marlin.cu (lines 96-147),
+         generate_kernels.py (the instantiation rule), csrc/core/scalar_type.hpp
+  Copyright contributors to the vLLM project.
+  Modified by Neural Magic.
+  Copyright (C) Marlin.2024 Elias Frantar. Adapted from
+  https://github.com/IST-DASLab/marlin.
+  Licensed under the Apache License, Version 2.0 (LICENSES/Apache-2.0.txt).
+  vLLM ships no NOTICE file; the lines above are the copyright notices the
+  copied files and the repository carry.
+  Atlas files: kernels/ada/common/marlin_ada.cu, marlin_template_ada.cuh,
+         marlin_dequant_ada.cuh, marlin_mma_ada.cuh, marlin_dtypes_ada.cuh,
+         marlin_common_ada.cuh, marlin_scalar_type_ada.cuh
+  Changes: copied and pruned to BF16 activations with GPTQ and AWQ int4 at
+  group 128; the kernel template exported through extern "C" wrappers; a
+  torch-free ScalarType usable in device code without relaxed constexpr;
+  sm_89 only. See VLLM-MARLIN-ATTRIBUTION.md.
+
+vLLM Marlin W4A16 host logic (translated to Rust)
+  Source: https://github.com/vllm-project/vllm, commit 8a36f08
+  Files: csrc/quantization/marlin/marlin.cu (lines 69-403: thread configs,
+         get_scales_cache_size, get_kernel_cache_size, is_valid_config,
+         determine_exec_config, the M split of marlin_mm),
+         csrc/quantization/marlin/gptq_marlin_repack.cu and
+         awq_marlin_repack.cu (the repack index rule),
+         vllm/model_executor/layers/quantization/utils/marlin_utils.py
+         (get_scale_perms, marlin_permute_scales, marlin_zero_points,
+         awq_to_marlin_zero_points, marlin_make_workspace_new),
+         quant_utils.py (quantize_weights, pack_rows, pack_cols, unpack_cols,
+         awq_pack), marlin_utils_test.py (the test permutation oracle)
+  Copyright contributors to the vLLM project.
+  Copyright (C) Marlin.2024 Elias Frantar. Adapted from
+  https://github.com/IST-DASLab/marlin.
+  Licensed under the Apache License, Version 2.0 (LICENSES/Apache-2.0.txt).
+  Atlas files: crates/spark-model/src/port/marlin/ (translation; no code
+  copied), crates/spark-model/examples/marlin_ada_microtest.rs and
+  crates/spark-model/examples/marlin_ada_microtest/.
+  Changes: C++, CUDA and Python restated as Rust host code; the repack runs on
+  the CPU; a row-invariant decode policy; Atlas's W4Linear contract. See
+  VLLM-MARLIN-HOST-ATTRIBUTION.md.
+
+llama.cpp / ggml (CUDA quant engine and GGUF block formats)
+  Source: https://github.com/ggml-org/llama.cpp
+  Copyright (c) 2023-2026 The ggml authors.
+  Licensed under the MIT License (LICENSES/llama.cpp-MIT.txt).
+  Vendored copies (pre-existing, unmodified except where their own comments
+  say so): kernels/gb10/qwen3.6-27b/nvfp4/q4k_vendor/ (ggml-common.h,
+  ggml.h, ggml-impl.h, ggml-alloc.h, ggml-backend.h, ggml-cuda.h, gguf.h,
+  common.cuh, mma.cuh, mmq.cuh, vecdotq.cuh, quantize.cuh,
+  quantize_impl.cuh, vendors/cuda.h). The pre-existing kernels that include
+  them are covered by this notice: kernels/gb10/qwen3.6-27b/nvfp4/q4k_mmq.cu,
+  q2_0_mmq.cu, nvfp4_mmq.cu, kernels/gb10/deepseek-v4-flash/nvfp4/kquant_moe.cu.
+  Atlas files translated from llama.cpp or built on the vendored engine:
+         kernels/ada/common/kquant_q8_1_ada.cu, kquant_mmvq_q4_ada.cu,
+         iq4_xs_mmq_ada.cu, dequant_iq4xs_q5k_bf16_ada.cu,
+         crates/spark-runtime/src/weights/gguf/dequant_cpu/iq4.rs,
+         crates/spark-runtime/src/weights/gguf/dequant_cpu/iq4_tests.rs,
+         crates/spark-model/src/port/gguf_q4/launch.rs,
+         crates/spark-model/src/port/gguf_q4/reference.rs
+  Changes: Ada (sm_89) entry points for IQ4_XS, Q4_K and Q6_K decode GEMVs
+  and MMQ prefill GEMMs, bf16 activations and outputs, an IQ4 / Q5_K dequant,
+  and Rust translations of the block decoders and launch geometry. See
+  GGUF-IQ4-ATTRIBUTION.md.
+
+== ExLlamaV3 and TensorFold (EXL3 trellis weights) ==
+
+Format:  ExLlamaV3, https://github.com/turboderp-org/exllamav3
+License: MIT License, Copyright (c) 2025 Turboderp
+         (LICENSES/ExLlamaV3-MIT.txt)
+Code:    TensorFold, https://github.com/ashhart/TensorFold, commit 3885dce
+License: Apache License, Version 2.0 (LICENSES/Apache-2.0.txt); code written
+         before TensorFold 0.6.0 is also available under the MIT License
+         (LICENSES/TensorFold-pre0.6-MIT.txt)
+
+TensorFold's NOTICE file reads:
+
+  TensorFold
+  Copyright 2026 TensorFold contributors
+  https://github.com/ashhart/TensorFold
+
+  TensorFold is licensed under the Apache License, Version 2.0 (LICENSE) from 0.6.0.
+  Releases up to 0.5.0 were MIT-licensed, and code written before 0.6.0 keeps its
+  MIT notice in LICENSES/MIT.txt. Third-party code and its licenses are listed in
+  THIRD_PARTY_NOTICES.md.
+
+Atlas reads ExLlamaV3's EXL3 format (its trellis layout and bitstream, its
+"3inst", "mcg" and "mul1" codebooks, its half-integer bit widths, its
+tensor-core fragment order and its Hadamard-rotated scales). Atlas translates
+TensorFold's Zig reader and reference decoder of that format into Rust, and
+copies and adapts TensorFold's EXL3 CUDA kernels; TensorFold's implementations
+are its own, checked by TensorFold bit for bit against ExLlamaV3's
+dequantization, and no ExLlamaV3 source is copied. The files that carry it are
+listed, with the upstream paths and line ranges and the changes made, in
+EXL3-ATTRIBUTION.md:
+  crates/spark-runtime/src/weights/exl3/ (lane L20a: the reader)
+  kernels/ada/common/exl3_decode_ada.cuh, exl3_linear_ada.cu,
+         exl3_hadamard_ada.cu, crates/spark-model/src/port/exl3/
+         (lane L20b: the kernels and the linear)
+
+== LMCache (KV block transfer, pinned host pool, LRU blob store) ==
+
+Source:  https://github.com/LMCache/LMCache, commit 3aefae1
+         csrc/cuda/mp_mem_kernels.cu (batched copy submission, staged DMA),
+         csrc/cuda/phase_timing_recorder.cu (per-phase GB/s),
+         lmcache/v1/memory_allocators/lazy_memory_allocator.py,
+         tensor_memory_allocator.py, paged_tensor_memory_allocator.py,
+         csrc/cuda/mem_alloc.cpp (reserve once, pin in chunks, page runs)
+License: Apache License, Version 2.0 (LICENSES/Apache-2.0.txt). LMCache ships
+  no NOTICE file.
+
+Atlas files: crates/spark-runtime/src/kv_cache/{block_io.rs, block_io_swap.rs},
+  crates/spark-runtime/src/{pinned_pool.rs, pinned_pool_free.rs},
+  crates/spark-model/src/model/trait_impl/sequence/state_io.rs,
+  crates/spark-model/src/model/ssm_tier/store.rs
+Changes: design only, no code copied; written in Rust for Atlas's paged KV
+  layout (one contiguous region per layer, side and block, so no layout
+  transform), a two-buffer staging that overlaps copies with file I/O, best-fit
+  page runs that never cross a pinning chunk, and one stamp index serving FIFO
+  and LRU orders. See LMCACHE-KV-TRANSFER-ATTRIBUTION.md.
+
+== LMCache, vLLM and Cinference (host-RAM KV tier core) ==
+
+LMCache
+Source:  https://github.com/LMCache/LMCache, commit 3aefae1
+         lmcache/v1/distributed/l1_manager/base.py:132-188 (staging, ready and
+         read-locked object states with expiry),
+         lmcache/v1/distributed/storage_controllers/eviction_controller.py:160-195
+         (watermark batch eviction, 0.8 trigger, 0.2 ratio),
+         lmcache/v1/distributed/storage_controllers/prefetch_controller.py:1114-1160
+         (in-flight admission watermark),
+         lmcache/v1/distributed/eviction_policy/lru.py:72-95 (tail-first order),
+         lmcache/integration/vllm/lazy_offload_policy/eviction_aware.py:60-140
+         (eviction-aware lazy store), lmcache/v1/token_hasher.py:233-262 (chained
+         block keys), lmcache/v1/multiprocess/kv_load_policy.py (decline a load
+         when recompute is cheaper)
+License: Apache License, Version 2.0 (LICENSES/Apache-2.0.txt). LMCache ships
+  no NOTICE file.
+
+vLLM
+Source:  https://github.com/vllm-project/vllm, commit 8a36f08
+         vllm/v1/kv_offload/cpu/gpu_worker.py:543-731 (copy stream, pooled
+         events, completion polling), vllm/v1/kv_offload/cpu/policies/arc.py:28-60
+         (ARC with ghost lists), vllm/v1/simple_kv_offload/manager.py (prompt-only
+         offload, per-step cap; :644-690 store-ahead target)
+Copyright contributors to the vLLM project.
+License: Apache License, Version 2.0 (LICENSES/Apache-2.0.txt).
+
+Cinference
+Source:  https://github.com/satellitedown/cinference, commit 383e5db
+         bench/README.md:103-175 ("Context-cost calibration": held-out p95
+         relative error bound and no ordering inversion before a cost fit is
+         trusted)
+Cinference is derived from NInfer by Neroued and its contributors
+(https://github.com/Neroued/ninfer).
+License: Apache License, Version 2.0 (LICENSES/Apache-2.0.txt).
+
+Atlas files: crates/spark-runtime/src/kv_host_tier/{mod.rs, control.rs,
+  index.rs, policy.rs, policy_arc.rs, writeback.rs, restore.rs, lazy.rs,
+  evict.rs, events.rs, cost.rs, config.rs, cold_store.rs, fingerprint.rs}
+Changes: design translations and ideas only; no code copied. Written in Rust
+  for one in-process tier over a pinned page pool, Atlas paged-KV block regions
+  as the copy unit, one batched copy per call on a dedicated copy stream,
+  admission decoupled from replacement in ARC, and the cost acceptance rule
+  applied online to live rate models. The read-lease and publish-after-write
+  invariants and the heat policy follow the published description of KVMem
+  (arXiv:2609.04852); no KVMem source was read or copied. See
+  KV-HOST-TIER-ATTRIBUTION.md.
+
+== LMCache and vLLM (host KV tier glue: store hooks, prefetch, restore) ==
+
+LMCache
+Source:  https://github.com/LMCache/LMCache, commit 3aefae1
+         lmcache/v1/cache_engine.py (store after the GPU cache insert, retrieve
+         before the prefill),
+         lmcache/integration/vllm/vllm_v1_adapter.py (an external hit counted in
+         whole blocks past the GPU match),
+         lmcache/v1/api.py:636-656 (the hybrid-model boundary rule),
+         lmcache/v1/kv_load_policy.py (decline a load when recompute is cheaper),
+         lmcache/integration/vllm/lazy_offload_policy/eviction_aware.py (lazy
+         stores released near the eviction head)
+License: Apache License, Version 2.0 (LICENSES/Apache-2.0.txt). LMCache ships
+  no NOTICE file.
+
+vLLM
+Source:  https://github.com/vllm-project/vllm, commit 8a36f08
+         vllm/v1/simple_kv_offload/manager.py (restore into freshly allocated
+         blocks, then hand them to the prefix cache)
+Copyright contributors to the vLLM project.
+License: Apache License, Version 2.0 (LICENSES/Apache-2.0.txt).
+
+Atlas files: crates/spark-model/src/model/kv_tier_glue.rs and
+  crates/spark-model/src/model/kv_tier_glue/{plan.rs, store.rs, restore.rs}
+Changes: design translations only; no code copied. Written in Rust against
+  Atlas's paged KV cache, radix prefix cache and SSM snapshot index; the
+  boundary rule restores KV only up to an SSM snapshot on a hybrid model. The
+  write-through invariants follow the published description of KVMem
+  (arXiv:2609.04852); no KVMem source was read or copied.
+
+LMCache (disk KV tier and asynchronous restore)
+  Source: https://github.com/LMCache/LMCache, commit 3aefae1
+  Files: csrc/storage_backends/fs/connector.cpp (O_DIRECT gate, block size
+         query, temp file plus atomic rename),
+         lmcache/v1/distributed/key_codec.py (key to file name and back);
+         design only: lmcache/integration/vllm/lmcache_mp_connector.py
+         (asynchronous load between scheduler steps)
+  Copyright the LMCache contributors. Licensed under the Apache License,
+  Version 2.0 (LICENSES/Apache-2.0.txt). LMCache has no NOTICE file.
+  Atlas files: crates/spark-runtime/src/kv_host_tier/disk.rs,
+         crates/spark-runtime/src/kv_host_tier/disk/record.rs,
+         crates/spark-server/src/scheduler/restore_queue.rs
+  Changes: rewritten in Rust; Atlas record header with fingerprint, key,
+  tokens and checksums; buffered fallback when O_DIRECT is refused. See
+  LMCACHE-KV-TIER-DISK-ATTRIBUTION.md.
+
+LMCache (radix prefix-cache eviction without a full scan; design only)
+  Source: https://github.com/LMCache/LMCache, commit 3aefae1
+  Files: lmcache/v1/distributed/eviction_policy/isolated_lru.py,
+         lmcache/v1/distributed/eviction_policy/lru.py
+  Licensed under the Apache License, Version 2.0 (LICENSES/Apache-2.0.txt).
+  LMCache ships no NOTICE file. No code copied.
+  Atlas files: crates/spark-runtime/src/radix_tree/inner/lru_index.rs
+  Changes: an ordered index of evictable radix leaves that picks the same
+  victim as Atlas's full scan. See LMCACHE-RADIX-EVICT-ATTRIBUTION.md.
+
+vLLM (copy-on-write partial-tail prefix hits)
+  Source: https://github.com/vllm-project/vllm, commit 8a36f08
+  Files: vllm/v1/core/single_type_kv_cache_manager.py,
+         vllm/v1/core/kv_cache_manager.py,
+         vllm/v1/worker/gpu/model_runner.py
+  Copyright contributors to the vLLM project. Licensed under the Apache
+  License, Version 2.0 (LICENSES/Apache-2.0.txt).
+  Atlas files: crates/spark-runtime/src/radix_tree/inner/cow_walk.rs,
+         crates/spark-model/src/model/trait_impl/prefill_b/prefix_cow.rs
+  Changes: the partial-hit and copy-before-forward scheme translated to Rust
+  over Atlas's radix tree and paged KV cache; one D2D per attention layer and
+  side on the prefill stream. See VLLM-COW-ATTRIBUTION.md.
+
+Quest page-sparse decode attention (algorithm) and arczhi/llama-tierkv
+  Algorithm: Quest, "Query-Aware Sparsity for Efficient Long-Context LLM
+  Inference" (J. Tang, Y. Zhao, K. Zhu, G. Xiao, B. Kasikci, S. Han, ICML
+  2024, arXiv:2406.10774): page min/max key summaries and the upper bound
+  sum_c max(q_c * kmin_c, q_c * kmax_c) used to select pages.
+  Prototype: https://github.com/arczhi/llama-tierkv,
+  scripts-5060ti/proto/proto_page_sparse.cu. The repository's license is the
+  ggml MIT License, Copyright (c) 2023-2026 The ggml authors
+  (LICENSES/llama.cpp-MIT.txt); that file has no header of its own.
+  Atlas files: kernels/ada/common/attn_page_sparse_ada.cu,
+         crates/spark-runtime/src/kv_cache/page_summary.rs,
+         crates/spark-model/src/port/sparse_quest/ (mod.rs, config.rs,
+         budget.rs, arena.rs, launch.rs, selector.rs, metrics.rs,
+         reference.rs and its tests),
+         crates/spark-model/examples/page_sparse_microtest.rs
+  Changes: no prototype source was read or copied; the bound is implemented
+  from its published formula for Atlas's paged KV cache: summaries keyed by
+  the page's leading physical block (CUDA-graph safe), GQA grouping, a warp
+  per page, an exact radix top-k in one CTA, and a compacted block table
+  read by Atlas's unchanged paged decode kernel instead of host staging. See
+  QUEST-PAGE-SPARSE-ATTRIBUTION.md.
+
+RetrievalAttention / RetroInfer (retrieval attention host side)
+  Source: https://github.com/microsoft/RetrievalAttention, commit 03f912c
+  Files: cache_hub/kmeans.py (segment_k_means, _triton_k_means_train,
+         triton_reverse_index, triton_index_add),
+         cache_hub/retroinfer_cache.py (index build sizes, mean centering,
+         decode-time update, centroid scoring and zone selection, the
+         estimation-zone merge), config/config.py (generate_config sizes)
+  Copyright (c) Microsoft Corporation. Licensed under the MIT License
+  (LICENSES/RetroInfer-MIT.txt).
+  Atlas files: crates/spark-model/src/port/retro/config.rs,
+         crates/spark-model/src/port/retro/oracle.rs,
+         crates/spark-model/src/port/retro/oracle_eval.rs,
+         crates/spark-model/src/port/retro/update.rs
+  Changes: translated from Python and Triton to a Rust CPU reference and
+  host logic; f64 accumulation and fixed reduction order; ties toward the
+  lower index; fixed-capacity device buffers instead of growing tensors;
+  Atlas paged-KV addressing. See RETROINFER-ATTRIBUTION.md.
+
+RetrievalAttention / RetroInfer (k-means index build and zone selection)
+  Source: https://github.com/microsoft/RetrievalAttention, commit 03f912c
+  Files: cache_hub/kmeans.py (segment_k_means, _triton_assign_kernel,
+         _triton_update_kernel, _triton_k_means_train, triton_index_add,
+         triton_reverse_index), cache_hub/retroinfer_cache.py (the index
+         build at prefill, the decode-time update, the centroid softmax,
+         the GQA group sum and the top-k zone split at lines 765-770)
+  Copyright (c) Microsoft Corporation. Licensed under the MIT License
+  (LICENSES/RetroInfer-MIT.txt).
+  Atlas files: kernels/ada/common/retro_kmeans_ada.cu,
+         kernels/ada/common/retro_select_ada.cu,
+         crates/spark-model/src/port/retro/build.rs,
+         crates/spark-model/src/port/retro/build/{geometry.rs, launch.rs,
+         reference.rs},
+         crates/spark-model/src/port/retro/select.rs,
+         crates/spark-model/src/port/retro/select/reference.rs
+  Changes: translated from Triton and PyTorch to CUDA for Ada (sm_89) and
+  Rust; keys and values read in place from Atlas's paged BF16/FP8 KV at
+  head_dim 256; BF16 mma.sync assignment; the float atomics replaced by a
+  stable CSR and ordered sums, so builds are deterministic; clusters as a
+  CSR of absolute positions at host offsets (updates append); FP32 scores
+  and an exact radix select and sort instead of torch.topk; fixed
+  capacities with device counts (CUDA-graph capturable). No CUTLASS code is
+  used. See RETROINFER-ATTRIBUTION.md.
+
+RetrievalAttention / RetroInfer (exact-zone gather and estimation attention)
+  Source: https://github.com/microsoft/RetrievalAttention, commit 03f912c
+  Files: cache_hub/retroinfer_cache.py (sparse_attention: the execution
+         buffer of steady zone plus retrieval clusters, the estimation-zone
+         weighted attention and its merge with the exact zone),
+         library/retroinfer/retroinfer_kernels/src/gather_copy.cu
+         (gather_copy_and_concat, access pattern only)
+  Copyright (c) Microsoft Corporation. Licensed under the MIT License
+  (LICENSES/RetroInfer-MIT.txt).
+  Atlas files: kernels/ada/common/retro_gather_ada.cu,
+         kernels/ada/common/retro_attn_ada.cu,
+         crates/spark-model/src/port/retro/gather.rs,
+         crates/spark-model/src/port/retro/gather_reference.rs,
+         crates/spark-model/src/port/retro/attn.rs,
+         crates/spark-model/src/port/retro/attn_reference.rs
+  Changes: rewritten for Atlas's paged BF16/FP8 KV at head_dim 256 (the
+  upstream is head_dim 128 with pinned-host cluster pages); one single-pass
+  union softmax instead of two attention calls and an LSE merge; the index
+  read in place; fixed-capacity buffers with device counts (CUDA-graph
+  capturable); fixed reduction order. No CUTLASS code is used. See
+  RETROINFER-ATTRIBUTION.md.
+
+TierKV pager design (window desk; design only, no code copied)
+  Source: arczhi/llama-tierkv, kv-paging-design.md (a VRAM desk of head sinks,
+          a recent window and recalled pages over a host-RAM store; head
+          protection of 2,048 positions; staging at most once per 1,024
+          positions and only after evictions; MTP draft contexts kept out of
+          paging). The files were not fetched or read by Atlas contributors.
+  Copyright (c) 2023-2026 The ggml authors. MIT License
+          (LICENSES/llama.cpp-MIT.txt).
+  Atlas files: crates/spark-model/src/port/kv_window/{mod.rs, policy.rs,
+          desk.rs, fetch.rs, selector.rs, mtp_window.rs},
+          crates/spark-runtime/src/kv_host_tier/pages.rs,
+          kernels/ada/common/kv_page_fetch_ada.cu
+  Also after LMCache (https://github.com/LMCache/LMCache, commit 3aefae1,
+  Apache-2.0) lmcache/v1/distributed/l1_manager/base.py for the host copy
+  rules (publish after the copy completed; keep memory a copy still touches);
+  design only.
+
+== LFM3 support (HuggingFace transformers, vLLM) ==
+
+Sources: HuggingFace transformers, models/lfm3 (modeling_lfm3.py,
+         configuration_lfm3.py, as shipped in LiquidAI/LFM3-1.7B, transformers
+         5.12.1), Copyright 2026 The HuggingFace Team, Apache License 2.0;
+         vLLM, vllm/model_executor/models/lfm3.py (commit 8a36f08), Copyright
+         contributors to the vLLM project, Apache License 2.0
+         (LICENSES/Apache-2.0.txt).
+
+Atlas translates the LFM3 architecture (tensor names, block structure, the
+zero-tail partial RoPE, config fields) from Python to Rust and CUDA. No source
+is copied. The files that carry it are listed, with the upstream lines and the
+changes made, in LFM3-ATTRIBUTION.md:
+  crates/avarok-core/src/config/parsers/lfm3.rs
+  crates/spark-model/src/weight_loader/lfm3/
+  (the conv layer and kernels, crates/spark-model/src/port/lfm3_conv/ and
+   kernels/ada/common/lfm3_shortconv_ada.cu, are credited by lane L38)
+
+The LFM3 model weights are NOT part of Atlas. They are licensed by Liquid AI
+under the LFM Open License v1.0 (commercial use is not licensed at USD
+10,000,000 annual revenue or more); Atlas bundles no weights.
+
+------------------------------------------------------------------------------
+LFM3 gated short convolution (HuggingFace transformers, vLLM)
+
+Upstream: HuggingFace transformers, src/transformers/models/lfm3/ (Copyright
+2026 The HuggingFace Team), and vLLM, vllm/model_executor/models/lfm3.py and
+vllm/model_executor/layers/mamba/short_conv.py (Copyright contributors to the
+vLLM project).
+License: Apache License, Version 2.0; see LICENSES/Apache-2.0.txt.
+Atlas files (translations from Python/Triton to CUDA and Rust; no code
+copied): kernels/ada/common/lfm3_shortconv_ada.cu,
+crates/spark-model/src/port/lfm3_conv/{mod.rs, reference.rs}. Changes: the
+gating fused around the depthwise convolution, a token-major input, a
+per-sequence BF16 [hidden, 6] window, packed-sequence prefill.
+No LFM3 weights are included in Atlas; they are licensed separately under the
+LFM Open License v1.0.
+------------------------------------------------------------------------------
+Sharp chat template (Qwen3.5/3.6/3.8 chat template with history-reasoning
+retention, a stricter tool-call format and an optional terseness system prompt)
+
+Upstream: https://huggingface.co/peculiar-ragdoll/Qwen-Sharp-Chat-Templates,
+chat_template.jinja, template_version qwen3.8-froggeric-v22.5.0 (obtained
+2026-11-12). Based on froggeric/Qwen-Fixed-Chat-Templates v22.5
+(https://huggingface.co/froggeric/Qwen-Fixed-Chat-Templates), which is based
+on the Qwen3.5 chat template (Alibaba Cloud / Qwen team).
+Copyright: Saga Ishtardottir (peculiar-ragdoll), froggeric, and Alibaba Cloud /
+the Qwen team, each as to their own contribution to the template.
+License: Apache License, Version 2.0 for every link of the chain; see
+LICENSES/Apache-2.0.txt. The upstream repositories carry no NOTICE file.
+Atlas files: crates/spark-server/assets/chat_templates/qwen-sharp-v22.5.0.jinja
+(copied verbatim except one leading comment naming this chain). It is used only
+when the operator selects it with --chat-template sharp or sharp-no-terse.
+Test fixtures that are byte copies of the Qwen3.5-4B and Qwen3.5-0.8B
+chat_template.jinja files (Apache-2.0, Alibaba Cloud / Qwen team) are under
+crates/spark-server/test_data/chat_templates/sharp/. Details and the change
+statement: SHARP-CHAT-TEMPLATE-ATTRIBUTION.md.
+
+== atlasfutures/semantic-router, rayline-core (routing policy: event inference and capacity facts) ==
+
+Source:  https://github.com/atlasfutures/semantic-router, branch vsr-next, commit f6d0393
+         rayline-core/execution/events.go (lines 12-26, 130-162)
+         rayline-core/execution/deployment_wire.go (lines 11-23)
+         rayline-core/execution/capacity.go (lines 14-68, 161-206)
+License: Apache License, Version 2.0 (LICENSES/Apache-2.0.txt)
+Copyright: published by Atlas Futures, Inc.; the translated files carry no
+  copyright line of their own and the repository has no NOTICE file.
+
+Atlas files: crates/atlas-route-policy/src/{events.rs, capacity.rs}
+Changes: translated from Go to Rust; the wire request is reduced to a
+  per-message digest the routing front computes; a shrinking rewrite of the
+  transcript is inferred as a compaction; the capacity fact is split into a
+  static window fact plus the per-request prompt count with a pure fit
+  verdict; the shortfall relaxation works over a slice. See
+  RAYLINE-ROUTING-ATTRIBUTION.md.
+
+== Raydock (routing policy: prefer-local threshold naming) ==
+
+Source:  https://github.com/rayline-ai/raydock, commit 20f02d5
+         crates/rayline-cli/src/hybrid_profile.rs (lines 597-644)
+License: Apache License, Version 2.0 (LICENSES/Apache-2.0.txt)
+
+From the Raydock NOTICE file:
+
+  Raydock
+  Copyright 2026 Atlas Futures, Inc.
+
+  This product includes software developed by Atlas Futures, Inc.
+
+Atlas files: crates/atlas-route-policy/src/{prefer_local.rs, types.rs}
+Changes: no code copied. The `min_p_pass` name and the choice between a
+  utility policy and a prefer-local policy follow Raydock's hybrid profile;
+  Atlas accepts (0, 1] instead of (0, 1), where 1.0 disables the local
+  shortcut. See RAYLINE-ROUTING-ATTRIBUTION.md.
+
+# @port:notice

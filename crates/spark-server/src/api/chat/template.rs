@@ -36,9 +36,14 @@ pub(super) fn render_template(
     reasoning_effort: Option<crate::ir::ReasoningEffort>,
     preserve_thinking: Option<bool>,
     tools_active: bool,
+    template_terse: Option<bool>,
 ) -> Result<TemplateOut, Response> {
     // Use closed thinking when client doesn't explicitly enable it.
     let template_thinking = enable_thinking;
+    // Sharp-template `terse`: the request's `chat_template_kwargs.terse` wins,
+    // then the server-level `--default-chat-template-kwargs` value. `None`
+    // keeps the variable out of the render context (byte-identical prompts).
+    let terse = template_terse.or_else(crate::tokenizer::terse_render::default_terse);
 
     // Build JSON messages with structured tool_calls for Jinja.
     let json_messages =
@@ -71,13 +76,14 @@ pub(super) fn render_template(
     let json_messages = if auto_compact_active && json_messages.len() > 4 {
         let trial_tokens = state
             .tokenizer
-            .apply_chat_template_openai_with_effort(
+            .apply_chat_template_openai_with_terse(
                 &json_messages,
                 jinja_tools.as_deref(),
                 template_thinking,
                 state.behavior.disable_tool_steering,
                 reasoning_effort.map(crate::ir::ReasoningEffort::as_str),
                 preserve_thinking,
+                terse,
             )
             .map(|t| t.len())
             .unwrap_or(0);
@@ -90,13 +96,14 @@ pub(super) fn render_template(
         json_messages
     };
 
-    let prompt_tokens = match state.tokenizer.apply_chat_template_openai_with_effort(
+    let prompt_tokens = match state.tokenizer.apply_chat_template_openai_with_terse(
         &json_messages,
         jinja_tools.as_deref(),
         template_thinking,
         state.behavior.disable_tool_steering,
         reasoning_effort.map(crate::ir::ReasoningEffort::as_str),
         preserve_thinking,
+        terse,
     ) {
         Ok(t) => t,
         Err(e) => {

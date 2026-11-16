@@ -47,9 +47,17 @@ mod prefill;
 mod prefill_qkv_w8a8;
 mod prefill_w8a8;
 mod prefill_weights;
+// The sparse-attention seam (port L29): the one place an approximate KV
+// selector plugs into the decode, verify and prefill attention. With no
+// selector registered every call site runs its unchanged dense code.
+pub mod sparse_seam;
 mod trait_impl;
 mod types;
 mod types_weights;
+// Packed (W4) q/k/v/o projections, port lane L22b: the `set_w4_proj` installer and the
+// dispatch helpers every projection call site checks first (all arms off while no layer
+// carries packed weights, which is every layer unless a W4 loader route row is on).
+mod w4_proj;
 
 #[cfg(feature = "cuda")]
 pub use innerq_driver::InnerQDriver;

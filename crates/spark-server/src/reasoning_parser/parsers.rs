@@ -33,6 +33,8 @@ pub(super) fn build(fmt: ReasoningFormat) -> Box<dyn ReasoningParser> {
             prompt_opens_think: false,
         }),
         ReasoningFormat::Gemma4 => Box::new(Gemma4ReasoningParser),
+        // LFM3's generation prompt ends in `<think>` (like the Qwen family).
+        ReasoningFormat::Lfm3 => Box::new(TagReasoningParser::THINK_PROMPT_OPENED.named("lfm3")),
     }
 }
 

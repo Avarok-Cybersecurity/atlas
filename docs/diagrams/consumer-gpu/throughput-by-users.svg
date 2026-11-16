@@ -1,0 +1,74 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 540" width="900" height="540" font-family="Inter, ui-sans-serif, system-ui, Segoe UI, Helvetica, Arial, sans-serif" role="img" aria-labelledby="t d">
+  <title id="t">Total output tokens per second by number of users, Qwen3.5-4B on an RTX 4060 Ti 16 GB</title>
+  <desc id="d">Grouped columns for 1, 2, 4 and 8 users, three setups each. BF16: 29, 56, 107, 195. FP8 FFN, opt-in: 40, 77, 143, 222. int4 stack, opt-in and lossy: 98, 185, 294, 381. Totals across all users, 512 generated tokens per request, the fixed-length switch on for every setup, screening runs.</desc>
+
+  <rect width="900" height="540" fill="#0F1216"/>
+
+  <text x="40" y="44" font-size="21" font-weight="650" fill="#C9CCD4">Total tokens per second, by number of users</text>
+  <text x="40" y="68" font-size="13" fill="#82868F">Qwen3.5-4B on one RTX 4060 Ti 16 GB. Each column is the total across all users, so one user gets about an eighth of the 8-user figure.</text>
+
+  <!-- legend -->
+  <g font-size="12.5" fill="#C9CCD4">
+    <rect x="40" y="88" width="14" height="14" rx="3" fill="#3987E5"/><text x="62" y="100">BF16 (default)</text>
+    <rect x="190" y="88" width="14" height="14" rx="3" fill="#D95926"/><text x="212" y="100">FP8 FFN (opt-in)</text>
+    <rect x="360" y="88" width="14" height="14" rx="3" fill="#199E70"/><text x="382" y="100">int4 stack (opt-in, lossy: output changes)</text>
+  </g>
+
+  <!-- gridlines and y axis (0.7 px per tok/s, baseline at y=420) -->
+  <g stroke="#2E353F" stroke-width="1">
+    <line x1="90" y1="350" x2="850" y2="350"/>
+    <line x1="90" y1="280" x2="850" y2="280"/>
+    <line x1="90" y1="210" x2="850" y2="210"/>
+    <line x1="90" y1="140" x2="850" y2="140"/>
+    <line x1="90" y1="420" x2="850" y2="420" stroke="#4A525E"/>
+  </g>
+  <g font-size="11.5" fill="#82868F" text-anchor="end">
+    <text x="82" y="424">0</text>
+    <text x="82" y="354">100</text>
+    <text x="82" y="284">200</text>
+    <text x="82" y="214">300</text>
+    <text x="82" y="144">400</text>
+  </g>
+
+  <!-- 1 user -->
+  <path d="M147 420 V403.7 Q147 399.7 151 399.7 H167 Q171 399.7 171 403.7 V420 Z" fill="#3987E5"/>
+  <path d="M173 420 V396 Q173 392 177 392 H193 Q197 392 197 396 V420 Z" fill="#D95926"/>
+  <path d="M199 420 V355.4 Q199 351.4 203 351.4 H219 Q223 351.4 223 355.4 V420 Z" fill="#199E70"/>
+  <!-- 2 users -->
+  <path d="M337 420 V384.8 Q337 380.8 341 380.8 H357 Q361 380.8 361 384.8 V420 Z" fill="#3987E5"/>
+  <path d="M363 420 V370.1 Q363 366.1 367 366.1 H383 Q387 366.1 387 370.1 V420 Z" fill="#D95926"/>
+  <path d="M389 420 V294.5 Q389 290.5 393 290.5 H409 Q413 290.5 413 294.5 V420 Z" fill="#199E70"/>
+  <!-- 4 users -->
+  <path d="M527 420 V349.1 Q527 345.1 531 345.1 H547 Q551 345.1 551 349.1 V420 Z" fill="#3987E5"/>
+  <path d="M553 420 V323.9 Q553 319.9 557 319.9 H573 Q577 319.9 577 323.9 V420 Z" fill="#D95926"/>
+  <path d="M579 420 V218.2 Q579 214.2 583 214.2 H599 Q603 214.2 603 218.2 V420 Z" fill="#199E70"/>
+  <!-- 8 users -->
+  <path d="M717 420 V287.5 Q717 283.5 721 283.5 H737 Q741 283.5 741 287.5 V420 Z" fill="#3987E5"/>
+  <path d="M743 420 V268.6 Q743 264.6 747 264.6 H763 Q767 264.6 767 268.6 V420 Z" fill="#D95926"/>
+  <path d="M769 420 V157.3 Q769 153.3 773 153.3 H789 Q793 153.3 793 157.3 V420 Z" fill="#199E70"/>
+
+  <!-- value labels: the 1-user and 8-user groups only -->
+  <g font-size="12.5" font-weight="600" fill="#C9CCD4" text-anchor="middle">
+    <text x="159" y="392">29</text>
+    <text x="185" y="384">40</text>
+    <text x="211" y="343">98</text>
+    <text x="729" y="276">195</text>
+    <text x="755" y="257">222</text>
+    <text x="781" y="146">381</text>
+  </g>
+
+  <!-- x axis -->
+  <g font-size="13" fill="#C9CCD4" text-anchor="middle">
+    <text x="185" y="444">1 user</text>
+    <text x="375" y="444">2 users</text>
+    <text x="565" y="444">4 users</text>
+    <text x="755" y="444">8 users</text>
+  </g>
+  <g font-size="11.5" fill="#82868F" text-anchor="middle">
+    <text x="755" y="462">about 24, 28 and 48 per user</text>
+  </g>
+
+  <text x="40" y="496" font-size="11.5" fill="#82868F">512 generated tokens per request, BF16 KV cache and BF16 LM head, the fixed-length switch (mintok) on for every setup, one eight-slot server.</text>
+  <text x="40" y="514" font-size="11.5" fill="#82868F">Screening runs, not repeated confirm runs. The int4 stack has a mean KL of 0.0337 against BF16 and no task-level accuracy check.</text>
+</svg>

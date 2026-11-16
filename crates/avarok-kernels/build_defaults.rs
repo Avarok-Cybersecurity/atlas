@@ -20,6 +20,13 @@
 // modules, so a rule that lives only inside build.rs is a rule nothing tests.
 // Same posture as `build_flags.rs` and `build_arch.rs`.
 
+// The port sprint's rows (`port/consumer-opt`), parsed in a file of their own
+// so lanes' rows never touch this one. A `#[path]` here resolves against THIS
+// file's directory, so build.rs and tests/target_defaults*.rs both reach
+// `crates/avarok-kernels/build_defaults_port.rs`.
+#[path = "build_defaults_port.rs"]
+pub(crate) mod build_defaults_port;
+
 /// One target's `[defaults]` table, owned (build-time shape).
 ///
 /// Mirrors `avarok_kernels::TargetDefaults` field for field; [`literal`] emits
@@ -41,8 +48,17 @@ pub(crate) struct Defaults {
     pub lm_head_m16_tc: bool,
     pub attn_ncol_gemv: bool,
     pub ffn_gateup_fused: bool,
+    pub dense_fp8_from_bf16: bool,
+    pub gdn_fp8_from_bf16: bool,
+    pub attn_fp8_from_bf16: bool,
+    pub ffn_bf16_cublas_prefill: bool,
+    pub gdn_batched_gemm: bool,
+    pub attn_gated_bf16_batchm: bool,
+    pub memory_fit_consumer: bool,
     pub w8a8_prefill_max_m_widening: u32,
     pub w8a8_prefill_max_m_narrowing: u32,
+    /// The port sprint's rows (`build_defaults_port.rs`).
+    pub port: build_defaults_port::PortFields,
 }
 
 /// What a target that declares NO `[defaults]` table gets.
@@ -79,11 +95,34 @@ pub(crate) fn baseline(hw: &str) -> Defaults {
         // INERT anywhere the file is not compiled. OFF is what every
         // target served before #927.
         ffn_gateup_fused: false,
+        // A BF16 checkpoint keeps its BF16 weights: what every target served
+        // before the load-time FP8 route existed.
+        dense_fp8_from_bf16: false,
+        // Same for the GDN projections (`in_proj_qkvz`, `out_proj`).
+        gdn_fp8_from_bf16: false,
+        // And for the full-attention q/k/v/o.
+        attn_fp8_from_bf16: false,
+        // The BF16 dense-FFN prefill stays on `dense_gemm_tc` unless
+        // `AVAROK_CUBLAS_GEMM` says otherwise: what every target served before
+        // the row existed.
+        ffn_bf16_cublas_prefill: false,
+        // The BF16 GDN verify projections keep their GEMV / scalar-GEMM arms:
+        // what every target served before the row existed.
+        gdn_batched_gemm: false,
+        // Gated dense-BF16 Q/K/V keep the per-sequence GEMV loop in multi-seq
+        // decode: what every target served before the row existed.
+        attn_gated_bf16_batchm: false,
+        // Memory sizing and admission exactly as every target had them before
+        // the consumer-card fits existed.
+        memory_fit_consumer: false,
         // No cap. Absence is the correct declaration for every arch on which
         // W8A8 does not lose to W8A16 at large M, which is every arch that has
         // not measured otherwise — H100 included (2.0-3.1x at every M).
         w8a8_prefill_max_m_widening: u32::MAX,
         w8a8_prefill_max_m_narrowing: u32::MAX,
+        // Every port row at its baseline: off, which is what every target
+        // served before the row existed.
+        port: build_defaults_port::PortFields::default(),
     }
 }
 
@@ -197,6 +236,16 @@ pub(crate) fn parse_defaults(hw: &str, hw_toml: &toml::Value) -> Defaults {
             "lm_head_m16_tc" => out.lm_head_m16_tc = boolean(key, value),
             "attn_ncol_gemv" => out.attn_ncol_gemv = boolean(key, value),
             "ffn_gateup_fused" => out.ffn_gateup_fused = boolean(key, value),
+            "dense_fp8_from_bf16" => out.dense_fp8_from_bf16 = boolean(key, value),
+            "gdn_fp8_from_bf16" => out.gdn_fp8_from_bf16 = boolean(key, value),
+            "attn_fp8_from_bf16" => out.attn_fp8_from_bf16 = boolean(key, value),
+            "ffn_bf16_cublas_prefill" => out.ffn_bf16_cublas_prefill = boolean(key, value),
+            "gdn_batched_gemm" => out.gdn_batched_gemm = boolean(key, value),
+            "attn_gated_bf16_batchm" => out.attn_gated_bf16_batchm = boolean(key, value),
+            "memory_fit_consumer" => out.memory_fit_consumer = boolean(key, value),
+            // The port sprint's rows parse in `build_defaults_port.rs`; a key
+            // that is not one of them falls through to the panic below.
+            k if build_defaults_port::parse(&mut out.port, k, value) => {}
             other => panic!(
                 "kernels/{hw}/HARDWARE.toml: [defaults] has no key `{other}`. \
                  The lever list is the field list of `TargetDefaults` \
@@ -234,8 +283,16 @@ pub(crate) fn literal(d: &Defaults) -> String {
          \x20   lm_head_m16_tc: {lm_head_m16_tc},\n\
          \x20   attn_ncol_gemv: {attn_ncol_gemv},\n\
          \x20   ffn_gateup_fused: {gateup_fused},\n\
+         \x20   dense_fp8_from_bf16: {fp8_from_bf16},\n\
+         \x20   gdn_fp8_from_bf16: {gdn_fp8_from_bf16},\n\
+         \x20   attn_fp8_from_bf16: {attn_fp8_from_bf16},\n\
+         \x20   ffn_bf16_cublas_prefill: {bf16_cublas},\n\
+         \x20   gdn_batched_gemm: {gdn_gemm},\n\
+         \x20   attn_gated_bf16_batchm: {gated_batchm},\n\
+         \x20   memory_fit_consumer: {memory_fit},\n\
          \x20   w8a8_prefill_max_m_widening: {w8a8_wide},\n\
          \x20   w8a8_prefill_max_m_narrowing: {w8a8_narrow},\n\
+         \x20   port: {port},\n\
          }};\n",
         hw = d.hw,
         batchm = d.lm_head_batchm_max,
@@ -250,8 +307,16 @@ pub(crate) fn literal(d: &Defaults) -> String {
         lm_head_m16_tc = d.lm_head_m16_tc,
         attn_ncol_gemv = d.attn_ncol_gemv,
         gateup_fused = d.ffn_gateup_fused,
+        fp8_from_bf16 = d.dense_fp8_from_bf16,
+        gdn_fp8_from_bf16 = d.gdn_fp8_from_bf16,
+        attn_fp8_from_bf16 = d.attn_fp8_from_bf16,
+        bf16_cublas = d.ffn_bf16_cublas_prefill,
+        gdn_gemm = d.gdn_batched_gemm,
+        gated_batchm = d.attn_gated_bf16_batchm,
+        memory_fit = d.memory_fit_consumer,
         w8a8_wide = d.w8a8_prefill_max_m_widening,
         w8a8_narrow = d.w8a8_prefill_max_m_narrowing,
+        port = build_defaults_port::literal(&d.port),
     )
 }
 

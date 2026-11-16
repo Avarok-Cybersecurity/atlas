@@ -3,6 +3,8 @@
 use super::*;
 use std::collections::HashMap;
 
+mod qwen35;
+
 /// Minimal in-memory GgufMeta for tests.
 #[derive(Default)]
 struct Meta {
@@ -10,8 +12,13 @@ struct Meta {
     f: HashMap<String, f64>,
     s: HashMap<String, String>,
     arr: HashMap<String, usize>,
+    ua: HashMap<String, Vec<u64>>,
 }
 impl Meta {
+    fn ua(mut self, k: &str, v: &[u64]) -> Self {
+        self.ua.insert(k.into(), v.to_vec());
+        self
+    }
     fn u(mut self, k: &str, v: u64) -> Self {
         self.u.insert(k.into(), v);
         self
@@ -37,6 +44,9 @@ impl GgufMeta for Meta {
     }
     fn get_arr_len(&self, k: &str) -> Option<usize> {
         self.arr.get(k).copied()
+    }
+    fn get_u64_arr(&self, k: &str) -> Option<Vec<u64>> {
+        self.ua.get(k).cloned()
     }
 }
 
@@ -437,4 +447,6 @@ fn mamba_architecture_is_rejected_before_dimension_parsing() {
         err.contains("GGUF general.architecture 'mamba' has no Atlas model_type mapping"),
         "unexpected: {err}"
     );
+    // The message lists the supported arches, the Qwen3.5 hybrids included.
+    assert!(err.contains("qwen35, qwen35moe"), "unexpected: {err}");
 }

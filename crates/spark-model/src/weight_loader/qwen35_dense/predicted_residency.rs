@@ -235,6 +235,7 @@ pub fn predicted_derived_bytes(
     // under test; `ffn_nvfp4` is `!ffn_fp8` and is false by construction here.
     let plan = fp8_residency::DenseFp8Plan::resolve(fp8_residency::DenseFp8Inputs {
         ffn_fp8: true,
+        ffn_bf16: false,
         attn_fp8: true,
         keep_nvfp4: false,
         dispatch: route.route.dispatch,
@@ -308,6 +309,11 @@ pub fn predicted_derived_bytes(
             attn_fp8: plan.attn_fp8_twins.any() && attn_layers > 0,
             ssm_fp8_concat: ssm_fp8_concat > 0,
             ffn_gateup_fused: ffn_gateup_fused > 0,
+            // This prediction prices the native-FP8 checkpoint route
+            // (`AVAROK_DENSE_FP8=1`); a BF16 checkpoint never reaches it.
+            ffn_fp8_from_bf16: false,
+            gdn_fp8_from_bf16: false,
+            attn_fp8_from_bf16: false,
         },
         attn_twin_set: plan.attn_fp8_twins,
     })

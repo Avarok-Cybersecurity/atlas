@@ -10,6 +10,9 @@ use super::*;
 use crate::api::InferenceRequest;
 use crate::grammar::GrammarEngine;
 
+/// Host KV tier hooks (lane L26b).
+mod kv_tier;
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn start_new_requests(
     model: &dyn Model,
@@ -31,6 +34,7 @@ pub(super) fn start_new_requests(
     active: &mut Vec<ActiveSeq>,
     prefilling: &mut Vec<PrefillInProgress>,
 ) {
+    kv_tier::tick(model);
     // Co-dispatch (`--prefill-codispatch`): when >=2 non-vision requests are
     // co-admitted this tick with no active decode to starve, DEFER their chunk-0
     // prefill so they batch into one forward via run_batched_prefill_step (which
@@ -231,6 +235,12 @@ pub(super) fn start_new_requests(
 
     for (req_idx, req) in new_reqs.into_iter().enumerate() {
         let precomputed_beam_hyp = beam_hyps[req_idx].take();
+        // Host KV tier (L26b): restore this prompt's host-held prefix before the normal lookup
+        // (or park it until an async restore completes).
+        let Some(req) = kv_tier::before_prefill(model, req) else {
+            continue;
+        };
+        let tier_clock = kv_tier::PrefillClock::start(model);
         if chunked {
             let defer =
                 want_codispatch || ((mixed_defer || want_varlen_defer) && !req.has_image_pixels());
@@ -273,6 +283,7 @@ pub(super) fn start_new_requests(
                         a.seq.seq_len,
                         a.remaining,
                     );
+                    tier_clock.finish(model, &a.seq);
                     active.push(a);
                 }
                 Ok(StartPrefillResult::InProgress(p)) => {
@@ -310,6 +321,7 @@ pub(super) fn start_new_requests(
                         a.seq.seq_len,
                         a.remaining,
                     );
+                    tier_clock.finish(model, &a.seq);
                     active.push(a);
                 }
                 Ok(None) => {}

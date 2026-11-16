@@ -187,6 +187,7 @@ pub(super) fn handle_done(
             completion_tokens,
             decode_time_ms,
         ),
+        atlas: Default::default(),
     };
 
     let fr = resolve_wire_finish_reason(

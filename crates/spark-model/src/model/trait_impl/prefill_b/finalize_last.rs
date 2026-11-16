@@ -190,6 +190,21 @@ impl TransformerModel {
             }
         }
 
+        // AVAROK_DUMP_HIDDEN (off by default): final-norm output, then the logits below.
+        // Stream 0 only; the layer dumps come from `forward_layers` on the same last chunk.
+        let hidden_dump = if logits_row == 0 && hidden_stream_offset_tokens == 0 {
+            crate::model::hidden_dump::HiddenDumpPlan::from_env()
+        } else {
+            None
+        };
+        let dump_site = crate::model::hidden_dump::DumpSite {
+            prefill_path: "prefill_chunk",
+            token_count: tokens.len(),
+            proc_count,
+            seq_len_start: tokens.len().saturating_sub(proc_count),
+        };
+        self.dump_final_norm(hidden_dump.as_ref(), normed, dump_site, stream);
+
         // ── 7. LM head on last token → logits ──
         // Co-dispatched streams must each write their OWN logits row, else all
         // streams' first token collapses to one shared buffer (cross-request
@@ -204,6 +219,7 @@ impl TransformerModel {
             self.lm_head_batched(normed, 1, dst, stream)?;
             dst
         };
+        self.dump_logits(hidden_dump.as_ref(), dump_site, stream);
 
         // Per-layer divergence dump: full logits vector + top-10 token IDs.
         if let Ok(dir) = std::env::var("AVAROK_NEMO_DUMP")
@@ -321,6 +337,7 @@ impl TransformerModel {
                     seq.adapter_id,
                 );
                 super::super::super::block_mgmt::cache_acquires_refs(&acquired, kv_cache);
+                self.kv_tier_store(cache_tokens, seq, &acquired, kv_cache, stream);
             }
         } else if self.ssm_snapshots.is_enabled()
             && let super::exact_leaf::ExactLeaf::Redundant { tail, replay } =
@@ -350,6 +367,7 @@ impl TransformerModel {
                     seq.adapter_id,
                 );
                 super::super::super::block_mgmt::cache_acquires_refs(&acquired, kv_cache);
+                self.kv_tier_store(tokens, seq, &acquired, kv_cache, stream);
             }
         } else if self.ssm_snapshots.is_enabled() {
             if std::env::var("AVAROK_SSM_SAVE_DUMP").is_ok() {
@@ -439,6 +457,7 @@ impl TransformerModel {
                         seq.adapter_id,
                     );
                     super::super::super::block_mgmt::cache_acquires_refs(&acquired, kv_cache);
+                    self.kv_tier_store(tokens, seq, &acquired, kv_cache, stream);
                     if let Some(old) = displaced {
                         self.ssm_snapshots.free(old);
                     }
@@ -453,6 +472,7 @@ impl TransformerModel {
                     seq.adapter_id,
                 );
                 super::super::super::block_mgmt::cache_acquires_refs(&acquired, kv_cache);
+                self.kv_tier_store(tokens, seq, &acquired, kv_cache, stream);
             }
         } else if !self.tokens_have_vision_pad(tokens) && !self.hss_window_slid(seq) {
             let acquired = self.prefix_cache.insert(
@@ -464,6 +484,7 @@ impl TransformerModel {
                 seq.adapter_id,
             );
             super::super::super::block_mgmt::cache_acquires_refs(&acquired, kv_cache);
+            self.kv_tier_store(tokens, seq, &acquired, kv_cache, stream);
         }
 
         // DFlash: advance ctx_len after the LAST chunk of chunked prefill.

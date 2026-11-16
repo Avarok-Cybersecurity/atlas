@@ -154,6 +154,25 @@ impl Qwen3SsmLayer {
             );
         }
 
+        // Ada tensor-core chunked prefill (`gdn_chunk_tc_ada`): only with
+        // `[defaults] gdn_prefill_tc` on AND the Ada-only module in the image;
+        // otherwise `Ok(false)` and the ladder below runs unchanged.
+        let tc = super::gdn_chunk_tc_ada::TcAdaArgs {
+            h_state,
+            h_state_is_table: false,
+            q: q_ptr,
+            k: k_ptr,
+            v: v_ptr,
+            gate: gate_ptr,
+            beta: beta_ptr,
+            out: gdn_bufs.output,
+            shape: super::gdn_chunk_tc_ada::TcAdaShape::packed(1, total, nk, nv, kd, vd, conv_dim),
+            midchunk_capture: false,
+        };
+        if self.prefill_gdn_tc_ada(&tc, ctx, stream)? {
+            return Ok(());
+        }
+
         let fla_scratch = ctx.buffers.gdn_fla_scratch();
         if !ctx.gdn_exact_replay
             && kd == 128

@@ -58,6 +58,10 @@ fn every_real_target_resolves_a_nonempty_source_set() {
     assert_eq!(
         targets.iter().map(ToString::to_string).collect::<Vec<_>>(),
         [
+            // The Ada (sm_89) targets, sorting first. Symlinked gb10 sources
+            // like hopper's and b200's, plus the few Ada owns.
+            "ada/holo-3.1-0.8b/nvfp4",
+            "ada/holo-3.1-4b/nvfp4",
             // The B200 targets, sorting ahead of gb10's. Same symlinked
             // sources as hopper's, and the same reason they are not redundant.
             "b200/deepseek-v4-flash/nvfp4",

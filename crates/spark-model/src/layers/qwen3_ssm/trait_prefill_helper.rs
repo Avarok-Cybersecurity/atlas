@@ -71,7 +71,19 @@ impl Qwen3SsmLayer {
         value_dim: usize,
         stream: u64,
     ) -> Result<()> {
-        let force_w8a8 = matches!(std::env::var("AVAROK_FP8_W8A8").ok().as_deref(), Some("1"));
+        // W4 pair (`w4_proj.rs`, port lane L22a): the only live out_proj
+        // weight once installed, so it precedes every arm below.
+        if self.w4_proj.is_some() {
+            return self.w4_out_prefill(ctx, normed_out_buf, out_proj_buf, k as usize, stream);
+        }
+        // The in-tree W8A8 arm below: `AVAROK_FP8_W8A8=1` as before, or by
+        // default on a layer the load-time BF16 -> FP8 GDN route built
+        // (`out_proj_w8a8_prefill`), which `AVAROK_FP8_SINGLE_SCALE` still
+        // turns off. Both need the 128-multiple grid the weight scales are on.
+        let force_w8a8 = (matches!(std::env::var("AVAROK_FP8_W8A8").ok().as_deref(), Some("1"))
+            || (self.out_proj_w8a8_prefill && ctx.dispatch.fp8_blockscaled_prefill))
+            && h.is_multiple_of(128)
+            && value_dim.is_multiple_of(128);
         // PER-ROW FP8 from the checkpoint (`AVAROK_FP8_ROWWISE=1`), dequantised
         // once to BF16 into the LEDGERED arena slab — see the matching arm in
         // `trait_prefill_proj.rs` for why BF16 and not the row-wise FP8 GEMM,
@@ -165,12 +177,22 @@ impl Qwen3SsmLayer {
             && self.per_token_group_quant_fp8_k.available()
             && self.fp8_gemm_t_blockscaled_k.0 != 0
         {
-            tracing::debug!(
-                "ssm prefill: out_proj via W8A8+FP32-epilogue (M={k} K={h} N={value_dim})"
-            );
+            if ctx.stats.once("log:ssm_out_proj_w8a8_kernel_prefill") {
+                tracing::info!(
+                    "[avarok] SSM out_proj prefill: W8A8 block-scaled via kernel \
+                     (per-token 1x128 act scales x 128x128 weight scales, FP32 epilogue; \
+                     N={h} K={value_dim}). AVAROK_FP8_SINGLE_SCALE=1 restores W8A16."
+                );
+            }
+            // `out_proj` maps `[M, value_dim]` to `[M, h]`: the activation is
+            // quantized over K = value_dim and the GEMM is (M, N = h,
+            // K = value_dim). This arm used to pass K = h and N = value_dim,
+            // which is right only when the two are equal (they are not on any
+            // Qwen3.5 / 3.6 dense GDN: 2560 vs 4096 on the 4B).
             let m = k as usize;
-            let k_dim = h;
-            // Persistent arena scratch (no per-projection alloc/sync/free).
+            let k_dim = value_dim;
+            // Persistent arena scratch (no per-projection alloc/sync/free),
+            // sized for `max_proj_k`, which includes value_dim.
             let a_fp8_buf = ctx.buffers.fp8_act();
             let a_scale_buf = ctx.buffers.fp8_act_scale();
             debug_assert!(m * k_dim <= ctx.buffers.fp8_act_bytes());
@@ -193,8 +215,8 @@ impl Qwen3SsmLayer {
                 fp8w.row_scale,
                 out_proj_buf,
                 k,
-                value_dim as u32,
                 h as u32,
+                value_dim as u32,
                 stream,
             )?;
             Ok(())

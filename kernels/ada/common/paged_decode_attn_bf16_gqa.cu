@@ -1,0 +1,1 @@
+../../gb10/common/paged_decode_attn_bf16_gqa.cu

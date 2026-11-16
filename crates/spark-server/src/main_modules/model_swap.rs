@@ -45,6 +45,7 @@ use anyhow::Result;
 
 use super::model_host::ModelHost;
 use super::serve_load::{Carried, load_model};
+use super::swap_metrics::{self, Outcome, SwapTimer};
 use crate::cli;
 
 /// What a swap needs to know to undo itself.
@@ -321,8 +322,14 @@ pub(crate) fn swap(host: &Arc<ModelHost>, next: cli::ServeArgs) -> Result<SwapOu
     // runs after the two that need nothing but the argv.
     preflight_kernel_target(&next)?;
 
+    // Timing (row `model_swap_timing`; a no-op with the row off) starts where
+    // the outage does and is never reached by a swap the checks above refused.
+    // A return through `?` below counts as `failed`; see `swap_metrics`.
+    let mut timer = SwapTimer::begin(swap_metrics::stats(), swap_metrics::enabled());
+
     // 1 + 2. Stop admitting work, and release the state that owns request_tx.
-    let carried = release_state(host, DRAIN_GRACE)?;
+    let carried =
+        release_state(host, DRAIN_GRACE).inspect_err(|_| timer.finish(None, Outcome::Refused))?;
 
     // 3. Wait for the scheduler to finish draining.
     if let Some(handle) = host.take_scheduler() {
@@ -330,6 +337,7 @@ pub(crate) fn swap(host: &Arc<ModelHost>, next: cli::ServeArgs) -> Result<SwapOu
             .join()
             .map_err(|_| anyhow::anyhow!("the scheduler thread panicked while draining"))?;
     }
+    timer.joined();
 
     // 4 + 5. The model drops as the scheduler thread unwinds, which is where
     // `Model::teardown` frees its pools; then the new one loads.
@@ -339,10 +347,12 @@ pub(crate) fn swap(host: &Arc<ModelHost>, next: cli::ServeArgs) -> Result<SwapOu
     let tui_handles_tx = host.tui_handles();
     let load_err = match load_model(next, tui_handles_tx.clone(), carried.clone()) {
         Ok(Some(prepared)) => {
+            timer.loaded();
             // 6.
             host.set_scheduler(prepared.scheduler);
             host.set_args(next_args);
             host.publish(prepared.state);
+            timer.finish(host.live_model().as_deref(), Outcome::Ok);
             signal_listener_phases(host);
             return Ok(SwapOutcome {
                 previous: previous_args,
@@ -365,6 +375,7 @@ pub(crate) fn swap(host: &Arc<ModelHost>, next: cli::ServeArgs) -> Result<SwapOu
             host.set_scheduler(prepared.scheduler);
             host.set_args(previous);
             host.publish(prepared.state);
+            timer.finish(None, Outcome::Restored);
             // The restored model is serving, so the dashboard must say so.
             // Without this the checklist stays frozen part-way and the pill
             // reads LOADING for a server that is answering requests — the same

@@ -1,0 +1,132 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 700" width="1200" height="700" font-family="Inter, ui-sans-serif, system-ui, Segoe UI, Helvetica, Arial, sans-serif" role="img" aria-labelledby="t d">
+  <title id="t">The RTX 4060 Ti 16 GB in numbers</title>
+  <desc id="d">Left, the reference part next to GB10: 34 SMs against 48, 16 GB of GDDR6 against 120 GB of LPDDR5X, and 288 GB/s against 273 GB/s. Right, dense tensor throughput from NVIDIA's published figures: BF16 with FP32 accumulation 44.1 TFLOPS, FP8 with FP32 accumulation 88.3, FP8 with FP16 accumulation 176.6, and the 353.2 headline, which is FP8 with 2:4 sparsity and FP16 accumulation. Bottom, the ridge point: about 153 FLOP per byte for both BF16 and FP8, so a single-stream decode at 1 to 2 FLOP per byte is bandwidth-bound and a prefill of a few hundred tokens is compute-bound.</desc>
+
+  <rect width="1200" height="700" fill="#0F1216"/>
+
+  <text x="40" y="44" font-size="23" font-weight="650" fill="#C9CCD4">The reference part, in numbers</text>
+  <text x="40" y="66" font-size="13.5" fill="#82868F">RTX 4060 Ti 16 GB (AD106, sm_89). Spec-sheet figures, not Atlas measurements.</text>
+
+  <!-- ===== left: spec table ===== -->
+  <rect x="40" y="90" width="520" height="34" fill="#1E242B"/>
+  <g font-size="12" font-weight="650" fill="#C9CCD4">
+    <text x="56" y="112">Resource</text>
+    <text x="300" y="112">RTX 4060 Ti 16 GB</text>
+    <text x="450" y="112">GB10</text>
+  </g>
+  <g font-size="12">
+    <rect x="40" y="124" width="520" height="30" fill="#171B21"/>
+    <text x="56" y="144" fill="#82868F">Streaming multiprocessors</text>
+    <text x="300" y="144" fill="#C9CCD4">34</text>
+    <text x="450" y="144" fill="#82868F">48</text>
+
+    <text x="56" y="174" fill="#82868F">Tensor cores (4th generation)</text>
+    <text x="300" y="174" fill="#C9CCD4">136 (4 per SM)</text>
+    <text x="450" y="174" fill="#82868F">n/a</text>
+
+    <rect x="40" y="184" width="520" height="30" fill="#171B21"/>
+    <text x="56" y="204" fill="#82868F">Boost clock</text>
+    <text x="300" y="204" fill="#C9CCD4">2,535 MHz</text>
+    <text x="450" y="204" fill="#82868F">n/a</text>
+
+    <text x="56" y="234" fill="#82868F">Memory</text>
+    <text x="300" y="234" fill="#C9CCD4" font-weight="650">16 GB GDDR6</text>
+    <text x="450" y="234" fill="#82868F">120 GB LPDDR5X</text>
+
+    <rect x="40" y="244" width="520" height="30" fill="#171B21"/>
+    <text x="56" y="264" fill="#82868F">Memory bandwidth</text>
+    <text x="300" y="264" fill="#C9CCD4" font-weight="650">288 GB/s</text>
+    <text x="450" y="264" fill="#82868F">273 GB/s</text>
+
+    <text x="56" y="294" fill="#82868F">Bus</text>
+    <text x="300" y="294" fill="#C9CCD4">128-bit, 18 Gbps</text>
+    <text x="450" y="294" fill="#82868F">n/a</text>
+
+    <rect x="40" y="304" width="520" height="30" fill="#171B21"/>
+    <text x="56" y="324" fill="#82868F">L2 cache</text>
+    <text x="300" y="324" fill="#C9CCD4">32 MB</text>
+    <text x="450" y="324" fill="#82868F">n/a</text>
+
+    <text x="56" y="354" fill="#82868F">Shared memory per block</text>
+    <text x="300" y="354" fill="#C9CCD4">48 KiB static, 99 KiB dyn.</text>
+    <text x="450" y="354" fill="#82868F">n/a</text>
+  </g>
+  <text x="40" y="384" font-size="11" fill="#82868F">GB10 figures are the ones kernels/gb10/HARDWARE.toml declares; "n/a" means not compared here.</text>
+
+  <rect x="40" y="400" width="520" height="70" rx="4" fill="#171B21" stroke="#49C3DB"/>
+  <text x="56" y="424" font-size="12.5" font-weight="650" fill="#49C3DB">The point of the comparison</text>
+  <text x="56" y="444" font-size="11.5" fill="#C9CCD4">Bandwidth is about the same as GB10's, so decode speed per byte</text>
+  <text x="56" y="460" font-size="11.5" fill="#C9CCD4">is too. Capacity is about one seventh. Memory is the wall.</text>
+
+  <!-- ===== right: tensor throughput ===== -->
+  <text x="620" y="108" font-size="15" font-weight="650" fill="#C9CCD4">Dense tensor throughput, TFLOPS</text>
+  <text x="620" y="126" font-size="11.5" fill="#82868F">Scale 0 to 360 over 500 px. NVIDIA's Ada figures for this part.</text>
+
+  <!-- px per TFLOP = 500/360 = 1.3889 ; bars start at x=620 -->
+  <g font-size="12">
+    <text x="620" y="156" fill="#C9CCD4">BF16, FP32 accumulate</text>
+    <rect x="620" y="164" width="61.3" height="24" fill="#BE9DF8"/>
+    <text x="690" y="181" fill="#C9CCD4" font-weight="650">44.1</text>
+    <text x="736" y="181" fill="#82868F" font-size="11">the BF16 GEMMs Atlas runs today</text>
+
+    <text x="620" y="214" fill="#C9CCD4">FP8 E4M3, FP32 accumulate</text>
+    <rect x="620" y="222" width="122.6" height="24" fill="#12B981"/>
+    <text x="752" y="239" fill="#C9CCD4" font-weight="650">88.3</text>
+    <text x="798" y="239" fill="#82868F" font-size="11">fp8_gemm_ada: 2x BF16</text>
+
+    <text x="620" y="272" fill="#C9CCD4">FP8 E4M3, FP16 accumulate</text>
+    <rect x="620" y="280" width="245.3" height="24" fill="#12B981" fill-opacity="0.35" stroke="#12B981"/>
+    <text x="875" y="297" fill="#C9CCD4" font-weight="650">176.6</text>
+    <text x="926" y="297" fill="#82868F" font-size="11">overflows, see FP8 section</text>
+
+    <text x="620" y="330" fill="#C9CCD4">FP8, FP16 accumulate, 2:4 sparse</text>
+    <rect x="620" y="338" width="490.6" height="24" fill="none" stroke="#82868F" stroke-dasharray="5 4"/>
+    <text x="1104" y="355" fill="#C9CCD4" font-weight="650" text-anchor="end">353.2</text>
+    <text x="630" y="355" fill="#82868F" font-size="11">the headline figure; needs 2:4 sparse weights</text>
+  </g>
+  <text x="620" y="392" font-size="11.5" fill="#82868F">GeForce Ada runs FP32 accumulation at half the FP16-accumulate rate.</text>
+  <text x="620" y="410" font-size="11.5" fill="#82868F">BF16 mma.sync has only an FP32-accumulate form.</text>
+
+  <!-- ===== bottom: the ridge ===== -->
+  <text x="40" y="510" font-size="15" font-weight="650" fill="#C9CCD4">Where the work sits: arithmetic intensity against the ridge</text>
+  <text x="40" y="530" font-size="11.5" fill="#82868F">Ridge = peak / bandwidth: 44.1 TFLOPS / 288 GB/s = 153 FLOP per byte for BF16; 88.3 / 288 = 307 for FP8, reached at the same token count.</text>
+
+  <!-- log axis 1 .. 1000 FLOP/byte over x 120..1120 (1000 px, 333.3 px per decade) -->
+  <line x1="120" y1="600" x2="1120" y2="600" stroke="#82868F"/>
+  <g stroke="#82868F">
+    <line x1="120" y1="596" x2="120" y2="604"/>
+    <line x1="453.3" y1="596" x2="453.3" y2="604"/>
+    <line x1="786.7" y1="596" x2="786.7" y2="604"/>
+    <line x1="1120" y1="596" x2="1120" y2="604"/>
+  </g>
+  <g font-size="10.5" fill="#82868F" text-anchor="middle">
+    <text x="120" y="618">1</text>
+    <text x="453.3" y="618">10</text>
+    <text x="786.7" y="618">100</text>
+    <text x="1120" y="618">1,000 FLOP/byte</text>
+  </g>
+  <!-- bandwidth-bound region up to 153 (log10 153 = 2.185 -> x = 120 + 728.2 = 848.2) -->
+  <rect x="120" y="562" width="728.2" height="30" fill="#49C3DB" fill-opacity="0.15"/>
+  <rect x="848.2" y="562" width="271.8" height="30" fill="#BE9DF8" fill-opacity="0.15"/>
+  <line x1="848.2" y1="552" x2="848.2" y2="604" stroke="#C9CCD4" stroke-width="1.5" stroke-dasharray="4 3"/>
+  <text x="854" y="580" font-size="11" fill="#C9CCD4">ridge, 153</text>
+  <text x="130" y="582" font-size="11.5" fill="#49C3DB" font-weight="650">bandwidth-bound</text>
+  <text x="1110" y="582" font-size="11.5" fill="#BE9DF8" font-weight="650" text-anchor="end">compute-bound</text>
+
+  <!-- markers: decode BF16 at 1 (x=120), decode FP8 at 2 (x=120+100.3=220.3), prefill 512 tokens BF16 = 512 (x=120+903=1023) -->
+  <g font-size="11">
+    <circle cx="124" cy="640" r="5" fill="#BE9DF8"/>
+    <text x="134" y="644" fill="#C9CCD4">decode, BF16 weights: 1 FLOP/byte</text>
+    <circle cx="220.3" cy="664" r="5" fill="#12B981"/>
+    <text x="230" y="668" fill="#C9CCD4">decode, FP8 weights: 2 FLOP/byte</text>
+    <circle cx="1023" cy="640" r="5" fill="#EFB338"/>
+    <text x="1013" y="644" fill="#C9CCD4" text-anchor="end">prefill, 512-token chunk: about 512 FLOP/byte</text>
+  </g>
+  <g stroke-width="1" stroke-dasharray="2 3">
+    <line x1="124" y1="604" x2="124" y2="634" stroke="#BE9DF8"/>
+    <line x1="220.3" y1="604" x2="220.3" y2="658" stroke="#12B981"/>
+    <line x1="1023" y1="604" x2="1023" y2="634" stroke="#EFB338"/>
+  </g>
+  <text x="40" y="690" font-size="11" fill="#82868F">Intensity of a weight-streaming GEMM with M tokens: 2M FLOP per weight, over 2 bytes (BF16) or 1 byte (FP8). Both cross the ridge near M = 153.</text>
+</svg>

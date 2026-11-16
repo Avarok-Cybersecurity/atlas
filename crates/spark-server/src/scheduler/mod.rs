@@ -38,6 +38,9 @@ mod lifecycle_tests;
 mod logit_dump;
 mod logit_processors;
 mod logprobs;
+// Row `min_tokens_gpu_argmax` (off by default): a floored greedy step stays on
+// the device argmax.
+mod min_floor_fast;
 mod mod_helpers;
 pub use mod_helpers::capture_runtime_handle;
 pub mod dumps;
@@ -46,12 +49,36 @@ pub mod limits;
 mod mtp_accept_debug;
 mod mtp_bootstrap_step;
 mod mtp_dcut;
+mod mtp_device_timing;
 mod mtp_gate;
+mod mtp_stats;
 mod mtp_step;
 pub(crate) mod mtp_timing;
+// Row `mtp_width_policy` (off by default): the gate's per-batch-width memory
+// and probe pacing.
+mod mtp_width_policy;
 mod phase_continue_prefills;
 mod phase_promote_prefills;
 mod phase_start_prefills;
+// Asynchronous host-tier KV restore (lane L27, row `kv_restore_async`): parked
+// requests, polled at the top of each tick; `try_park` is called from the
+// admission site in `phase_start_prefills.rs`.
+pub(crate) mod restore_queue;
+// The port sprint's (`port/consumer-opt`) per-sequence state (`ActiveSeq::port`).
+pub(crate) mod port_state;
+// Logprob confidence summary and its `atlas_conf_*` series (L05).
+pub(crate) mod conf_summary;
+// Admission regression vectors and the no-drafts switch (L05).
+#[cfg(test)]
+mod admission_port_tests;
+// Scheduler-side port series (`/metrics`): steady-state gauges and the render
+// entry for the accepted-prefix histogram, device phase timer and D-Cut v2.
+pub mod port_gauges;
+// The merged copy drafter and the speculative round plan seam (L13).
+pub(crate) mod copy_draft;
+pub(crate) mod spec_round_plan;
+// The bounded KV view's scheduler side (port L32, row `kv_view_selection`).
+pub(crate) mod kv_view;
 mod preempt;
 #[cfg(test)]
 mod preempt_tests;
@@ -425,6 +452,23 @@ pub fn run(
 
     let mut snapshot_steps: u64 = 0;
     loop {
+        // ── Async KV restore (lane L27, row `kv_restore_async`, off by default) ──
+        // Requests parked on a host-tier restore whose copy finished go back to the
+        // FRONT of the pending queue, so the drain below admits them normally. With
+        // nothing parked this returns at once. It returns true only on an otherwise
+        // idle tick with restores still parked: it then waited up to 2 ms, and the
+        // loop polls again instead of blocking on the request condvar (nothing would
+        // signal it when a copy completes).
+        if restore_queue::tick(
+            &*model,
+            &pending,
+            active.is_empty()
+                && prefilling.is_empty()
+                && swapped.is_empty()
+                && preempted.is_empty(),
+        ) {
+            continue;
+        }
         // ── Drain pending → start prefill (chunked or full) ──
         // The `t_loop_*` brackets attribute the out-of-step GAP the
         // AVAROK_MTP_TIMING summary reports (see mtp_timing::Phase::Gap): each
@@ -761,6 +805,9 @@ pub fn run(
                 && active.len() == 1
                 && spec_slots_covered
                 && active[0].grammar_state.is_none()
+                // Port sprint (L05): a request that opted out of drafts
+                // (`atlas_speculative: false`) skips this single-sequence branch too.
+                && !active[0].disable_mtp
             {
                 // N-gram speculative: CPU proposer + CUDA-graphed K=2 verify.
                 if let Some(ref mut proposer) = ngram_proposer {
@@ -770,6 +817,8 @@ pub fn run(
                 && active.len() == 1
                 && spec_slots_covered
                 && active[0].grammar_state.is_none()
+                // Same per-request opt-out as the n-gram branch above (L05).
+                && !active[0].disable_mtp
             {
                 // Self-speculative: draft via layer-skipping, verify with full model.
                 // Clamped to the active slot's tiered verify capacity, like
@@ -851,20 +900,16 @@ pub fn run(
                     if (dflash_pin || mtp_gate::entry_pin_forces_verify(min_post_think_emitted))
                         && gate.next_step() == mtp_gate::GateStep::MeasureDecode
                     {
-                        let lens_before: Vec<usize> =
-                            active.iter().map(|a| a.seq.seq_len).collect();
-                        step_mtp(
-                            &*model,
-                            &mut active,
-                            &sched,
-                            num_drafts,
-                            &verify_ctx,
-                            dflash_verify_raw_argmax,
-                        );
-                        for (a, &b) in active.iter_mut().zip(lens_before.iter()) {
-                            a.mtp_acct
-                                .record_verify_emitted(a.seq.seq_len.saturating_sub(b));
-                        }
+                        mtp_stats::account_step(&mut active, &sched.timing, |act| {
+                            step_mtp(
+                                &*model,
+                                act,
+                                &sched,
+                                num_drafts,
+                                &verify_ctx,
+                                dflash_verify_raw_argmax,
+                            )
+                        });
                     } else {
                         match gate.next_step() {
                             mtp_gate::GateStep::MeasureDecode => {
@@ -944,27 +989,18 @@ pub fn run(
                                 // on tokens-per-second, so counting only active[0]
                                 // under-reports MTP's throughput by a factor of n and
                                 // biases the gate toward serial decode.
-                                let lens_before: Vec<usize> =
-                                    active.iter().map(|a| a.seq.seq_len).collect();
-                                let t0 = std::time::Instant::now();
-                                step_mtp(
-                                    &*model,
-                                    &mut active,
-                                    &sched,
-                                    num_drafts,
-                                    &verify_ctx,
-                                    dflash_verify_raw_argmax,
-                                );
-                                let emitted: usize = active
-                                    .iter()
-                                    .zip(lens_before.iter())
-                                    .map(|(a, &b)| a.seq.seq_len.saturating_sub(b))
-                                    .sum();
-                                gate.record_verify_step(t0.elapsed(), emitted, active.len());
-                                for (a, &b) in active.iter_mut().zip(lens_before.iter()) {
-                                    a.mtp_acct
-                                        .record_verify_emitted(a.seq.seq_len.saturating_sub(b));
-                                }
+                                let (wall, emitted) =
+                                    mtp_stats::account_step(&mut active, &sched.timing, |act| {
+                                        step_mtp(
+                                            &*model,
+                                            act,
+                                            &sched,
+                                            num_drafts,
+                                            &verify_ctx,
+                                            dflash_verify_raw_argmax,
+                                        )
+                                    });
+                                gate.record_verify_step(wall, emitted, active.len());
                             }
                         }
                     }
@@ -973,7 +1009,19 @@ pub fn run(
                     // state resync before the next plain decode reads it.
                     // Serial->Mtp needs nothing (the next MTP step
                     // bootstraps from empty pending_drafts).
-                    if gate.take_fresh_decision() == Some(mtp_gate::GateDecision::DisableMtp) {
+                    let decision = gate.take_fresh_decision();
+                    if let Some(d) = decision {
+                        mtp_stats::note_gate_decision(
+                            &mut active,
+                            d == mtp_gate::GateDecision::DisableMtp,
+                        );
+                    }
+                    mtp_stats::note_gate_estimates(
+                        &mut active,
+                        gate.mtp_tps_debug(),
+                        gate.serial_tps_debug(),
+                    );
+                    if decision == Some(mtp_gate::GateDecision::DisableMtp) {
                         for a in active.iter_mut() {
                             a.pending_drafts.clear();
                             a.pending_draft_conf.clear();
@@ -984,19 +1032,16 @@ pub fn run(
                     }
                 } else {
                     // Gate bypassed (AVAROK_MTP_GATE_FORCE=1): plain MTP.
-                    let lens_before: Vec<usize> = active.iter().map(|a| a.seq.seq_len).collect();
-                    step_mtp(
-                        &*model,
-                        &mut active,
-                        &sched,
-                        num_drafts,
-                        &verify_ctx,
-                        dflash_verify_raw_argmax,
-                    );
-                    for (a, &b) in active.iter_mut().zip(lens_before.iter()) {
-                        a.mtp_acct
-                            .record_verify_emitted(a.seq.seq_len.saturating_sub(b));
-                    }
+                    mtp_stats::account_step(&mut active, &sched.timing, |act| {
+                        step_mtp(
+                            &*model,
+                            act,
+                            &sched,
+                            num_drafts,
+                            &verify_ctx,
+                            dflash_verify_raw_argmax,
+                        )
+                    });
                 }
             } else {
                 // Batch decode (no MTP). Clear stale drafts when transitioning out of MTP mode.
@@ -1038,6 +1083,7 @@ pub fn run(
         // on this same iteration. Placed here rather than in a decode step
         // because the MTP/speculative path does not run `process_decode_logits`.
         enforce_request_deadlines(&mut active);
+        port_gauges::observe_round(active.len(), prefilling.len(), active.len());
         retire_finished_sequences(&*model, &mut active, sched.limits.max_seq_len);
         sched.timing.record(mtp_timing::Phase::LoopRetire, t_loop);
 
@@ -1112,6 +1158,7 @@ pub fn run(
             block_size,
         );
         sched.timing.record(mtp_timing::Phase::LoopSwap, t_loop);
+        port_gauges::end_tick(active.len(), prefilling.len());
     }
 
     // Periodic session eviction: free SSM snapshots for expired sessions.
@@ -1139,6 +1186,9 @@ pub fn run(
     );
     // Shutdown applies to every slot the worker has; seq_id is ignored.
     let _ = model.ep_broadcast_cmd_for_seq(0, 0xFFFFFFFF);
+    // The drain is over; the stream sync, `Model::teardown` and the allocator
+    // sweep that follow are the swap timer's `teardown` phase (L41).
+    crate::main_modules::swap_metrics::mark_teardown_begin();
 
     // Release the model's device memory HERE, in order and able to report a
     // failure, before the `Box` drops.

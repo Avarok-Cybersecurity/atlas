@@ -146,6 +146,8 @@ pub(crate) fn prepare_chat_prompt(
         // leaves the Jinja variable undefined (template default).
         req.preserve_thinking.or(state.behavior.preserve_thinking),
         tools_active,
+        // Sharp-template `terse` (chat_template_kwargs.terse); None = unset.
+        req.template_terse,
     )?;
     if state.chat.phase_timing {
         let us_template = _t_phase.elapsed().as_micros() - us_msg_entry - us_thinking;

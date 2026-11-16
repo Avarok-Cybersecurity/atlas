@@ -178,3 +178,132 @@ fn the_flag_parses_through_the_model_side_ssot() {
     // The clap default is the `auto` this module's fit depends on.
     assert_eq!(args().ssm_decode_ring_slots, "auto");
 }
+
+// ── The memory-budget cap (`ssm_reserve/budget.rs`) ───────────────────────────
+//
+// Two machines again: GB10 (the default part, whose configurations must not
+// move) and a 16 GB Ada card serving a 4B hybrid model in BF16, where the
+// default 8 x 8 ring was measured at 3,264 MiB.
+
+const MIB: usize = 1024 * 1024;
+const GIB: usize = 1024 * MIB;
+/// 4B per-sequence SSM state blob: 3,264 MiB / (8 slots x 8 seqs).
+const BLOB_4B: usize = 51 * MIB;
+
+fn args_with_batch(batch: &str) -> cli::ServeArgs {
+    cli::ServeArgs::parse_from(["spark", "Qwen/Qwen3.5-4B", "--max-batch-size", batch])
+}
+
+/// The 4060 Ti case: 15.3 GiB free, an 8.3 GiB checkpoint (clamped to half of
+/// free, see `memory_beside_weights`), 2 GiB of reserve that does not scale
+/// with the ring. Pre-load free memory would wave the 3,264 MiB ring through
+/// (`2 + 3.19 <= 15.3`) and leave the KV cache to find out.
+fn ada_fit(args: &cli::ServeArgs, explicit: bool) -> RingFit {
+    let free = 15 * GIB + 300 * MIB;
+    let beside = spark_model::ssm_reserve::memory_beside_weights(free, 8 * GIB + 300 * MIB);
+    fit_ring_budgeted(
+        args,
+        8,
+        slot_bytes(args, BLOB_4B),
+        BLOB_4B,
+        2 * GIB,
+        free,
+        beside,
+        &PRE_LOAD,
+        explicit,
+    )
+}
+
+#[test]
+fn the_ada_card_halves_the_ring_at_the_default_batch_and_says_so() {
+    let args = args_with_batch("8");
+    let fit = ada_fit(&args, false);
+    assert_eq!(fit.slots, 4, "8 x 8 x 51 MiB = 3,264 MiB -> 1,632 MiB");
+    let warning = fit.warning.expect("a cap must be logged, never silent");
+    assert!(
+        warning.contains("ring: 4 slots x 8 seqs x 51.0 MB/seq = 1.59 GB (was 3.19 GB)"),
+        "{warning}"
+    );
+    assert!(
+        warning.contains("capped at 1/3 of the 7.65 GB"),
+        "{warning}"
+    );
+    assert!(
+        warning.contains("--ssm-decode-ring-slots"),
+        "the warning must name the flag that pins a depth: {warning}"
+    );
+}
+
+#[test]
+fn a_single_stream_serve_keeps_the_full_ring_on_the_ada_card() {
+    let args = args_with_batch("1");
+    let fit = ada_fit(&args, false);
+    assert_eq!(
+        fit.slots, 8,
+        "8 x 1 x 51 MiB = 408 MiB is well inside budget"
+    );
+    assert!(fit.warning.is_none());
+}
+
+#[test]
+fn a_pinned_depth_is_never_capped() {
+    // `--ssm-decode-ring-slots 8` is honored on both sides or refused: the
+    // budget must not become the "silent third answer".
+    let args = args_with_batch("8");
+    let fit = ada_fit(&args, true);
+    assert_eq!(fit.slots, 8);
+    assert!(fit.warning.is_none());
+}
+
+#[test]
+fn gb10_defaults_are_untouched() {
+    // ~115 GiB free, a 17 GiB checkpoint, the 27B's 151.5 MiB blob, default
+    // batch 8 and the largest batch the budget leaves alone (27).
+    let free = 115 * GIB;
+    let beside = spark_model::ssm_reserve::memory_beside_weights(free, 17 * GIB);
+    for batch in ["8", "16", "27"] {
+        let args =
+            cli::ServeArgs::parse_from(["spark", "Qwen/Qwen3.6-27B", "--max-batch-size", batch]);
+        let fit = fit_ring_budgeted(
+            &args,
+            8,
+            slot_bytes(&args, PER_SEQ_BLOB),
+            PER_SEQ_BLOB,
+            RESERVE_WITHOUT_RING,
+            free,
+            beside,
+            &PRE_LOAD,
+            false,
+        );
+        assert_eq!(fit.slots, 8, "batch {batch}");
+        assert!(fit.warning.is_none(), "batch {batch}: {:?}", fit.warning);
+    }
+}
+
+#[test]
+fn the_cap_and_the_yardstick_can_both_bite_and_both_are_reported() {
+    // Free memory so tight that after the budget cap (8 -> 4) the reserve
+    // still does not fit: 2 GiB + 4 x 408 MiB = 3.6 GiB against 3.0 GiB.
+    let args = args_with_batch("8");
+    let free = 3 * GIB;
+    let beside = spark_model::ssm_reserve::memory_beside_weights(15 * GIB + 300 * MIB, 8 * GIB);
+    let fit = fit_ring_budgeted(
+        &args,
+        8,
+        slot_bytes(&args, BLOB_4B),
+        BLOB_4B,
+        2 * GIB,
+        free,
+        beside,
+        &PRE_LOAD,
+        false,
+    );
+    assert_eq!(fit.slots, 2, "4 does not fit 3.0 GiB; 2 does (2.8 GiB)");
+    let warning = fit.warning.expect("both stages must be logged");
+    assert!(warning.contains("capped at 1/3"), "{warning}");
+    assert!(warning.contains("Then:"), "{warning}");
+    assert!(
+        warning.contains("Sized from pre-load free memory"),
+        "{warning}"
+    );
+}

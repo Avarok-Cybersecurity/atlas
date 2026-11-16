@@ -133,6 +133,8 @@ pub struct AvarokRegistry {
     modules: HashMap<&'static str, Arc<CudaModule>>,
     /// Raw CUmodule handles for direct cuLaunchKernel access.
     raw_modules: HashMap<&'static str, *mut c_void>,
+    /// Dynamic shared-memory launch floors, see `registry_dyn_smem`.
+    dyn_smem: crate::registry_dyn_smem::DynSmemFloors,
 }
 
 impl Drop for AvarokRegistry {
@@ -241,6 +243,7 @@ impl AvarokRegistry {
             host,
             modules,
             raw_modules,
+            dyn_smem: Default::default(),
         })
     }
 
@@ -308,6 +311,11 @@ impl AvarokRegistry {
             )));
         }
         let raw = RawCudaFunc(func);
+        // SAFETY: `raw_mod` is this registry's loaded module and `raw` came from it.
+        unsafe {
+            self.dyn_smem
+                .discover(*raw_mod, module_name, func_name, raw)
+        }?;
         let _ = cache.set(raw);
         Ok(raw)
     }
@@ -436,6 +444,8 @@ impl AvarokRegistry {
         // Never fall back to Atlas's private stream — that breaks ordering
         // with PyTorch operations and prevents CUDA graph capture.
         let stream = stream_ptr;
+        // A kernel that exports a dynamic shared-memory floor gets at least it.
+        let cfg = self.dyn_smem.apply(raw_func, cfg);
         // Opt in to >48KB dynamic shared memory when requested.
         if cfg.shared_mem_bytes > 48 * 1024 {
             const CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES: i32 = 8;

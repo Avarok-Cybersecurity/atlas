@@ -94,7 +94,27 @@ impl Qwen3AttentionLayer {
             return self.attention_forward_mla(kv_cache, ctx, &args);
         }
 
-        if self.gated {
+        if let Some(w4) = self.w4_proj.get(super::super::w4_proj::W4Slot::Q) {
+            // Packed q (port lane L22b, `w4_proj.rs`): the raw row (`[Q|gate]` interleaved when
+            // gated), the q LoRA fold on it, then the same split the BF16 arm runs.
+            let (n_out, k_in) = (q_proj_dim as usize, h as usize);
+            let what = "attention q_proj";
+            self.w4_decode_rows(w4, what, ctx.gpu, normed, 1, q_out, n_out, k_in, stream)?;
+            self.apply_q_lora(ctx, normed, q_out, stream)?;
+            if self.gated {
+                let stride = nq * hd * 2;
+                ops::deinterleave_qg(
+                    ctx.gpu,
+                    self.deinterleave_qg_k,
+                    q_out,
+                    1,
+                    nq,
+                    hd,
+                    stride,
+                    stream,
+                )?;
+            }
+        } else if self.gated {
             // Q+Gate projection with inline deinterleave (output is [Q_all | Gate_all])
             if let Some(q2) = self.q_weight.as_ref().and_then(|w| w.as_packed_q2()) {
                 // Keep-packed Q2_0 (Tier-1c): 2-bit GEMV → gated [Q|Gate], then
@@ -726,6 +746,43 @@ impl Qwen3AttentionLayer {
                 0,
                 stream,
             )?;
+        } else if let Some(sel) = super::super::sparse_seam::active()
+            && let Some(route) = self.seam_decode_single(
+                sel,
+                ctx,
+                kv_cache,
+                &meta,
+                q_out,
+                attn_out,
+                seq_len,
+                block_table.as_slice(),
+                super::super::sparse_seam::SeamDims { nq, nkv, hd },
+                stream,
+            )?
+        {
+            // Sparse-attention seam (port L29): the selector's tables, or its
+            // custom attention already wrote `attn_out`.
+            if let super::super::sparse_seam::route::DecodeRoute::Run(t) = route {
+                self.run_paged_decode(
+                    ctx.gpu,
+                    q_out,
+                    kv_cache,
+                    attn_out,
+                    t.block_table,
+                    t.seq_lens,
+                    t.max_blocks_per_seq,
+                    1,
+                    nq,
+                    nkv,
+                    hd,
+                    bs as u32,
+                    inv_sqrt_d,
+                    nq * hd,
+                    ctx.buffers.splitk_workspace(),
+                    ctx.levers.max_decode_seqs,
+                    stream,
+                )?;
+            }
         } else {
             self.run_paged_decode(
                 ctx.gpu,

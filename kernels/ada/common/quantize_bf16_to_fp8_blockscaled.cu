@@ -1,0 +1,1 @@
+../../gb10/common/quantize_bf16_to_fp8_blockscaled.cu

@@ -112,6 +112,18 @@ pub(super) enum GdnStates<'a, 'b> {
 }
 
 impl Qwen3SsmLayer {
+    /// True when the BF16 `in_proj_qkvz` is this layer's ONLY live QKVZ copy
+    /// (the Qwen3.5 dense `Bf16Raw` load): no packed, FP8 or NVFP4 sibling
+    /// that an earlier arm of the verify dispatch would pick instead.
+    fn gdn_qkvz_bf16_only(&self) -> bool {
+        self.qkvz_q2.is_none()
+            && self.qkvz_fp8w.is_none()
+            && self.qkvz_fp8.is_none()
+            && self.qkvz_nvfp4.is_none()
+            && self.qkvz_nvfp4_t.is_none()
+            && !self.ssm.in_proj_qkvz.weight.is_null()
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn decode_batched_inner(
         &self,
@@ -174,7 +186,10 @@ impl Qwen3SsmLayer {
         // verify — 2026-07-02 flagship gate). Mirrors the M<=4 dispatch in
         // trait_decode_multi_seq/ssm_batched.rs: one weight pass via
         // `w8a16_gemv_batch4`, per-token `w8a16_gemv` when it isn't linked.
-        if let Some(ref q2) = self.qkvz_q2 {
+        // W4 pair first (`w4_proj.rs`, port lane L22a); None on a row-off build.
+        if self.w4_proj.is_some() {
+            self.w4_qkvz_rows(ctx, normed, proj_dst, num_tokens, stream)?;
+        } else if let Some(ref q2) = self.qkvz_q2 {
             // Tier-1c keep-packed Q2_0: per-token 2-bit fused-qkvz GEMV. Bonsai
             // (dense qwen35) has no MTP, so this batched path is only reached
             // under multi-token verify — a per-token loop is bit-identical to
@@ -189,6 +204,45 @@ impl Qwen3SsmLayer {
                     stream,
                 )?;
             }
+        } else if self.gdn_qkvz_bf16_only()
+            && ops::gdn_verify_gemv::qkvz_claims(ctx.gpu, num_tokens, h)
+        {
+            // `gdn_verify_gemv` row (off on every target): a BF16-only QKVZ at
+            // 3+ rows on `dense_gemv_bf16_batchm`, 16 rows a weight pass,
+            // instead of one `dense_gemv` per row (3, 4) or the scalar
+            // `dense_gemm` (5+). Every row is the M=1 decode GEMV's bits
+            // (`ops/gdn_verify_gemv.rs`). Ahead of the cuBLASLt row on
+            // purpose: where both are on, this one keeps decode arithmetic.
+            ops::gdn_verify_gemv::launch_rows(
+                ctx.gpu,
+                ops::gdn_verify_gemv::kernel(ctx.gpu),
+                normed,
+                &self.ssm.in_proj_qkvz,
+                proj_dst,
+                num_tokens,
+                qkvz_size as u32,
+                h as u32,
+                stream,
+            )?;
+        } else if self.gdn_qkvz_bf16_only()
+            && ops::gdn_batched_gemm::qkvz_arm(ops::gdn_batched_gemm::row(), num_tokens)
+                == ops::gdn_batched_gemm::QkvzArm::Cublas
+        {
+            // `gdn_batched_gemm` row (off on every target): a BF16-only QKVZ
+            // at 3+ rows on ONE cuBLASLt GEMM instead of one `dense_gemv` per
+            // row (3, 4) or the scalar `dense_gemm` (5+). Every arm between
+            // here and those needs a quantized copy this layer lacks, so the
+            // early position changes nothing else. Same call as the
+            // multi-seq decode QKVZ (`ssm_batched_proj.rs`).
+            ops::cublas_bf16_proj_dense(
+                normed,
+                self.ssm.in_proj_qkvz.weight,
+                proj_dst,
+                k,
+                qkvz_size as u32,
+                h as u32,
+                stream,
+            )?;
         // 2..=4: the K=4 verify (num_drafts=3) hits this same NULL-slot
         // hazard — on native-FP8-GDN checkpoints (e.g. nvidia/Qwen3.6-27B-
         // NVFP4, whose GDN layers ship FP8) `in_proj_qkvz`/`qkvz_nvfp4*` are
@@ -939,18 +993,53 @@ impl Qwen3SsmLayer {
 
         // ── 9. Output projection → [K, H] ──
         let out_proj_buf = ctx.buffers.moe_output(); // [K, H] BF16
-        if let Some(ref dense_out) = self.out_proj_dense {
-            ops::dense_gemm(
-                ctx.gpu,
-                self.dense_gemm_k,
-                normed_out_buf,
-                dense_out,
-                out_proj_buf,
-                k,
-                h as u32,
-                value_dim as u32,
-                stream,
-            )?;
+        // W4 pair first (`w4_proj.rs`, port lane L22a); None on a row-off build.
+        if self.w4_proj.is_some() {
+            self.w4_out_rows(ctx, normed_out_buf, out_proj_buf, num_tokens, stream)?;
+        } else if let Some(ref dense_out) = self.out_proj_dense {
+            if ops::gdn_verify_gemv::out_proj_claims(ctx.gpu, num_tokens, value_dim) {
+                // `gdn_verify_gemv` row: the scalar `dense_gemm` replaced by
+                // the batched GEMV, each row the M=1 decode GEMV's bits
+                // (`ssm_forward.rs` runs this projection on `dense_gemv`).
+                ops::gdn_verify_gemv::launch_rows(
+                    ctx.gpu,
+                    ops::gdn_verify_gemv::kernel(ctx.gpu),
+                    normed_out_buf,
+                    dense_out,
+                    out_proj_buf,
+                    num_tokens,
+                    h as u32,
+                    value_dim as u32,
+                    stream,
+                )?;
+            } else if ops::gdn_batched_gemm::out_proj_arm(ops::gdn_batched_gemm::row(), num_tokens)
+                == ops::gdn_batched_gemm::OutProjArm::Cublas
+            {
+                // `gdn_batched_gemm` row: the scalar `dense_gemm` (about
+                // 89 GB/s) replaced by the cuBLASLt call the multi-seq decode
+                // out_proj already makes (`ssm_batched_proj.rs`).
+                ops::cublas_bf16_proj_dense(
+                    normed_out_buf,
+                    dense_out.weight,
+                    out_proj_buf,
+                    k,
+                    h as u32,
+                    value_dim as u32,
+                    stream,
+                )?;
+            } else {
+                ops::dense_gemm(
+                    ctx.gpu,
+                    self.dense_gemm_k,
+                    normed_out_buf,
+                    dense_out,
+                    out_proj_buf,
+                    k,
+                    h as u32,
+                    value_dim as u32,
+                    stream,
+                )?;
+            }
         } else if (2..=4).contains(&num_tokens)
             && let Some(ref fp8) = self.out_proj_fp8w
         {
@@ -1290,8 +1379,16 @@ impl Qwen3SsmLayer {
             // MoE, where grouped-GEMM is a net loss at small batch (per-expert
             // M~1 + sort/permute overhead across the 36-layer SSM stack).
             k4_diag_checkpoint(ctx, "10a:residual_add_rms_norm", stream)?;
-            self.ffn
-                .forward_prefill(normed2_base, num_tokens, ctx, stream)?;
+            // Row `ffn_fp8_m16_tc` (off by default): up to 32 verify rows of a
+            // native-FP8 layer on the 16- or 32-row tensor-core GEMM; `false`
+            // launched nothing (`dense_ffn/fp8_m16_tc.rs`).
+            if !self
+                .ffn
+                .try_forward_fp8_m16_tc(normed2_base, num_tokens, ctx, stream)?
+            {
+                self.ffn
+                    .forward_prefill(normed2_base, num_tokens, ctx, stream)?;
+            }
             k4_diag_checkpoint(ctx, "10b:ffn_forward_prefill", stream)?;
             let moe_out = ctx.buffers.moe_output();
             ops::residual_add(

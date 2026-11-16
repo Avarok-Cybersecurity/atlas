@@ -35,6 +35,11 @@ pub fn step_verify_k4(
     // branches and several early error returns, so an explicit call per tail
     // would be one refactor away from silently drifting out of date again.
     let _step_timer = crate::scheduler::mtp_timing::StepTimer::new(&sched.timing, a.seq.seq_len);
+    // AVAROK_MTP_TIMING=2 device-event marks (lane L06's timer; one branch
+    // when unset): verify forward, host pipeline, then the shared verdict
+    // (commit, emit, hidden save and re-propose) charged to `other`.
+    use crate::scheduler::mtp_device_timing as devt;
+    devt::step_start(model);
 
     if let Err(e) = model.sync_secondary() {
         tracing::error!("sync_secondary: {e:#}");
@@ -88,6 +93,10 @@ pub fn step_verify_k4(
             }
         }
     };
+    sched
+        .timing
+        .record(crate::scheduler::mtp_timing::Phase::VerifyForward, t_verify);
+    devt::mark_model(devt::Phase::Verify, model);
     let verify_us = t_verify.elapsed().as_micros();
     a.last_token_time = Instant::now();
     let (v0_argmax, v1_argmax, v2_argmax, v3_argmax) =
@@ -113,6 +122,7 @@ pub fn step_verify_k4(
             processed.get(3).copied().unwrap_or(v3_argmax),
         )
     };
+    devt::mark_model(devt::Phase::Pipeline, model);
 
     let num_accepted = if drafts[0] != v0 {
         0
@@ -212,4 +222,5 @@ pub fn step_verify_k4(
         K4Hidden::VerifyRow,
         verify_us,
     );
+    devt::mark_model(devt::Phase::Other, model);
 }

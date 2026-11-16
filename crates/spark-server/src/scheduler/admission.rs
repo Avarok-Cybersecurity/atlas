@@ -317,6 +317,20 @@ pub(super) fn gate_admissions(
     admitted
 }
 
+impl super::port_state::SeqPortState {
+    /// The port state of a sequence admitted from a request: the per-request
+    /// `atlas_speculative: false` becomes `no_drafts`, which no speculative
+    /// step may override (the request also rides the older `disable_mtp`
+    /// switch, so the MTP gate honors it even for a path that predates this
+    /// field). Every other lane's field starts at its `Default`.
+    pub(crate) fn for_request(no_drafts: bool) -> Self {
+        Self {
+            no_drafts,
+            ..Self::default()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -222,7 +222,7 @@ fn ldb_kernels_keep_their_dialect_specific_bounds() {
             }
         }
     }
-    // ★ 6 PATHS, 3 FILES. `kernels/{strix,hopper,b200}/common/w4a16_gemm.cu`
+    // ★ 7 PATHS, 3 FILES. `kernels/{strix,hopper,b200,ada}/common/w4a16_gemm.cu`
     // are all SYMLINKS to `../../gb10/common/w4a16_gemm.cu`, so those copies
     // were ported the moment gb10's was. `strix-hip/common/` is a real,
     // separate HIP file and had to be done by hand. B300 owns a separate CUDA
@@ -235,9 +235,9 @@ fn ldb_kernels_keep_their_dialect_specific_bounds() {
     // exists to catch. Asserting only the total would fire on the free case
     // and, once bumped, would go quiet on the expensive one.
     assert_eq!(
-        scalar, 6,
+        scalar, 7,
         "the shared `common/` scalar paths moved (gb10, strix, strix-hip, \
-         hopper, b200, b300) — update this count with the tree"
+         hopper, b200, b300, ada) — update this count with the tree"
     );
     assert_eq!(
         scalar_forked, 3,

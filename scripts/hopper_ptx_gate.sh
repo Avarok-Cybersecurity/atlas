@@ -334,7 +334,7 @@ NVCC_VERSION="$("$NVCC" --version | tail -1 | tr -s ' ')"
 # cannot be avoided by picking a "more portable" instruction.
 case "$ARCH" in
   sm_100*)          BAD_FIXTURE=known_bad_post_blackwell_dc.cu ;;
-  sm_9*|sm_12*)     BAD_FIXTURE=known_bad_post_hopper.cu ;;
+  sm_89|sm_9*|sm_12*) BAD_FIXTURE=known_bad_post_hopper.cu ;;
   *)                BAD_FIXTURE="" ;;
 esac
 if [ -z "$BAD_FIXTURE" ]; then

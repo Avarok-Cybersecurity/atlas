@@ -92,6 +92,9 @@ pub fn parse_sm_arch(arch: &str) -> Option<SmArch> {
 /// declared `compute_capability` back to its own directory name.
 pub fn target_hint(device_cc: (u32, u32)) -> Option<&'static str> {
     match device_cc {
+        // Ada Lovelace. Plain (unsuffixed) sm_89 PTX, so later parts could also
+        // load it, but each of those has its own target above it in this list.
+        (8, 9) => Some("ada"),
         (9, 0) => Some("hopper"),
         // Separate arch-specific datacentre targets: their PTX is not interchangeable.
         (10, 0) => Some("b200"),

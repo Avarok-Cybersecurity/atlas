@@ -390,5 +390,7 @@ impl SequenceState {
 /// single-thread invariant — do NOT share `&dyn Model` across threads.
 mod logprobs;
 mod model;
+/// The port sprint's (`port/consumer-opt`) model-level entry points.
+pub mod port_ext;
 pub use logprobs::*;
 pub use model::{BeamReq, EpCommandFailed, Model, VerifyBatchedOpts, padded_batch_n};

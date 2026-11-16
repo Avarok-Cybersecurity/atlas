@@ -19,10 +19,20 @@
 //!
 //! Write-on-accept is never a layer default. The caller asks per verify
 //! (`ForwardContext::gdn_write_on_accept`, set from
-//! `VerifyBatchedOpts::write_on_accept` by the DFlash batched step only).
-//! The MTP batched K-row verify shares this layer code and commits through
-//! `verify_k4_verdict`, which never folds; with the request off, it always
-//! gets the parent wy4 (every intermediate written) exactly as before.
+//! `VerifyBatchedOpts::write_on_accept`). The DFlash batched step asks
+//! whenever `AVAROK_GDN_WOA=1`; the MTP batched K-row verify asks only with
+//! the port row `gdn_woa_mtp` on (`spark_model::port::gdn_woa::
+//! mtp_batched_request`), and then folds every verdict before its
+//! `verify_k4_verdict` commits. With the request off it gets the parent wy
+//! kernels (every intermediate written) exactly as before.
+//!
+//! ## Widths
+//!
+//! K = 4 is the gb10-common pair below, on every target. With the row on, a
+//! target that carries the Ada module `gated_delta_rule_wyn_woa` also engages
+//! its K-generic twin at K = 2, 3 and 5..16 (`woa_wyn.rs`), committed by the
+//! K-generic fold. With the row off no K-generic handle is even looked up, so
+//! the decision below reduces to the shipped K = 4 rule.
 //!
 //! provenance-id: 526f6e616c6420522e205374657369616b
 
@@ -35,11 +45,14 @@ use super::Qwen3SsmLayer;
 use crate::layers::ops;
 
 /// The three kernel handles, `KernelHandle(0)` each when the module is
-/// absent (`try_kernel`); the decision below gates on all three.
+/// absent (`try_kernel`); the decision below gates on all three. `wyn` holds
+/// the K-generic Ada pair, all zero unless the `gdn_woa_mtp` row is on and
+/// the target carries the module (`woa_wyn::resolve`).
 pub(super) struct WoaKernels {
     pub woa_k: KernelHandle,
     pub fold_k: KernelHandle,
     pub clear_k: KernelHandle,
+    pub wyn: super::woa_wyn::WynWoaKernels,
 }
 
 pub(super) fn woa_kernels(gpu: &dyn GpuBackend) -> WoaKernels {
@@ -48,13 +61,14 @@ pub(super) fn woa_kernels(gpu: &dyn GpuBackend) -> WoaKernels {
         woa_k: crate::layers::try_kernel(gpu, m, "gated_delta_rule_wy4_woa"),
         fold_k: crate::layers::try_kernel(gpu, m, "gated_delta_rule_wy4_fold"),
         clear_k: crate::layers::try_kernel(gpu, m, "gated_delta_rule_wy4_flag_clear"),
+        wyn: super::woa_wyn::resolve(gpu, crate::layers::ops::port_rows::gdn_woa_mtp::row()),
     }
 }
 
 /// Per-sequence stash width in f32: `vn[4][nv][vd] | g[4][nv] | sk[4][nk][kd]`.
 /// ~131 KB per sequence at 48 v-heads x 16 k-heads x 128.
 pub(super) const fn stash_seq_floats(nk: usize, nv: usize, kd: usize, vd: usize) -> usize {
-    4 * (nv * vd + nv + nk * kd)
+    crate::port::gdn_woa::stash_seq_floats_k(4, nk, nv, kd, vd)
 }
 
 /// Everything the engage decision depends on, so it can be pinned by tests
@@ -78,12 +92,29 @@ pub(super) struct WoaRequest {
     pub bound_seqs: usize,
     /// Batch width of this call.
     pub n: usize,
+    /// The `gdn_woa_mtp` row: K-generic widths allowed.
+    pub generalized: bool,
+    /// The K-generic twin for `kk` AND its fold resolved (`woa_wyn`).
+    pub wyn_twin_linked: bool,
 }
 
-/// The ONE place that decides whether the K=4 write-on-accept twin runs.
+/// The ONE place that decides whether a write-on-accept twin runs.
+///
+/// K = 4: the gb10-common pair, exactly the shipped rule. Any other width
+/// in 2..=16: the Ada K-generic twin, only with the row on and that width's
+/// twin and the K-generic fold linked. Both arms also need the K = 4 pair
+/// linked (`kernels_linked`): its flag-clear kernel is what resets the
+/// engaged word at the top of every requesting verify. The stash the model
+/// bound covers every width its batched verify accepts (the model sizes it
+/// with `port::gdn_woa::stash_rows_cap`), so no width check is needed here.
 pub(super) const fn woa_decision(r: WoaRequest) -> bool {
+    let width_ok = if r.kk == 4 {
+        true
+    } else {
+        r.generalized && r.wyn_twin_linked && r.kk >= 2 && r.kk <= 16
+    };
     r.requested
-        && r.kk == 4
+        && width_ok
         && r.enabled
         && !r.h_f16
         && r.kd == 128
@@ -135,6 +166,8 @@ impl Qwen3SsmLayer {
                 self.woa_seqs.load(Ordering::Acquire)
             },
             n,
+            generalized: crate::layers::ops::port_rows::gdn_woa_mtp::row(),
+            wyn_twin_linked: self.woa_wyn.twin_for(kk).is_some(),
         })
     }
 
@@ -150,16 +183,19 @@ impl Qwen3SsmLayer {
         ops::gdn_wy4_flag_clear(gpu, self.gdn_wy4_clear_k, flag, stream)
     }
 
-    /// Launch the K=4 write-on-accept twin. A launch failure is an error,
-    /// not a fallback: the 64 KB dynamic-smem opt-in is set by the launch
-    /// path for every launch over 48 KB (`registry.rs`), so a refusal here
-    /// is a build or device mismatch that should stop the step, and a
-    /// silent kernel swap inside a graph capture is exactly what the review
-    /// of PR #844 asked to remove.
+    /// Launch the write-on-accept twin for verify width `kk` (the K=4 pair at
+    /// 4, the K-generic Ada twin otherwise; `woa_decision` already said yes).
+    /// A launch failure is an error, not a fallback: the 64 KB dynamic-smem
+    /// opt-in is set by the launch path for every launch over 48 KB
+    /// (`registry.rs`), so a refusal here is a build or device mismatch that
+    /// should stop the step, and a silent kernel swap inside a graph capture
+    /// is exactly what the review of PR #844 asked to remove. Both twins
+    /// share the K=4 twin's argument list, so one launcher serves them.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn woa_launch(
         &self,
         gpu: &dyn GpuBackend,
+        kk: usize,
         wy_tables: DevicePtr,
         q_ptr: DevicePtr,
         k_ptr: DevicePtr,
@@ -172,9 +208,20 @@ impl Qwen3SsmLayer {
         stream: u64,
     ) -> Result<()> {
         let [nk, nv, kd, vd] = self.woa_dims;
+        let (kernel, seq_floats) = if kk == 4 {
+            (self.gdn_wy4_woa_k, stash_seq_floats(nk, nv, kd, vd))
+        } else {
+            let k = self.woa_wyn.twin_for(kk).ok_or_else(|| {
+                anyhow::anyhow!("GDN write-on-accept: no K={kk} twin linked (decision bypassed)")
+            })?;
+            (
+                k,
+                crate::port::gdn_woa::stash_seq_floats_k(kk, nk, nv, kd, vd),
+            )
+        };
         ops::gdn_decode_wy4_woa(
             gpu,
-            self.gdn_wy4_woa_k,
+            kernel,
             wy_tables,
             q_ptr,
             k_ptr,
@@ -191,17 +238,29 @@ impl Qwen3SsmLayer {
             conv_dim as u32,
             conv_dim as u32,
             (nv * 2) as u32,
-            stash_seq_floats(nk, nv, kd, vd) as u32,
+            seq_floats as u32,
             self.woa_flag(),
             stream,
         )?;
-        static WOA_LOGGED: std::sync::atomic::AtomicBool =
-            std::sync::atomic::AtomicBool::new(false);
-        if !WOA_LOGGED.swap(true, Ordering::Relaxed) {
-            tracing::info!(
-                "batched-verify GDN WRITE-ON-ACCEPT ENGAGED (n={n}, k=4): wy4_woa + post-verdict fold \
-                 (state read once, written once per step)"
-            );
+        if kk == 4 {
+            static WOA_LOGGED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            if !WOA_LOGGED.swap(true, Ordering::Relaxed) {
+                tracing::info!(
+                    "batched-verify GDN WRITE-ON-ACCEPT ENGAGED (n={n}, k=4): wy4_woa + post-verdict fold \
+                     (state read once, written once per step)"
+                );
+            }
+        } else {
+            // One line per width, so a serve log proves which widths engaged.
+            static WYN_LOGGED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            let bit = 1u32 << (kk & 31);
+            if (WYN_LOGGED.fetch_or(bit, Ordering::Relaxed) & bit) == 0 {
+                tracing::info!(
+                    "batched-verify GDN WRITE-ON-ACCEPT ENGAGED (n={n}, k={kk}): wyn_woa_{kk} + \
+                     K-generic fold (gdn_woa_mtp)"
+                );
+            }
         }
         Ok(())
     }
@@ -211,6 +270,11 @@ impl Qwen3SsmLayer {
     /// partial-accept restore from the Hi tables. Either way h is committed
     /// here and the caller skips its h restore. No clear after the fold:
     /// the next requesting verify clears at entry.
+    ///
+    /// The kernel is `woa_wyn::fold_choice`: the shipped wy4 fold at K = 4
+    /// (and at every width while the K-generic fold is not linked, which
+    /// with the row off is always), else the K-generic fold reading the
+    /// stash at the `k_rows` layout. Their flag-0 arms are the same restore.
     pub(super) fn fold_accepted_impl(
         &self,
         gpu: &dyn GpuBackend,
@@ -233,9 +297,20 @@ impl Qwen3SsmLayer {
         }
         let [nk, nv, kd, vd] = self.woa_dims;
         let hi_tables = h_table.offset(crate::layer::VERIFY_WY_TABLE_STRIDE_BYTES);
+        let wyn_fold = self.woa_wyn.fold_kernel();
+        let (fold_k, seq_floats) = match (
+            super::woa_wyn::fold_choice(k_rows, wyn_fold.is_some()),
+            wyn_fold,
+        ) {
+            (super::woa_wyn::FoldKernel::Wyn, Some(k)) => (
+                k,
+                crate::port::gdn_woa::stash_seq_floats_k(k_rows, nk, nv, kd, vd),
+            ),
+            _ => (self.gdn_wy4_fold_k, stash_seq_floats(nk, nv, kd, vd)),
+        };
         ops::gdn_wy4_fold(
             gpu,
-            self.gdn_wy4_fold_k,
+            fold_k,
             h_table,
             stash,
             na_tab,
@@ -248,7 +323,7 @@ impl Qwen3SsmLayer {
             nv as u32,
             kd as u32,
             vd as u32,
-            stash_seq_floats(nk, nv, kd, vd) as u32,
+            seq_floats as u32,
             stream,
         )?;
         Ok(true)
@@ -269,6 +344,8 @@ mod tests {
         kernels_linked: true,
         bound_seqs: 16,
         n: 16,
+        generalized: false,
+        wyn_twin_linked: false,
     };
 
     /// The DFlash batched step at K=4 with everything linked and bound.
@@ -279,9 +356,9 @@ mod tests {
     }
 
     /// THE BLOCKER, pinned: a caller that did not ask never gets the twin,
-    /// whatever else is true. The MTP batched K-row verify (n=2..4, K=4 by
-    /// the ladder) passes `requested: false` and keeps the parent wy4, whose
-    /// intermediates its verdict path restores from.
+    /// whatever else is true. The MTP batched K-row verify with the
+    /// `gdn_woa_mtp` row off passes `requested: false` and keeps the parent
+    /// wy4, whose intermediates its verdict path restores from.
     #[test]
     fn unrequested_never_engages() {
         for n in 2..=4 {

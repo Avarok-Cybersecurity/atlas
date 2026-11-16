@@ -57,8 +57,9 @@ impl TransformerModel {
             } else if let Some(prefix_match) = reserved_match {
                 prefix_match
             } else {
-                self.prefix_cache
-                    .lookup(tokens, bs, seq.session_hash, seq.adapter_id)
+                // `lookup` unless a copy-on-write tail is allowed here (row
+                // `prefix_cow_tail`; `prefix_cow.rs`).
+                self.prefill_b_lookup_maybe_cow(tokens, seq, kv_cache)
             };
             // F83 (2026-04-30): on EP>1, head and worker have
             // independent local prefix caches whose match counts can
@@ -108,6 +109,11 @@ impl TransformerModel {
                     );
                 }
             }
+            // Issue #1193: a sub-block match is copied into a private block
+            // here, before the block table is used; it falls back to the
+            // block-aligned match when no copy can be made.
+            let cow_block =
+                self.prefill_b_apply_cow_tail(&mut prefix_match, tokens, seq, kv_cache, stream)?;
             let matched = prefix_match.matched_tokens;
             // The one line that answers "why did this request not reuse":
             // what the lookup saw, and whether it came from a scheduler
@@ -139,6 +145,8 @@ impl TransformerModel {
                 kv_cache.inc_ref(block_idx);
                 seq.block_table.push(block_idx);
             }
+            // The private CoW copy is already this sequence's (one ref).
+            seq.block_table.extend(cow_block);
             reuse_prefix_match_disk_ids(
                 &prefix_match.matched_disk_block_ids,
                 &mut seq.disk_block_ids,

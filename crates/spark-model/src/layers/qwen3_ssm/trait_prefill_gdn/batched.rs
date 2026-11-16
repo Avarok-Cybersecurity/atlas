@@ -42,6 +42,28 @@ impl Qwen3SsmLayer {
         let beta_ptr = gdn_bufs.gate_beta.offset(nv * fp32);
         let gb_stride = (nv * 2) as u32;
 
+        // Ada tensor-core chunked prefill over the uniform co-dispatch batch
+        // (`gdn_chunk_tc_ada`, h_state through the same pointer table): only
+        // with `[defaults] gdn_prefill_tc` on AND the Ada-only module in the
+        // image; otherwise `Ok(false)` and the ladder below runs unchanged.
+        let tc = super::super::gdn_chunk_tc_ada::TcAdaArgs {
+            h_state: h_state_ptrs,
+            h_state_is_table: true,
+            q: q_ptr,
+            k: k_ptr,
+            v: v_ptr,
+            gate: gate_ptr,
+            beta: beta_ptr,
+            out: gdn_bufs.output,
+            shape: super::super::gdn_chunk_tc_ada::TcAdaShape::packed(
+                batch_size, chunk_len, nk, nv, kd, vd, conv_dim,
+            ),
+            midchunk_capture: false,
+        };
+        if self.prefill_gdn_tc_ada(&tc, ctx, stream)? {
+            return Ok(());
+        }
+
         // ── Batched FLA scan (AVAROK_GDN_BATCHED_FLA) ──
         // Route the co-dispatched GDN through the chunk-parallel FLA kernels at
         // batch=N instead of the occupancy-starved wy64 [nv,batch]. FLA's

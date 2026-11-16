@@ -2,7 +2,9 @@
 
 //! Env-gated phase timing for the MTP K=2 verify path (#237 fixed-overhead hunt).
 //!
-//! `AVAROK_MTP_TIMING=1` arms per-phase accumulators across the verify step:
+//! `AVAROK_MTP_TIMING=1` arms per-phase accumulators across the verify step
+//! (`=2` arms the same host timers and, in addition, the device-event phases
+//! of [`super::mtp_device_timing`]):
 //! sync/EP/forward, the per-position host pipeline (D2H, dequant, processor
 //! stages, penalties, argmax), grammar mask fills (both `fill_bitmask` and the
 //! `forced_token` path, which computes a full mask of its own), SSM/proposer
@@ -104,7 +106,7 @@ const NAMES: [&str; NUM_PHASES] = [
 /// scheduler context and should not grow one).
 #[derive(Debug)]
 pub struct RunTiming {
-    /// Armed by `AVAROK_MTP_TIMING=1`. When false every `record` is a
+    /// Armed by `AVAROK_MTP_TIMING=1` or `=2`. When false every `record` is a
     /// predictable branch and nothing else.
     pub armed: bool,
     sum_us: [AtomicU64; NUM_PHASES],
@@ -116,11 +118,35 @@ pub struct RunTiming {
     /// A per-run field, not a static, for the same reason the accumulators are:
     /// a gap measured across a model swap describes neither model.
     last_step_end_us: AtomicU64,
+    /// Always-on draft / verify / commit stage accumulators, drained once
+    /// per MTP step for the per-request `MTP stats` line
+    /// (`scheduler::mtp_stats`). Fed by [`Self::record`] whether or not the
+    /// diagnostic is armed.
+    pub stages: super::mtp_stats::StageClock,
+}
+
+/// `AVAROK_MTP_TIMING` as a level: `1` arms the host phase timers, `2` also
+/// arms the device-event phases (`mtp_device_timing`); anything else is off.
+/// Pure so a test can grade the grammar without touching the environment.
+pub(crate) fn parse_level(raw: Option<&str>) -> u8 {
+    match raw {
+        Some("1") => 1,
+        Some("2") => 2,
+        _ => 0,
+    }
+}
+
+/// The process's `AVAROK_MTP_TIMING` level, read once.
+pub(crate) fn env_level() -> u8 {
+    static LEVEL: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
+    *LEVEL.get_or_init(|| parse_level(std::env::var("AVAROK_MTP_TIMING").ok().as_deref()))
 }
 
 impl RunTiming {
     pub fn from_env() -> Self {
-        Self::new(std::env::var("AVAROK_MTP_TIMING").ok().as_deref() == Some("1"))
+        // Level 2 is level 1 plus the device-event phases, so it arms the host
+        // timers too (they were armed only by an exact "1" before).
+        Self::new(parse_level(std::env::var("AVAROK_MTP_TIMING").ok().as_deref()) >= 1)
     }
 
     pub fn new(armed: bool) -> Self {
@@ -130,11 +156,15 @@ impl RunTiming {
             count: [const { AtomicU64::new(0) }; NUM_PHASES],
             steps: AtomicU64::new(0),
             last_step_end_us: AtomicU64::new(0),
+            stages: Default::default(),
         }
     }
 
-    /// Record the elapsed time since `since` under `phase`. No-op when disarmed.
+    /// Record the elapsed time since `since` under `phase`. The four MTP
+    /// stage phases always feed [`Self::stages`] (one clock read); the
+    /// per-phase histogram is a no-op when disarmed.
     pub(crate) fn record(&self, phase: Phase, since: Instant) {
+        self.stages.note(phase, since);
         if !self.armed {
             return;
         }
@@ -258,5 +288,23 @@ impl Drop for StepTimer<'_> {
                 .last_step_end_us
                 .store(anchor_us().max(1), Ordering::Relaxed);
         }
+    }
+}
+
+#[cfg(test)]
+mod level_tests {
+    use super::*;
+
+    #[test]
+    fn level_two_arms_the_host_timers_too() {
+        assert_eq!(parse_level(Some("1")), 1);
+        assert_eq!(parse_level(Some("2")), 2);
+        assert_eq!(parse_level(None), 0);
+        for off in ["", "0", "3", "true", "on", " 1", "12"] {
+            assert_eq!(parse_level(Some(off)), 0, "{off:?} is not a level");
+        }
+        // `from_env` arms on level >= 1; the grammar is the one `parse_level` grades.
+        assert!(RunTiming::new(parse_level(Some("2")) >= 1).armed);
+        assert!(!RunTiming::new(parse_level(Some("0")) >= 1).armed);
     }
 }

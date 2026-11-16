@@ -120,6 +120,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "atlas-route-policy"
+version = "1.0.0-beta-preview"
+
+[[package]]
 name = "atomic-waker"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -208,9 +212,20 @@ dependencies = [
  "avarok-kernels",
  "criterion",
  "cudarc",
+ "flate2",
+ "half",
+ "libc",
+ "memmap2",
  "parking_lot",
+ "rayon",
+ "regex",
+ "safetensors",
  "serde",
  "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "tokenizers",
  "ureq",
 ]
 
@@ -2673,6 +2688,7 @@ dependencies = [
  "safetensors",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "tokio",
  "toml",
@@ -2705,6 +2721,7 @@ dependencies = [
  "rayon",
  "serde",
  "serde_json",
+ "sha2",
  "spark-comm",
  "spark-model",
  "spark-runtime",

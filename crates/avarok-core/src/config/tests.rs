@@ -7,6 +7,8 @@
 // Split out of this file for the <=500 LoC cap, and never declared: the
 // four tests inside have never compiled.
 mod tests_b;
+// Port sprint L37: the LFM3 config contract (`parsers/lfm3.rs`).
+mod lfm3;
 use super::*;
 
 #[test]

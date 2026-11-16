@@ -96,6 +96,7 @@ pub(crate) const TOOL_CALL_PARSERS: &[&str] = &[
     "minimax_xml",
     "bare_json",
     "poolside_v1",
+    "lfm3",
 ];
 
 /// The closed value set for a `spark serve` flag, by its long name, or `None`

@@ -28,7 +28,7 @@ use std::path::PathBuf;
 
 /// Every NVIDIA target that carries a `[defaults]` table. Named once so a new
 /// hardware tree makes someone decide rather than inherit silently.
-const DECLARING: &[&str] = &["gb10", "hopper", "b200", "b300"];
+const DECLARING: &[&str] = &["gb10", "hopper", "b200", "b300", "ada"];
 
 fn kernels_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -256,6 +256,28 @@ fn every_declaring_target_states_every_lever() {
             // absent cap and a deliberate no-cap must not look identical.
             "w8a8_prefill_max_m_widening",
             "w8a8_prefill_max_m_narrowing",
+            // The load-time BF16 -> FP8 route. A NUMERICS row, false on every
+            // target here, and stated for the same reason as the hopper-only
+            // booleans: an absent row and a deliberate `false` must not look
+            // identical.
+            "dense_fp8_from_bf16",
+            // The same route for the GDN projections, stated for the same
+            // reason.
+            "gdn_fp8_from_bf16",
+            "attn_fp8_from_bf16",
+            // The BF16 dense-FFN prefill on cuBLASLt. TRUE on ada on an
+            // end-to-end receipt, FALSE elsewhere, and stated everywhere so a
+            // deliberate `false` never looks like an inherited one.
+            "ffn_bf16_cublas_prefill",
+            // The BF16 GDN verify projections on one cuBLASLt GEMM. FALSE on
+            // every target (a numerics row with no receipt), stated everywhere.
+            "gdn_batched_gemm",
+            // Gated dense-BF16 Q/K/V on the batched GEMV. TRUE on ada
+            // (bit-identical there), FALSE elsewhere, stated everywhere.
+            "attn_gated_bf16_batchm",
+            // Consumer-card memory sizing. TRUE on ada, FALSE everywhere else
+            // and stated, so no target inherits a sizing change silently.
+            "memory_fit_consumer",
         ] {
             assert!(
                 raw.contains(&format!("\n{lever} = ")),
@@ -390,6 +412,13 @@ fn the_generated_constant_names_every_field() {
         "decode_split_silu: true",
         "attn_decode_splitk: \"auto\"",
         "ffn_gateup_fused: true",
+        "dense_fp8_from_bf16: false",
+        "gdn_fp8_from_bf16: false",
+        "attn_fp8_from_bf16: false",
+        "ffn_bf16_cublas_prefill: false",
+        "gdn_batched_gemm: false",
+        "attn_gated_bf16_batchm: false",
+        "memory_fit_consumer: false",
         "w8a8_prefill_max_m_widening: 4294967295",
         "w8a8_prefill_max_m_narrowing: 4294967295",
     ] {
@@ -418,6 +447,19 @@ fn the_baked_constant_matches_its_own_hardware_tree() {
     assert_eq!(baked.decode_split_silu, declared.decode_split_silu);
     assert_eq!(baked.attn_decode_splitk, declared.attn_decode_splitk);
     assert_eq!(baked.ffn_gateup_fused, declared.ffn_gateup_fused);
+    assert_eq!(baked.dense_fp8_from_bf16, declared.dense_fp8_from_bf16);
+    assert_eq!(baked.gdn_fp8_from_bf16, declared.gdn_fp8_from_bf16);
+    assert_eq!(baked.attn_fp8_from_bf16, declared.attn_fp8_from_bf16);
+    assert_eq!(
+        baked.ffn_bf16_cublas_prefill,
+        declared.ffn_bf16_cublas_prefill
+    );
+    assert_eq!(baked.gdn_batched_gemm, declared.gdn_batched_gemm);
+    assert_eq!(
+        baked.attn_gated_bf16_batchm,
+        declared.attn_gated_bf16_batchm
+    );
+    assert_eq!(baked.memory_fit_consumer, declared.memory_fit_consumer);
     assert_eq!(
         baked.w8a8_prefill_max_m_widening,
         declared.w8a8_prefill_max_m_widening
@@ -438,3 +480,7 @@ fn b300_declares_conservative_defaults_until_measured_on_b300() {
     assert_eq!(declared("b300"), baseline("b300"));
     assert_eq!(read_sm_count(&kernels_root(), "b300"), 148);
 }
+
+// The ada table's test lives in `tests/target_defaults_ada.rs` (moved out
+// unchanged to keep this file under the 500-line cap), and the port sprint's
+// rows are graded in `tests/target_defaults_port.rs`.

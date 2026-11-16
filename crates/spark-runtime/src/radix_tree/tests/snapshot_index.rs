@@ -49,6 +49,7 @@ fn index(entries: Vec<SnapshotEntry>, live: u64) -> SsmSnapshotIndex {
         last_lookup_session: live,
         evictions_since_lookup: 0,
         stats: SnapshotStats::default(),
+        orphaned_tier_keys: Vec::new(),
     }
 }
 

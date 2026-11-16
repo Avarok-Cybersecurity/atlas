@@ -29,6 +29,10 @@ impl Qwen3SsmLayer {
         // and a field initializer cannot read a sibling field.
         let gdn_tc_spine = gdn_prefill_tc_kernel(gpu);
         let woa = super::woa::woa_kernels(gpu);
+        // Row `gdn_verify_gemv` (off by default): its batched GEMV has no
+        // field on this layer, so the lookup is made here, on the eager build
+        // path, and the verify forward reads the op cache. Off: no lookup.
+        crate::layers::ops::gdn_verify_gemv::prime(gpu);
 
         Ok(Self {
             // mHC is attached later by the loader, and only for models that
@@ -104,7 +108,7 @@ impl Qwen3SsmLayer {
             dense_gemv_batch2_k: gpu.kernel("dense_gemv_bf16_batch2", "dense_gemv_bf16_batch2")?,
             w4a16_gemv_k: gpu.kernel("w4a16_gemv", "w4a16_gemv")?,
             w4a16_gemv_sw_k: super::super::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_sw"),
-            w8a16_gemv_k: gpu.kernel("w8a16_gemv", "w8a16_gemv")?,
+            w8a16_gemv_k: init_kernels::fp8_m1_gemv_kernel(gpu)?,
             w4a16_gemv_qkvz_k: gpu.kernel("w4a16_gemv", "w4a16_gemv_qkvz")?,
             deinterleave_k: gpu.kernel("ssm_preprocess", "deinterleave_qkvz")?,
             conv1d_k: gpu.kernel("causal_conv1d", "causal_conv1d_update")?,
@@ -339,6 +343,7 @@ impl Qwen3SsmLayer {
             gdn_wy4_woa_k: woa.woa_k,
             gdn_wy4_fold_k: woa.fold_k,
             gdn_wy4_clear_k: woa.clear_k,
+            woa_wyn: woa.wyn,
             // Bound by the model on the first write-on-accept request.
             woa_flag: std::sync::atomic::AtomicU64::new(0),
             woa_stash: std::sync::atomic::AtomicU64::new(0),
@@ -466,16 +471,15 @@ impl Qwen3SsmLayer {
             w4a16_gemv_batch16_k: super::super::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_batch16"),
             w8a16_gemm_t_k: super::super::try_kernel(gpu, "w8a16_gemm_t", "w8a16_gemm_t"),
             per_token_group_quant_fp8_k: ops::Fp8ActQuant::resolve(gpu),
-            fp8_gemm_t_blockscaled_k: super::super::try_kernel(
-                gpu,
-                "fp8_gemm_t_blockscaled",
-                "fp8_gemm_t_blockscaled",
-            ),
+            fp8_gemm_t_blockscaled_k: init_kernels::fp8_w8a8_gemm_kernel(gpu),
+            out_proj_w8a8_prefill: false,
             fp8_act_scale_kmajor_k: super::super::try_kernel(
                 gpu,
                 "fp8_scale_transpose",
                 "fp8_act_scale_to_kmajor",
             ),
+            gdn_tc_ada: Default::default(),
+            w4_proj: None,
         })
     }
 

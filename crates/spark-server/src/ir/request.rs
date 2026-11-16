@@ -79,6 +79,20 @@ pub struct ChatRequest {
     pub timeout_secs: Option<f32>,
     /// Emit sampled token IDs on stream chunks (vLLM extension).
     pub return_token_ids: bool,
+    /// Per-request `chat_template_kwargs.terse` (Sharp chat template). The
+    /// template renderer puts `terse` in the render context only when this is
+    /// `Some`; `None` = client silent, the template's own default applies.
+    pub template_terse: Option<bool>,
+    /// `atlas_speculative: false`: this request never enters a speculative
+    /// step (rides the scheduler's per-sequence `disable_mtp` switch and
+    /// `seq.port.no_drafts`).
+    pub no_drafts: bool,
+    /// `atlas_evidence: true`: report `usage.atlas_token_sha` and
+    /// `usage.atlas_output_sha256` (`api/evidence.rs`).
+    pub evidence: bool,
+    /// `atlas_confidence: true`: report `usage.atlas_confidence`
+    /// (`scheduler/conf_summary.rs`).
+    pub confidence: bool,
 }
 
 /// Client sampling parameters. `None` = client silent → the server's

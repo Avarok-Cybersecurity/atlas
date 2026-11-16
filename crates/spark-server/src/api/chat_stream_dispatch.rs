@@ -77,7 +77,19 @@ pub(super) async fn dispatch_streaming(
     // otherwise truncate at the shorter, wrong boundary).
     let mut stop_strings = req.stop.clone();
     stop_strings.sort_by_key(|s| std::cmp::Reverse(s.len()));
-    let req_return_token_ids = req.return_token_ids;
+    // Atlas request extensions (`api/evidence.rs`, `scheduler/conf_summary.rs`).
+    // A request that asked for evidence has `return_token_ids` switched on
+    // internally (the fingerprint needs the ids); the tap below strips them
+    // again unless the client itself asked for them. Everything is inert for a
+    // plain request.
+    let conf_plan = crate::scheduler::conf_summary::plan(
+        crate::scheduler::conf_summary::row_on(),
+        req.confidence,
+        top_logprobs,
+    );
+    let port_opts = super::evidence::StreamPortOpts::for_request(req, &conf_plan);
+    let want_evidence = req.evidence;
+    let req_return_token_ids = req.return_token_ids || want_evidence;
     let ctx_for_stream = req_ctx.as_ref().map(|e| e.0.clone());
     let repetition_detection = req.repetition_detection;
     match run_chat_stream(
@@ -117,16 +129,20 @@ pub(super) async fn dispatch_streaming(
         stop_tokens,
         grammar_spec,
         req.seed,
-        top_logprobs,
+        conf_plan.sched_top_logprobs,
         timeout_at,
         stop_strings,
         req_return_token_ids,
         ctx_for_stream,
         dump_seq,
+        port_opts,
         active_guard,
     )
     .await
     {
+        Ok(deltas) if want_evidence => super::chat::ChatOutcome::Streaming(
+            super::evidence::stream::wrap(deltas, req.return_token_ids),
+        ),
         Ok(deltas) => super::chat::ChatOutcome::Streaming(deltas),
         Err((status, msg)) => super::chat::ChatOutcome::Http(openai_error_response(status, msg)),
     }

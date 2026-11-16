@@ -152,7 +152,7 @@ fn startup(
     // where `--help` lists them, `ps` shows them, and a recipe can be read
     // without a ten-line env preamble. The environment stays honoured as a
     // fallback for scripts that predate the flags.
-    super::serve_flags::publish_kernel_flags(&args);
+    super::serve_flags::publish_kernel_flags(&args)?;
 
     // No model named: the dashboard is the front door. Everything above this
     // point is process-scoped — banner, signal listeners, the TUI thread, flag
@@ -199,6 +199,9 @@ pub(super) struct DefaultChatTemplateKwargs {
     /// Server-level `preserve_thinking` pin; overrides the MODEL.toml
     /// `[behavior]` value, is overridden per-request.
     pub preserve_thinking: Option<bool>,
+    /// Server-wide `terse` default for the Sharp chat template. `None` leaves
+    /// the template's own default (terse on); a request's `terse` overrides it.
+    pub terse: Option<bool>,
 }
 
 /// Parse the vLLM-style `--default-chat-template-kwargs` JSON
@@ -225,6 +228,7 @@ pub(super) fn parse_default_chat_template_kwargs(
         thinking_budget: Option<u32>,
         reasoning_effort: Option<String>,
         preserve_thinking: Option<bool>,
+        terse: Option<bool>,
     }
 
     if s.trim().is_empty() {
@@ -259,6 +263,7 @@ pub(super) fn parse_default_chat_template_kwargs(
         thinking,
         reasoning_effort,
         preserve_thinking: kw.preserve_thinking,
+        terse: kw.terse,
     })
 }
 

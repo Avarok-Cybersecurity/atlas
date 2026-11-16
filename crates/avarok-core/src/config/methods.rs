@@ -309,7 +309,11 @@ impl ModelConfig {
         if self.kv_lora_rank > 0 {
             return true;
         }
-        if self.model_type == "laguna" {
+        // LFM3 (port sprint L37): the head is the tied BF16 embedding table;
+        // Ada has no FP4 datapath, and a runtime NVFP4 requant of a 128K-row
+        // head is the argmax-flip trap above. `--lm-head-dtype fp8` is the
+        // measured follow-up and still wins through the override.
+        if self.model_type == "laguna" || self.model_type == "lfm3" {
             return true;
         }
         if self.model_type == "gemma4" && self.num_experts == 0 {

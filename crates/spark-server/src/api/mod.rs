@@ -26,6 +26,8 @@
 //!                          `TokenLogprobs`
 //! - `inference_impl`     — `impl InferenceRequest`
 //! - `strip`              — legacy `strip_thinking_tags` for completions
+//! - `llama_compat`       — llama.cpp `llama-server` routes (`/completion`,
+//!                          `/apply-template`, `/props`, ...)
 //! - `tests/`             — extracted `sanitizer_tests` module split four ways
 
 pub mod chat;
@@ -41,9 +43,14 @@ pub mod completions_logprobs;
 pub mod conversations;
 pub mod inference_impl;
 pub mod inference_types;
+pub mod llama_compat;
 pub mod lora_control;
 pub mod misc_handlers;
 pub mod models;
+// The port sprint's (`port/consumer-opt`) `/metrics` series.
+pub mod port_metrics;
+// Request fingerprints and the usage extras (L05).
+pub mod evidence;
 pub mod responses;
 pub mod responses_stream;
 pub mod responses_stream_finalize;

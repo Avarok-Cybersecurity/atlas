@@ -12,7 +12,9 @@ use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::weights::WeightStore;
 
-use crate::weight_map::{Fp8DenseWeight, quantize_to_fp8, quantize_to_nvfp4};
+use crate::weight_map::{
+    Fp8DenseWeight, quantize_to_fp8, quantize_to_nvfp4, quantize_to_nvfp4_rows,
+};
 
 #[allow(clippy::type_complexity)]
 pub(super) fn setup_lm_heads(
@@ -22,11 +24,14 @@ pub(super) fn setup_lm_heads(
     gpu: &dyn GpuBackend,
     use_speculative: bool,
     have_mtp_weights: bool,
+    mtp_vocab: u32,
 ) -> Result<(
     Option<crate::weight_map::QuantizedWeight>,
     Option<Fp8DenseWeight>,
     Option<crate::weight_map::QuantizedWeight>,
 )> {
+    // A ranked draft head's row map belongs to the build that made it.
+    crate::layers::mtp_head::vocab_rank::reset_registry();
     // ── Step 3: Quantize LM head to NVFP4 for fast decode ──
     let absmax_k = gpu.kernel("quantize_nvfp4", "nvfp4_global_absmax")?;
     let quantize_k = gpu.kernel("quantize_nvfp4", "quantize_bf16_to_nvfp4")?;
@@ -144,9 +149,41 @@ pub(super) fn setup_lm_heads(
     // When the main head is NVFP4 (`lm_head_nvfp4.is_some()`), this stays
     // `None` and the proposer falls back to the main NVFP4 head — byte-for-byte
     // unchanged from the pre-decouple behavior.
+    //
+    // Only the first `draft_vocab_rows` rows are built: the one consumer of
+    // this head, `MtpHead` (`build_mtp_proposer`), runs its vocab GEMV over
+    // `min(--mtp-vocab, vocab)` rows (`mtp_head/forward.rs`,
+    // `forward_batch.rs`), and the padded transposed twin is never built for a
+    // dedicated head. The global scale still spans the whole head, so those
+    // rows are byte-identical to the full quantization; on Qwen3.5-4B at the
+    // default `--mtp-vocab 100000` this is 137.3 of 340.7 MiB. Ada only (the
+    // `memory_fit_consumer` row); every other target builds the full head.
     let mtp_lm_head_nvfp4 = if lm_head_nvfp4.is_none() && use_speculative && have_mtp_weights {
-        let q = quantize_to_nvfp4(
+        let rows = draft_vocab_rows(
+            config.vocab_size,
+            mtp_vocab,
+            crate::layers::ops::target_defaults::resolved()
+                .memory_fit_consumer
+                .value,
+        );
+        // `mtp_vocab_rank = "freq"` (L11): the most frequent tokens' rows
+        // instead of the first ids; `None` keeps the id-ranked head below.
+        let ranked = crate::layers::mtp_head::vocab_rank::build_ranked_draft_head(
             lm_head,
+            ranked_draft_rows(config.vocab_size, mtp_vocab),
+            config.vocab_size,
+            config.hidden_size,
+            gpu,
+            absmax_k,
+            quantize_k,
+            stream,
+        )?;
+        if let Some(q) = ranked {
+            return Ok((lm_head_nvfp4, lm_head_fp8, Some(q)));
+        }
+        let q = quantize_to_nvfp4_rows(
+            lm_head,
+            rows,
             config.vocab_size,
             config.hidden_size,
             gpu,
@@ -155,7 +192,8 @@ pub(super) fn setup_lm_heads(
             stream,
         )?;
         tracing::info!(
-            "Draft-only NVFP4 LM head built for MTP (main head stays BF16, vocab={})",
+            "Draft-only NVFP4 LM head built for MTP (main head stays BF16, vocab={}, \
+             draft rows={rows})",
             config.vocab_size,
         );
         Some(q)
@@ -163,6 +201,28 @@ pub(super) fn setup_lm_heads(
         None
     };
     Ok((lm_head_nvfp4, lm_head_fp8, mtp_lm_head_nvfp4))
+}
+
+/// Rows of the draft-only head the MTP proposer can read: `--mtp-vocab`
+/// (`mtp_vocab`, 0 = full vocabulary) clamped to the vocabulary, the same
+/// `min` `MtpHead` applies before its GEMV.
+///
+/// Only on a target that declares the `memory_fit_consumer` row
+/// (`consumer_fit`, ada): every other target builds the full head as before.
+pub(super) fn draft_vocab_rows(vocab: usize, mtp_vocab: u32, consumer_fit: bool) -> usize {
+    if consumer_fit && mtp_vocab > 0 {
+        (mtp_vocab as usize).min(vocab)
+    } else {
+        vocab
+    }
+}
+
+/// Rows of a frequency-ranked draft head: exactly the rows `MtpHead` reads
+/// (`min(--mtp-vocab, vocab)`, the full vocabulary at 0) on every target. A
+/// ranked head is an explicit opt-in, so it never needs the full-height copy
+/// [`draft_vocab_rows`] keeps on targets without `memory_fit_consumer`.
+pub(super) fn ranked_draft_rows(vocab: usize, mtp_vocab: u32) -> usize {
+    draft_vocab_rows(vocab, mtp_vocab, true)
 }
 
 /// Native FP8 lm_head share for the DFlash drafter tail.
@@ -253,4 +313,34 @@ pub(super) fn native_fp8_lm_head_share(
         },
         rows,
     )))
+}
+
+#[cfg(test)]
+mod draft_rows_tests {
+    use super::draft_vocab_rows;
+
+    #[test]
+    fn the_draft_head_holds_exactly_the_rows_the_proposer_reads() {
+        // The 4B at the default --mtp-vocab on ada: 100,000 of 248,070 rows.
+        assert_eq!(draft_vocab_rows(248_070, 100_000, true), 100_000);
+        // 0 means the full vocabulary, as in MtpHead.
+        assert_eq!(draft_vocab_rows(248_070, 0, true), 248_070);
+        // A draft vocab past the end is clamped, never over-allocated.
+        assert_eq!(draft_vocab_rows(32_000, 100_000, true), 32_000);
+    }
+
+    #[test]
+    fn every_other_target_builds_the_full_head() {
+        // GB10, Hopper, B200, B300: `memory_fit_consumer = false`.
+        assert_eq!(draft_vocab_rows(248_070, 100_000, false), 248_070);
+        assert_eq!(draft_vocab_rows(248_070, 0, false), 248_070);
+    }
+
+    #[test]
+    fn a_ranked_head_holds_exactly_the_rows_the_proposer_reads() {
+        use super::ranked_draft_rows;
+        assert_eq!(ranked_draft_rows(248_070, 100_000), 100_000);
+        assert_eq!(ranked_draft_rows(248_070, 0), 248_070);
+        assert_eq!(ranked_draft_rows(32_000, 100_000), 32_000);
+    }
 }

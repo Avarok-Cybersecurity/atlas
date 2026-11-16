@@ -15,6 +15,18 @@
 //! here, so every existing `ssm_reserve::decode_rollback_ring_slots` path is
 //! unchanged.
 
+mod budget;
+pub use budget::{
+    MARCONI_BUDGET_DIVISOR, RING_BUDGET_DIVISOR, apply_marconi_cap, cap_decode_ring_slots,
+    cap_marconi_slots, marconi_budget_bytes, memory_beside_weights, published_marconi_slot_cap,
+    ring_budget_bytes, set_marconi_slot_cap,
+};
+// Port lane L24: the consumer-card verify-slot cap (ada only, published by preflight).
+mod consumer_fit;
+pub use consumer_fit::{
+    VERIFY_BUDGET_DIVISOR, apply_consumer_cap, consumer_fit_disabled, fit_verify_slots,
+    published_consumer_verify_slot_cap, set_consumer_verify_slot_cap, verify_budget_bytes,
+};
 mod decode_ring;
 pub use decode_ring::{
     DECODE_RING_FIT_LADDER, DecodeRingDecision, decode_rollback_ring_slots,
@@ -81,11 +93,15 @@ pub use decode_ring::{
 /// would recover ~9 GB and still not reach 0.70; the reserve, not the
 /// speculation regime, is what makes the low-util single config impossible.
 pub fn mtp_state_slots(max_batch_size: usize) -> usize {
-    mtp_state_slots_with(
+    let full_width = mtp_pool_full_width();
+    let slots = mtp_state_slots_with(
         max_batch_size,
         crate::speculative::mtp_max_seqs(),
-        mtp_pool_full_width(),
-    )
+        full_width,
+    );
+    // Port lane L24: a consumer card (ada) may cover fewer slots; unpublished
+    // (every other target) this is `slots` unchanged. See `consumer_fit`.
+    apply_consumer_cap(slots, published_consumer_verify_slot_cap(), full_width)
 }
 
 /// The `AVAROK_MTP_POOL_FULL_WIDTH` kill switch (PRESENCE, house convention —
@@ -483,7 +499,12 @@ pub fn marconi_snapshot_slots(
     requested: usize,
     prefix_caching_active: bool,
 ) -> MarconiSlotDecision {
-    marconi_snapshot_slots_with(requested, prefix_caching_active, marconi_reserve_full())
+    let mut decision =
+        marconi_snapshot_slots_with(requested, prefix_caching_active, marconi_reserve_full());
+    // Preflight's memory-budget cap (`budget.rs`), when it published one. Both
+    // call sites go through here, so the reserve and the allocation agree.
+    decision.slots = apply_marconi_cap(decision.slots, published_marconi_slot_cap());
+    decision
 }
 
 /// The `AVAROK_SSM_MARCONI_FULL` kill switch (PRESENCE, house convention).

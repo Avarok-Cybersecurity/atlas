@@ -1042,6 +1042,16 @@ pub struct ServeArgs {
     #[arg(long, default_value_t = 0)]
     pub vision_max_pixels: usize,
 
+    /// Serve text only: do not load or bind the checkpoint's vision tower.
+    /// The tower's weights are never uploaded (0.62 GiB on Qwen3.5-4B) and
+    /// no vision encoder or image buffers are built, so that memory goes to
+    /// the KV cache. Requests that carry an image or video part are refused
+    /// with a 400 ("this model does not accept image or video input"), the
+    /// same answer a checkpoint without a vision config gives. Off by
+    /// default: a vision checkpoint keeps serving images.
+    #[arg(long, default_value_t = false)]
+    pub no_vision: bool,
+
     /// Fetch `image_url` parts that carry an http(s) URL, instead of
     /// rejecting them.
     ///
@@ -1231,6 +1241,11 @@ pub struct ServeArgs {
     /// headroom. Empty = today's behaviour, byte-identical.
     #[arg(long, value_name = "NAME=PATH_OR_HF_ID", value_parser = parse_lora_adapter_spec)]
     pub lora_stageable_disk: Vec<(String, String)>,
+
+    // The port sprint's (`port/consumer-opt`) flags (`serve_args_port.rs`).
+    // Not named `port`: that field is the HTTP listen port above.
+    #[command(flatten)]
+    pub port_sprint: super::serve_args_port::PortArgs,
 }
 
 impl ServeArgs {

@@ -30,6 +30,12 @@ impl Qwen3AttentionLayer {
             return Ok(());
         }
 
+        // Packed k/v (port lane L22b, `w4_proj.rs`): one `decode_pair` over the shared input.
+        if self.w4_proj.is_installed() {
+            let (kv_dim, h) = ((nkv * hd) as usize, h as usize);
+            return self.w4_decode_kv(ctx.gpu, normed, k_out, v_out, kv_dim, h, stream);
+        }
+
         if let (Some(k_q2), Some(v_q2)) = (
             self.k_weight.as_ref().and_then(|w| w.as_packed_q2()),
             self.v_weight.as_ref().and_then(|w| w.as_packed_q2()),

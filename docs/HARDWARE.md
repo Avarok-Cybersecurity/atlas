@@ -104,7 +104,8 @@ variant, etc.), you'll also need to:
 ## Adding a new hardware target
 
 Atlas's NVIDIA targets are **GB10 (Blackwell, sm_121)**, **Hopper
-(H100/H200, sm_90a)** and **B200 (B200/GB200, sm_100a)**; `strix`/`strix-hip`
+(H100/H200, sm_90a)**, **B200 (B200/GB200, sm_100a)**, **B300 (sm_103a)** and
+**Ada (RTX 40-series and L4/L40, sm_89)**; `strix`/`strix-hip`
 (AMD gfx1151) and `metal` are the non-NVIDIA sets. Adding another — say sm_120
 for a consumer Blackwell board, or sm_103 for Blackwell Ultra (B300/GB300) —
 requires:
@@ -306,7 +307,7 @@ absent from every architecture Atlas targets:
 
 | arch under test | negative fixture | why it fails there |
 |---|---|---|
-| `sm_90a`, `sm_120a`, `sm_121*` | `known_bad_post_hopper.cu` | `redux.sync.max.abs.f32` exists only on sm_100a |
+| `sm_89`, `sm_90a`, `sm_120a`, `sm_121*` | `known_bad_post_hopper.cu` | `redux.sync.max.abs.f32` exists only on sm_100a |
 | `sm_100a` | `known_bad_post_blackwell_dc.cu` | warp-level `mma ... .kind::mxf4nvf4.block_scale` exists only on sm_120a/sm_121a |
 | anything else | — | the gate REFUSES to run |
 
@@ -421,6 +422,61 @@ run on CC 10.3, `avarok_core::arch::target_hint` returns `None` for it on
 purpose, and `hardware_id_from_gpu_name` maps neither part — a B300 gets "no
 shipped target" rather than a rebuild instruction that would fail the same way.
 
+## The Ada (sm_89) target
+
+`kernels/ada/` is Ada Lovelace, SM 8.9: GeForce RTX 40-series, RTX Ada
+workstation cards, L4 and L40. Its declared part is the RTX 4060 Ti 16 GB
+(34 SMs, 288 GB/s GDDR6), and its two model targets are the dense
+`holo-3.1-0.8b` and `holo-3.1-4b`, which fit a 16 GB card at BF16, single
+stream. It is laid out like `kernels/hopper/`: `common/` and each model's
+`nvfp4/` are relative symlinks into `kernels/gb10/`, each `MODEL.toml` is a
+real copy whose header says its `[expected_absent]` tables were harvested on
+GB10, and `crates/avarok-kernels/tests/inherited_targets.rs` holds it to the
+same mirror assertions.
+
+The arch is plain `sm_89`: NVIDIA defines no `sm_89a`. That matters twice.
+
+**The static shared-memory ceiling.** With no `a` form there is no way to
+raise ptxas's 48 KiB static `__shared__` limit (next section), so the 22
+`inferspark_prefill*` modules gb10 also fails offline are refused here too
+(42 entry points, `uses too much shared data (0x16000 bytes, 0xc000 max)`).
+Rather than depend on the driver accepting the same PTX at load time (a
+`cuModuleLoadData` check that still has to run on the card), Ada owns four
+sources (`[kernels] overrides` in its HARDWARE.toml): `inferspark_prefill.cu`,
+`inferspark_prefill_fp8kv.cu`, `prefill_paged_compute.cuh` and
+`prefill_paged_compute_asym.cuh`, in which the same tiles are laid over one
+`extern __shared__` buffer (`prefill_dyn_smem.cuh`). The 20 paged `.cu`
+wrappers stay symlinks and pick the Ada headers up, because a quoted include
+resolves against the directory nvcc was handed. Each converted entry point
+exports its size as `<entry>_dyn_smem_bytes`, and the kernel registry
+(`avarok_core::registry_dyn_smem`) raises every launch of that function to it,
+so no dispatch site carries a tile size and no other target's launches change.
+
+**sm_90-only instructions.** `gated_delta_rule_fla.cu`'s opt-in TMA spine
+(`gated_delta_rule_chunk_delta_h_tma`, `AVAROK_GDN_TMA=1`) uses
+`cp.async.bulk.tensor` and `mbarrier.arrive.expect_tx`. Ada's copy of the file
+compiles that spine and its helpers only under `__CUDA_ARCH__ >= 900`, and is
+byte-identical to gb10's PTX for `sm_121f`; both holo MODEL.tomls declare the
+entry point in `[expected_absent.gated_delta_rule_fla]`. The W4A4 tail of
+`moe_w4a16_grouped_gemm.cu` is compiled out by `-DAVAROK_NO_WARP_BLOCKSCALE_MMA`
+in `[build]`, exactly as on Hopper (no FP4 datapath); the dense models build no
+MoE layer, so nothing looks its two entry points up.
+
+Check it with the compile gate (no GPU needed):
+
+```bash
+CUDA_HOME=/usr/local/cuda scripts/hopper_ptx_gate.sh --hw ada --model all --strict
+```
+
+Nothing here has run on Ada silicon. `spark serve --check-kernels` on an Ada
+card is what would re-harvest `[expected_absent]`, and the serving defaults are
+the conservative baseline until an Ada A/B moves a row.
+
+The whole consumer-card port (this target, the 16 GB memory fit, the FP8 path
+and the llama.cpp API), with diagrams, the card-run commands and a results
+table to fill, is written up in
+[`docs/porting/consumer-nvidia-ada.md`](porting/consumer-nvidia-ada.md).
+
 ## Adding a new quantization scheme
 
 Atlas supports NVFP4 (E2M1 + FP8 scales), FP8 block-scaled, BF16 raw.
@@ -464,6 +520,17 @@ prefill variants (`inferspark_prefill*`, `prefill_paged_compute*.cuh`) declare
 same source assembles for `sm_121a` and `sm_120a`. Moving gb10 to `sm_121a`
 is a portability trade, not a bug fix, so it is a deliberate decision rather
 than something to change while adding a target.
+
+Re-measured with CUDA 13.3.73 on 2026-11-11 against `inferspark_prefill.cu`
+(70,400 and 90,112 bytes static): the rule is unchanged, so this is not a
+toolchain-version effect. `sm_90a`, `sm_100a`, `sm_103a` and `sm_121a`
+assemble it; `sm_80`, `sm_86`, `sm_89`, `sm_90`, `sm_100`, `sm_110`,
+`sm_120`, `sm_120f`, `sm_121` and `sm_121f` refuse it at `0xc000`. One more
+data point for the open gb10 question above: the PTX nvcc emits for `sm_121f`
+assembles with `ptxas -arch=sm_121a` and is refused with `-arch=sm_121`,
+which fits a driver JIT that compiles family PTX for the exact device in
+front of it. Ada has no `a` form, so it takes the dynamic-memory route (see
+"The Ada (sm_89) target").
 
 ## Testing a new target
 

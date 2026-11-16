@@ -124,6 +124,12 @@ enum Op {
 /// Classify a mapped HF tensor name into its transform, or `None` if untouched.
 fn classify(hf: &str) -> Option<Op> {
     if hf == "model.norm.weight"
+        // Port L19: the MTP head's own norms (`blk.<L>.nextn.{enorm,hnorm,shared_head_norm}`), mapped only
+        // under row `gguf_native_iq4`; stored +1 like every other qwen35 RMSNorm (inferred, see
+        // `names/qwen35_mtp.rs`).
+        || hf == "mtp.norm.weight"
+        || hf == "mtp.pre_fc_norm_embedding.weight"
+        || hf == "mtp.pre_fc_norm_hidden.weight"
         || hf.ends_with(".input_layernorm.weight")
         || hf.ends_with(".post_attention_layernorm.weight")
         || hf.ends_with(".self_attn.q_norm.weight")
@@ -217,7 +223,7 @@ pub fn reorder_packed_rows(
     );
     let (n, k) = (hf_shape[0], hf_shape[1]);
     ensure!(
-        k % group == 0,
+        k.is_multiple_of(group),
         "packed reorder: k={k} not a multiple of group={group}"
     );
     let row_bytes = (k / group) * block_bytes;

@@ -23,8 +23,25 @@
 //! sequences holding drafts in one step AND the model says
 //! `can_batch_verify(&ks)`. `AVAROK_MTP_MAX_SEQS=1` keeps this
 //! path dead and the single-seq path byte-unchanged.
+//!
+//! Port hooks (port/consumer-opt), each inert with its row off:
+//! * GDN write-on-accept (lane L10, row `gdn_woa_mtp`, plus the existing
+//!   `AVAROK_GDN_WOA=1`): a uniform K = 2..4 batch asks the verify for the
+//!   write-on-accept twin, and every verdict's GDN rows are folded once
+//!   (`Model::gdn_fold_accepted`) after the shared-buffer reads and BEFORE
+//!   the verdict commits, which then skip their h restore. The design is
+//!   the ReplaySSM record-and-fold idea (Cinference / NInfer,
+//!   `docs/maintainer/replayssm-gdn.md`, Apache-2.0), idea only.
+//! * Copy-plan substitution after the batched propose (lane L13, row
+//!   `copy_draft`; `substitute_batched` gates itself on the resolved mode
+//!   (`--copy-draft`, then the row), so it is a no-op with the drafter off).
+//! * Device-timing marks (lane L06, `AVAROK_MTP_TIMING=2`): a mark closes the
+//!   interval of the phase it names, so the step decomposes into verify,
+//!   pipeline (picks plus hidden stash), commit (fold plus verdicts),
+//!   propose and other.
 
 use super::*;
+use crate::scheduler::mtp_device_timing as devt;
 
 /// Kill switch `AVAROK_NO_MTP_BATCH_VERIFY` — PRESENCE check per the
 /// house convention (`=0` is NOT off): any set value forces the
@@ -77,6 +94,7 @@ pub(super) fn step_verify_k4_batched(
     // single-seq step; one timer for the whole batched step).
     let _step_timer =
         crate::scheduler::mtp_timing::StepTimer::new(&sched.timing, batch[0].seq.seq_len);
+    devt::step_start(model);
 
     // One secondary-stream sync for the whole batch: orders the previous
     // verify commits' async live-state restores before this forward reads
@@ -113,13 +131,19 @@ pub(super) fn step_verify_k4_batched(
     // Contract (`decode_verify_batched`): on Ok every seq has tokens+=rows
     // and seq_len+=rows (verdict rewind below is caller arithmetic, same as
     // the per-seq path); on Err NO host seq state advanced.
+    // Write-on-accept is asked for only when this step will fold every
+    // verdict below (the `gdn_woa_mtp` row, uniform K = 2..4; a ragged D-Cut
+    // batch keeps the parent kernels, see `port::gdn_woa::mtp_request_shape`).
+    // Without it this path commits through `verify_k4_verdict`, which
+    // restores from the parent kernel's intermediates and never folds.
+    let woa = spark_model::port::gdn_woa::mtp_batched_request(ks);
+    devt::mark_model(devt::Phase::Other, model);
     let t_verify = Instant::now();
     let results: Vec<u32> = {
         let mut seq_refs: Vec<&mut SequenceState> = batch.iter_mut().map(|a| &mut a.seq).collect();
-        // No write-on-accept here: this path commits through
-        // `verify_k4_verdict`, which restores from the parent kernel's
-        // intermediates and never folds.
-        let opts = spark_model::traits::VerifyBatchedOpts::default();
+        let opts = spark_model::traits::VerifyBatchedOpts {
+            write_on_accept: woa,
+        };
         match model.decode_verify_batched(&tokens, ks, &mut seq_refs, 0, opts) {
             Ok(r) => r,
             Err(e) => {
@@ -131,6 +155,7 @@ pub(super) fn step_verify_k4_batched(
             }
         }
     };
+    devt::mark_model(devt::Phase::Verify, model);
     let verify_us = t_verify.elapsed().as_micros();
     sched
         .timing
@@ -207,7 +232,28 @@ pub(super) fn step_verify_k4_batched(
     sched
         .timing
         .record(crate::scheduler::mtp_timing::Phase::SaveHidden, t_stash);
+    devt::mark_model(devt::Phase::Pipeline, model);
     let t_verdict = Instant::now();
+    // ── Write-on-accept fold (row `gdn_woa_mtp`) ──
+    // The twin wrote NO GDN state, so every sequence's h is committed here:
+    // one fold launch per GDN layer over the whole batch, AFTER every
+    // shared-buffer read above and BEFORE any verdict commit below (each
+    // commit then finds its slot folded and restores conv only). The fold
+    // widths use the verdict's own clamp. A fold error leaves every h state
+    // untrustworthy, so the batch finishes, the verdict a commit error gets
+    // (the DFlash batched step's rule).
+    if woa {
+        let slots: Vec<usize> = batch.iter().map(|a| a.seq.slot_idx).collect();
+        let accepted: Vec<usize> = verdicts.iter().map(|(_, na, _)| *na).collect();
+        let rows = crate::scheduler::verify_k4_verdict::woa_fold_rows(&accepted, ks);
+        if let Err(e) = model.gdn_fold_accepted(&slots, &rows, ks[0]) {
+            tracing::error!("gdn_fold_accepted (mtp batched, n={n} k={}): {e:#}", ks[0]);
+            for a in batch.iter_mut() {
+                a.finished = true;
+            }
+            return;
+        }
+    }
     // ── Phase 3: per-seq verdict via the EXISTING single-seq machinery ──
     // (greedy accept + rewind arithmetic + emit + trim; propose is DEFERRED
     // so Phase 4 can batch it across sequences — the per-seq drafter forward
@@ -228,6 +274,14 @@ pub(super) fn step_verify_k4_batched(
             verify_us,
         );
     }
+    if woa {
+        // A sequence that finished while emitting a full accept returned
+        // before its commit consumed its folded-slot entry; slot indices are
+        // reused, so drop every leftover before anything else commits.
+        if let Some(p) = model.port_ext() {
+            p.gdn_woa_release_folded();
+        }
+    }
 
     // ── Phase 4: batched cross-sequence propose ──
     // Sequences still alive after their verdict need fresh drafts. The
@@ -242,6 +296,7 @@ pub(super) fn step_verify_k4_batched(
     sched
         .timing
         .record(crate::scheduler::mtp_timing::Phase::Commit, t_verdict);
+    devt::mark_model(devt::Phase::Commit, model);
     let t_propose = Instant::now();
     let pending: Vec<usize> = (0..n)
         .filter(|&i| !batch[i].finished && batch[i].pending_drafts.is_empty())
@@ -339,6 +394,14 @@ pub(super) fn step_verify_k4_batched(
             }
         }
     }
+    devt::mark_model(devt::Phase::Propose, model);
+    // Copy-plan substitution right after the batched propose (lane L13): rows
+    // whose copy plan wins get their pending drafts replaced in place,
+    // confidences cleared. The call is unconditional on purpose: the function
+    // gates on the resolved mode (`copy_draft::active()`: `--copy-draft`, then
+    // `AVAROK_COPY_DRAFT`, then the row), never on the row string alone, and
+    // returns 0 at its first line with the drafter off.
+    crate::scheduler::copy_draft::substitute_batched(batch, &mut []);
     tracing::debug!(
         "K{propose_nd} batched propose: n={} cap={group_cap} groups_batched={groups_batched} \
          fallback={} propose={}μs",

@@ -33,6 +33,7 @@ pub use layer_struct::Qwen3SsmLayer;
 // ── Sub-files (split for ≤500 LoC) ────────────────────────────────────────
 mod debug;
 mod decode_w8a8_proj;
+pub(crate) mod gdn_chunk_tc_ada;
 pub mod gdn_flags;
 mod init;
 mod init_fp8;
@@ -63,7 +64,11 @@ mod trait_prefill_phase1;
 mod trait_prefill_phase3;
 mod trait_prefill_proj;
 mod trait_prefill_recur;
+mod w4_proj;
 mod woa;
+#[cfg(test)]
+mod woa_mtp_tests;
+mod woa_wyn;
 
 pub use gdn_flags::{
     GdnFlags, MAX_F16_TWIN_DFLASH_GAMMA, MAX_F16_TWIN_K, default_dflash_gamma,
@@ -73,6 +78,12 @@ pub use gdn_flags::{
 
 // ── TransformerLayer impl (delegates to per-file inherent _inner methods) ──
 
+#[cfg(test)]
+#[path = "fp8_route_dispatch_tests.rs"]
+mod fp8_route_dispatch_tests;
+#[cfg(test)]
+#[path = "gdn_batched_gemm_tests.rs"]
+mod gdn_batched_gemm_tests;
 #[cfg(test)]
 #[path = "prefill_alloc_tests.rs"]
 mod prefill_alloc_tests;

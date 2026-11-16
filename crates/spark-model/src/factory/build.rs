@@ -146,6 +146,31 @@ pub fn build_model(
         && let Some(ref sub) = args.drafter_config.dflash_config
     {
         config.dflash_capture_layers = sub.target_layer_ids.clone();
+        // Port sprint (L14): refuse a drafter built for another target before
+        // anything is allocated. A wrong pairing is not a loud failure later:
+        // the drafter shares the target's embedding and LM head and reads the
+        // target's hidden states through `fc`, so it yields garbage drafts or
+        // a GEMM over the wrong width. The refusal is keyed on the existing
+        // `memory_fit_consumer` row (true on Ada only): every other target
+        // builds the pair as it did before the sprint and only logs the
+        // finding. `AVAROK_DFLASH_SKIP_PAIR_CHECK` (presence) downgrades the
+        // refusal to a warning on Ada too.
+        //
+        // The vocabulary is compared against the ROWS of the table the two
+        // models share, read from the store, not against `config.vocab_size`:
+        // the server has capped that to the tokenizer's count by now, and the
+        // comparison refused every correct drafter on a padded table
+        // (`dflash_pairing.rs`, seen in an earlier GPU run on this card).
+        if let Err(e) = super::dflash_pairing::check(&args.drafter_config, &config, &store) {
+            let refuse = crate::layers::ops::target_defaults::resolved()
+                .memory_fit_consumer
+                .value
+                && std::env::var_os("AVAROK_DFLASH_SKIP_PAIR_CHECK").is_none();
+            if refuse {
+                return Err(e.context("DFlash drafter does not match the target model"));
+            }
+            tracing::warn!("DFlash drafter/target pairing check failed, continuing: {e:#}");
+        }
         // gamma for the pool sizing below, resolved from the drafter itself:
         // a DFlash2 checkpoint states its trained block size inside
         // `dflash_config`, and the top-level field's default of 16 must not
@@ -223,6 +248,9 @@ pub fn build_model(
     mem.mark("load_final_norm");
     let lm_head = loader.load_lm_head(&store, &config, gpu.as_ref())?;
     mem.mark("load_lm_head");
+    // Port lane L24: with `--lm-head-packed` the store's Q6_K head must not
+    // reach a BF16 reader (the MTP drafter, a head requantization).
+    crate::port::packed_head::check_load(&store, &config, use_speculative)?;
     let mtp_weights = loader.load_mtp_weights_multi(&store, &config, gpu.as_ref())?;
     mem.mark("load_mtp_weights_multi");
 
@@ -395,6 +423,7 @@ pub fn build_model(
         gpu.as_ref(),
         use_speculative,
         !mtp_weights.is_empty(),
+        mtp_vocab_size,
     )?;
 
     // Capture the shared embed + resolved draft NVFP4 head for the DeepSeek-V4
@@ -427,6 +456,10 @@ pub fn build_model(
     // computed a few lines below, so it has to happen HERE — after every
     // `load_*` reader above, before `BufferArena::new` and `gpu.free_memory()`.
     loader.prune_after_load(&mut store, &config, gpu.as_ref())?;
+    // Port lane L24 (row `embed_host_offload`): free the device copy of an
+    // embedding table now served from mapped host memory; a refused mapping
+    // fails a speculative start. Nothing to do with the row off.
+    crate::port::embed_host::after_load(&mut store, gpu.as_ref(), use_speculative)?;
     mem.mark("prune_after_load");
     tracing::info!(
         "WeightStore after prune: {} tensors, {:.3} GiB still resident",
@@ -719,6 +752,26 @@ pub fn build_model(
         0
     };
     let kv_budget = kv_budget.saturating_sub(mtp_pool_reserve);
+    // Sparse-attention seam (port L29): the registered selector's device
+    // reservation comes out of the KV-block budget, and a reservation larger
+    // than the whole budget is a startup error; a per-page sidecar is charged
+    // in proportion to the pool (`reserved_bytes_per_kv_block`). No selector:
+    // unchanged.
+    let kv_budget = crate::layers::qwen3_attention::sparse_seam::charge_kv_budget_for_pool(
+        &kv_config, kv_budget,
+    )?;
+    // Quest page-sparse decode (port L30, `attn_page_sparse`): the page
+    // summaries come out of the KV-block budget. Row off: unchanged.
+    let kv_budget = crate::port::sparse_quest::budget::charge_summaries(
+        &kv_config,
+        kv_budget,
+        crate::port::sparse_quest::budget::PoolBound {
+            max_seq_len,
+            max_batch_size,
+            prefix_cache_active: prefix_cache.is_active(),
+            high_speed_swap: hss_cache_blocks_per_seq.is_some(),
+        },
+    )?;
     if mtp_pool_reserve > 0 {
         tracing::info!(
             "KV budget: reserving {:.1} GB for the MTP propose pool (post-sizing alloc in MtpHead::new)",

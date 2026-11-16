@@ -106,6 +106,8 @@ pub struct Qwen3AttentionLayer {
     /// NVFP4 path (`attn.o_proj`). Used by Gemma-4 dense which honors
     /// Nvidia ModelOpt's official ignore list.
     pub(super) o_dense_bf16: Option<DenseWeight>,
+    /// Packed (W4) q/k/v/o, installed by `set_w4_proj` (port lane L22b). Empty = every arm off.
+    pub(super) w4_proj: super::w4_proj::AttnW4,
     // ── MLA (Multi-head Latent Attention) — 2-step decode ──
     pub(crate) mla: Option<MlaWeights>,
     // ── Manifold-Constrained Hyper-Connections (mHC) — DeepSeek-V4 ──
@@ -155,6 +157,10 @@ pub struct Qwen3AttentionLayer {
     /// arm on this layer decline (#927); the in-tree kernel reads the
     /// quantizer's own order and needs no adapter.
     pub(super) fp8_act_scale_kmajor_k: KernelHandle,
+    /// The chunk-0 Q/K/V prefill takes the in-tree W8A8 arm without
+    /// `AVAROK_CUBLAS_GEMM=attn` (`prefill_qkv_w8a8.rs`). Set only by the
+    /// load-time BF16 -> FP8 attention route; false on every other build.
+    pub(super) qkv_w8a8_prefill: bool,
     // Kernels — decode (GEMV M=1)
     /// Offset-from-1 `rms_norm` (`out = x * (1 + w) / rms`). Used ONLY for the
     /// unweighted normalize (`norm_unit_w()` is zero-filled, so `1 + 0 = 1`).
@@ -220,6 +226,11 @@ pub struct Qwen3AttentionLayer {
     /// single lever could ship only both or neither. A field, not a per-call env
     /// read, so the route cannot vary across CUDA-graph replays.
     pub(super) m16_tc: bool,
+    /// The `attn_gated_bf16_batchm` target row (`layers/ops/attn_gated_bf16_
+    /// batchm.rs`), cached at construction: gated dense-BF16 Q/K/V take the
+    /// batched `dense_gemv_batchm` tier in multi-seq decode. A field, so the
+    /// route cannot vary across CUDA-graph replays and tests can drive it.
+    pub(super) gated_bf16_batchm: bool,
     /// N-column-blocked W8A16 GEMVs (#927) — the BIT-EXACT sibling of
     /// `w8a16_gemv_batch16`, contiguous (o_proj) and strided (multi-seq Q/K/V)
     /// at 5..=16 rows. Zero on a shadow without the entry points, which keeps

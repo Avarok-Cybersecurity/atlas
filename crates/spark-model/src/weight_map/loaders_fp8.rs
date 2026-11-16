@@ -168,7 +168,40 @@ pub(crate) fn quantize_to_nvfp4(
     quantize_kernel: spark_runtime::gpu::KernelHandle,
     stream: u64,
 ) -> Result<QuantizedWeight> {
+    quantize_to_nvfp4_rows(
+        bf16_weight,
+        n,
+        n,
+        k,
+        gpu,
+        absmax_kernel,
+        quantize_kernel,
+        stream,
+    )
+}
+
+/// [`quantize_to_nvfp4`] that materializes only the first `rows_out` of the
+/// `n` rows, with the global scale still taken over all `n x k` elements.
+///
+/// The quantizer is one block per row and reads `N` only as a bound
+/// (`quantize_bf16_to_nvfp4.cu`: `if (row >= N) return`), and the packed
+/// `[n, k/2]` bytes and `[n, k/16]` group scales are row-major, so the result
+/// is byte-identical to the first `rows_out` rows of the full quantization.
+/// A consumer that only ever reads a row prefix (the MTP draft head under
+/// `--mtp-vocab`) gets the same weights for fewer bytes.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn quantize_to_nvfp4_rows(
+    bf16_weight: &DenseWeight,
+    rows_out: usize,
+    n: usize,
+    k: usize,
+    gpu: &dyn GpuBackend,
+    absmax_kernel: spark_runtime::gpu::KernelHandle,
+    quantize_kernel: spark_runtime::gpu::KernelHandle,
+    stream: u64,
+) -> Result<QuantizedWeight> {
     use spark_runtime::kernel_args::KernelLaunch;
+    let rows_out = rows_out.min(n);
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static T_ALLOC_MAX: AtomicU64 = AtomicU64::new(0);
@@ -226,19 +259,19 @@ pub(crate) fn quantize_to_nvfp4(
 
     // Phase 2: Quantize
     let t = std::time::Instant::now();
-    let packed_buf = gpu.alloc(n * k / 2)?;
-    let scale_buf = gpu.alloc(n * k / 16)?;
+    let packed_buf = gpu.alloc(rows_out * k / 2)?;
+    let scale_buf = gpu.alloc(rows_out * k / 16)?;
     T_ALLOC_OUT.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
     let t = std::time::Instant::now();
     KernelLaunch::new(gpu, quantize_kernel)
-        .grid([n as u32, 1, 1])
+        .grid([rows_out as u32, 1, 1])
         .block([256, 1, 1])
         .arg_ptr(bf16_weight.weight)
         .arg_ptr(packed_buf)
         .arg_ptr(scale_buf)
         .arg_f32(scale2)
-        .arg_u32(n as u32)
+        .arg_u32(rows_out as u32)
         .arg_u32(k as u32)
         .launch(stream)?;
     T_LAUNCH2.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -426,3 +459,7 @@ pub(crate) fn load_moe_skip_experts(
         true,
     )
 }
+
+#[cfg(test)]
+#[path = "loaders_fp8_rows_tests.rs"]
+mod rows_tests;

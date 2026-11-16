@@ -162,14 +162,29 @@ pub fn process_decode_logits(
             && a.dry_multiplier == 0.0
     };
     let admit_think_ended = think_ended_gpu_argmax_enabled();
+    // Row `min_tokens_gpu_argmax` (off by default; `min_floor_fast.rs`).
+    let floor_row = super::min_floor_fast::row();
     let needs_host_logits = active.iter().any(|a| {
         let excused = admit_think_ended && think_ended_gpu_ok(a);
         (a.inside_thinking || a.think_ended || a.grammar_state.is_some()) && !excused
     }) || any_logprobs
         || model_logits_fp32
         // GPU argmax bypasses the pre-sampling EOS mask. Keep requests with
-        // an active minimum-token floor on the host pipeline.
-        || active.iter().any(|a| a.min_tokens > a.output_tokens.len());
+        // an active minimum-token floor on the host pipeline, unless the row
+        // above checks the argmax against that mask afterwards instead. The
+        // row covers a request whose penalties are neutral, as the think-ended
+        // excuse does: only then is the mask all the pipeline would do to it.
+        || active.iter().any(|a| {
+            let fast_ok = floor_row
+                && super::min_floor_fast::penalties_neutral(
+                    a.repetition_penalty,
+                    a.presence_penalty,
+                    a.frequency_penalty,
+                    a.lz_penalty,
+                    a.dry_multiplier,
+                );
+            super::min_floor_fast::floor_needs_host(fast_ok, a.min_tokens, a.output_tokens.len())
+        });
 
     // Try the GPU argmax first. `None` here means "not eligible, or the result
     // needs the host pipeline after all" and falls through to the host branch —
@@ -188,8 +203,32 @@ pub fn process_decode_logits(
                         a.think_ended
                             && (Some(tok) == think_end_token || Some(tok) == a.think_start_token)
                     });
+                    // Row `min_tokens_gpu_argmax`: the floor's EOS mask is the
+                    // only other thing the host pipeline would have done for
+                    // these rows, and it moves the pick only when the argmax
+                    // IS an EOS id. Then, and only then, redo the step there.
+                    // (The tie-break stays the device argmax's, as for a row
+                    // without a floor: `min_floor_fast.rs`.)
+                    let hit_floor = floor_row
+                        && t.iter().zip(active.iter()).any(|(&tok, a)| {
+                            super::min_floor_fast::hits_floor(
+                                tok,
+                                a.min_tokens,
+                                a.output_tokens.len(),
+                                &a.eos_tokens,
+                            )
+                        });
                     if hit_mask {
                         THINK_MASK_FALLBACKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        None
+                    } else if hit_floor {
+                        let total = super::min_floor_fast::note_fallback();
+                        if total.is_power_of_two() {
+                            tracing::debug!(
+                                total,
+                                "min_tokens floor: EOS argmax, step redone on the host"
+                            );
+                        }
                         None
                     } else {
                         Some(t.into_iter().map(|tok| (tok, None)).collect())
@@ -613,6 +652,11 @@ pub fn process_decode_logits(
         // Accumulate logprobs data for blocking responses.
         if let Some(lp) = logprobs {
             a.logprobs_data.push(lp);
+            // Confidence summary: twin of the `emit_token` release.
+            super::conf_summary::release_internal_logprobs(
+                &mut a.top_logprobs,
+                a.logprobs_data.len(),
+            );
         }
 
         // </tool_call> handling. Tool-armed requests (grammar active OR

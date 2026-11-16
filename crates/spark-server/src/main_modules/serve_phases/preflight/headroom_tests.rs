@@ -342,6 +342,7 @@ fn an_unpredictable_route_falls_back_to_pre_load_free_memory_and_says_so() {
             model_dir: std::path::Path::new("/nonexistent-checkpoint"),
             kv_dtype: KvCacheDtype::Fp8,
             w8a8_prefill_kernels: true,
+            fp8_ffn_freed: 0,
         },
         gib(8.0),
         gib(3.5),
@@ -417,6 +418,8 @@ fn the_fitted_depth_is_published_for_the_allocation_side() {
         PER_SEQ_BLOB,
         usize::MAX,
         0,
+        // No memory budget in play: this test is about the yardstick's fit.
+        usize::MAX,
         &y,
     );
     assert_eq!(fit.slots, 4);
@@ -425,4 +428,28 @@ fn the_fitted_depth_is_published_for_the_allocation_side() {
         Some(4),
         "the reserve and the allocation must read one cell",
     );
+}
+
+/// The 4B on the 16 GB card with the BF16 -> FP8 FFN route: 8.68 GiB on disk,
+/// 2,264,371,200 bytes freed by the route, 14.84 GiB free before the load.
+#[test]
+fn the_fp8_ffn_route_frees_its_bytes_before_the_snapshot_budgets_are_priced() {
+    let disk = gib(8.68);
+    let freed = 2_264_371_200;
+    assert_eq!(resident_weight_bytes(disk, freed), disk - freed);
+    // Nothing to credit leaves the on-disk size exactly as before.
+    assert_eq!(resident_weight_bytes(disk, 0), disk);
+    // A credit larger than the checkpoint cannot underflow.
+    assert_eq!(resident_weight_bytes(freed - 1, freed), 0);
+    // The memory beside the weights grows by the freed bytes: the on-disk
+    // 8.68 GiB was clamped to half of 14.84 GiB (7.42), the resident 6.57 GiB
+    // is not, so the ring budget rises from 2.47 GiB to 2.76 GiB.
+    let free = gib(14.84);
+    let before = spark_model::ssm_reserve::memory_beside_weights(free, disk);
+    let after =
+        spark_model::ssm_reserve::memory_beside_weights(free, resident_weight_bytes(disk, freed));
+    assert_eq!(before, free - free / 2);
+    assert_eq!(after, free - (disk - freed));
+    assert!(spark_model::ssm_reserve::ring_budget_bytes(after) > gib(2.75));
+    assert!(spark_model::ssm_reserve::ring_budget_bytes(before) < gib(2.48));
 }

@@ -16,6 +16,10 @@
 //! propose comes from ([`K4Hidden`]): the live verify row (single-seq path,
 //! `save_hidden_for_mtp`) or the pre-propose stash slot (batched path, whose
 //! phase-3 proposes have already clobbered the live rows).
+//!
+//! Also the pure helper the batched step's write-on-accept hook uses (lane
+//! L10): the per-sequence fold widths, derived with the verdict's own clamp
+//! so the GDN fold and the verdict commit the same prefix.
 
 use super::*;
 
@@ -121,7 +125,12 @@ pub(super) fn k4_apply_verdict(
         // Item #2 (STree-style in-place verify commit). Full accept
         // (num_accepted == k): the verify kernel already wrote the canonical
         // h_state, so the commit is a no-op.
-        if let Err(e) = model.commit_accepted_prefix(&mut a.seq, k_rows, k_rows) {
+        let t_commit = Instant::now();
+        let committed = model.commit_accepted_prefix(&mut a.seq, k_rows, k_rows);
+        sched
+            .timing
+            .record(crate::scheduler::mtp_timing::Phase::Commit, t_commit);
+        if let Err(e) = committed {
             // SSM state is no longer trustworthy — terminate, do not continue.
             tracing::error!("commit_accepted_prefix (K={k_rows} accept-{k_rows}): {e:#}");
             a.finished = true;
@@ -138,7 +147,12 @@ pub(super) fn k4_apply_verdict(
         }
         // Item #2: rewind live h_state to intermediate[na] (state after the
         // last accepted row — the correction token v[na] is row na).
-        if let Err(e) = model.commit_accepted_prefix(&mut a.seq, na + 1, k_rows) {
+        let t_commit = Instant::now();
+        let committed = model.commit_accepted_prefix(&mut a.seq, na + 1, k_rows);
+        sched
+            .timing
+            .record(crate::scheduler::mtp_timing::Phase::Commit, t_commit);
+        if let Err(e) = committed {
             tracing::error!(
                 "commit_accepted_prefix (K={k_rows} accept-{}): {e:#}",
                 na + 1
@@ -186,6 +200,9 @@ pub(super) fn k4_apply_verdict(
                 tracing::error!("run_mtp_propose_multi: {e:#}");
             }
         }
+        sched
+            .timing
+            .record(crate::scheduler::mtp_timing::Phase::Propose, t_propose);
         let propose_us = t_propose.elapsed().as_micros();
         tracing::debug!(
             "K{k_rows} ACCEPT-{na}: verify={verify_us}μs propose={propose_us}μs seq_len={}",
@@ -193,4 +210,40 @@ pub(super) fn k4_apply_verdict(
         );
     }
     crate::scheduler::verify_k4_step::stats::k4_record_outcome(sched, na, a.seq.seq_len);
+}
+
+/// Rows each sequence's GDN state must fold after a batched write-on-accept
+/// verify (`Model::gdn_fold_accepted`): the accepted drafts plus the
+/// always-committed first row, clamped exactly as [`k4_apply_verdict`]
+/// clamps (`na <= nd = ks[i] - 1`), so the fold commits the same prefix the
+/// verdict emits. `accepted[i]` is sequence i's raw accepted-draft count.
+pub(super) fn woa_fold_rows(accepted: &[usize], ks: &[usize]) -> Vec<u32> {
+    accepted
+        .iter()
+        .zip(ks)
+        .map(|(&na, &k)| (na.min(k.saturating_sub(1)) + 1) as u32)
+        .collect()
+}
+
+#[cfg(test)]
+mod woa_tests {
+    use super::woa_fold_rows;
+
+    /// The fold commits the first row plus every accepted draft: a full
+    /// reject folds 1 row, a full accept of 3 drafts folds all 4.
+    #[test]
+    fn fold_rows_are_the_committed_prefix() {
+        assert_eq!(woa_fold_rows(&[0, 1, 2, 3], &[4, 4, 4, 4]), [1, 2, 3, 4]);
+        assert_eq!(woa_fold_rows(&[0, 1], &[2, 2]), [1, 2]);
+        assert_eq!(woa_fold_rows(&[2, 0, 2], &[3, 3, 3]), [3, 1, 3]);
+    }
+
+    /// An accepted count above the verified drafts is clamped the way the
+    /// verdict clamps it, so the fold can never commit a row the verdict
+    /// rewound.
+    #[test]
+    fn fold_rows_clamp_like_the_verdict() {
+        assert_eq!(woa_fold_rows(&[7], &[4]), [4]);
+        assert_eq!(woa_fold_rows(&[5, 9], &[2, 3]), [2, 3]);
+    }
 }

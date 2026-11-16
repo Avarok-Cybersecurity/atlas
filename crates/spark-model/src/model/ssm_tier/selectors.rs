@@ -27,7 +27,9 @@ pub(crate) fn ssm_tier_enabled() -> bool {
 /// default 512); otherwise the host-RAM [`MemBlobStore`]. A connect failure (or
 /// a build without RDMA verbs) LOGS and falls back to host-RAM — the tier is
 /// optional, never a hard model-init error. With `AVAROK_SSM_RDMA_TIER` unset the
-/// result is exactly `MemBlobStore::new(0)` as before ⇒ byte-identical.
+/// result is exactly `MemBlobStore::new(0)` as before ⇒ byte-identical (with the
+/// host KV tier off; see [`default_host_store`] for the bounded store it uses
+/// while that tier serves).
 ///
 /// `AVAROK_SSM_TIER_DISK_GB` bounds the UNIFIED arms' swap file (see
 /// [`ssm_tier_disk_slots`]); unset = unbounded = today's behavior. It is inert
@@ -126,7 +128,7 @@ pub(crate) fn build_tier_store(
                                 "SSM unified residency init failed ({e:#}); \
                                  falling back to host-RAM"
                             );
-                            return Ok(Arc::new(MemBlobStore::new(0)));
+                            return Ok(default_host_store());
                         }
                     }
                 }
@@ -171,7 +173,33 @@ pub(crate) fn build_tier_store(
             ),
         }
     }
-    Ok(Arc::new(MemBlobStore::new(0)))
+    Ok(default_host_store())
+}
+
+/// The Marconi spill tier's host-RAM default store: `MemBlobStore::new(0)` (unbounded), the
+/// store every arm above falls back to. While the host KV tier serves (lane L26b: the
+/// `kv_host_tier` row on and a `--kv-host-tier-gb` budget) both spill snapshots and KV blocks
+/// live in host RAM, so the snapshot store becomes byte-bounded (a quarter of the KV budget,
+/// `kv_tier_glue::flags::SSM_STORE_SHARE_DIV`) and least-recently-used (lane L25's
+/// `BlobEviction::Lru`, whatever the `ssm_store_lru` row says): a snapshot the tier's restores
+/// keep reading stays, a cold one leaves first. Heap-backed: this store is selected at model
+/// build, before the tier's pinned pool exists (the glue builds the tier on its first hook).
+/// With the row off this is exactly the old store.
+fn default_host_store() -> std::sync::Arc<dyn SnapshotBlobStore> {
+    match crate::model::kv_tier_glue::flags::ssm_store_cap_bytes() {
+        Some(cap) => {
+            tracing::info!(
+                "SSM spill tier = host-RAM LRU bounded to {:.2} GiB (shares host RAM with the \
+                 host KV tier)",
+                cap as f64 / (1u64 << 30) as f64
+            );
+            std::sync::Arc::new(MemBlobStore::with_policy(
+                cap,
+                super::store::BlobEviction::Lru,
+            ))
+        }
+        None => std::sync::Arc::new(MemBlobStore::new(0)),
+    }
 }
 
 /// Build the **decode rolling-tier** cold store (a SEPARATE instance from the

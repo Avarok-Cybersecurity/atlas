@@ -1,0 +1,268 @@
+{
+  "schema": 1,
+  "artifact": "mtp_vocab_rank",
+  "file": "mtp_vocab_rank_qwen35.u32",
+  "layout": "u32 little-endian token ids, most frequent first; head row r holds token table[r]",
+  "rows": 131072,
+  "sha256": "03c75bd9051423f2e859bded345b7c9ce0859868447195437718794445d0373d",
+  "source": {
+    "project": "Cinference (derived from NInfer by Neroued and contributors)",
+    "url": "https://github.com/satellitedown/cinference",
+    "commit": "383e5db",
+    "path": "tools/freq_corpus/fixtures/ranking/ranking.train.counts.i64",
+    "sha256": "c692dc76388132c910547589b4fb4a0503fbd6ad50aaac6a509bbcb192a8afa5",
+    "row": "0 (total)",
+    "license": "Apache-2.0",
+    "note": "token counts by NInfer authors; source corpus not published",
+    "mode": "teacher_forced_argmax",
+    "counting_tokenizer": "/home/neroued/models/llm/qwen/Qwen3.6-27B/base-hf-bf16"
+  },
+  "selection": "Cinference select_shortlist (tools/convert/proposal.py:21-42): descending total count, ties by ascending id, forced ids included",
+  "forced_ids": [
+    248044,
+    248045,
+    248046,
+    248047,
+    248048,
+    248049,
+    248050,
+    248051,
+    248052,
+    248053,
+    248054,
+    248055,
+    248056,
+    248057,
+    248058,
+    248059,
+    248060,
+    248061,
+    248062,
+    248063,
+    248064,
+    248065,
+    248066,
+    248067,
+    248068,
+    248069
+  ],
+  "tokenizer_check": {
+    "manifest_pairs_checked": 768,
+    "mismatches": 0,
+    "tokenizer_vocab": 248070,
+    "accepted_vocab_sizes": [
+      248070,
+      248320
+    ],
+    "tokenizers": [
+      {
+        "file": "tokenizer.json",
+        "model_dir": "Qwen3.5-4B",
+        "bytes": 12807982,
+        "fnv1a64": "349dd3b67c2adef5",
+        "sha256": "5f9e4d4901a92b997e463c1f46055088b6cca5ca61a6522d1b9f64c4bb81cb42"
+      },
+      {
+        "file": "tokenizer.json",
+        "model_dir": "Qwen3.5-0.8B",
+        "bytes": 12807982,
+        "fnv1a64": "349dd3b67c2adef5",
+        "sha256": "5f9e4d4901a92b997e463c1f46055088b6cca5ca61a6522d1b9f64c4bb81cb42"
+      }
+    ]
+  },
+  "coverage_grid": [
+    32768,
+    65536,
+    98304,
+    100000,
+    131072
+  ],
+  "coverage": {
+    "ranking.heldout": {
+      "32768": {
+        "freq": {
+          "total": 0.909664,
+          "en_chat": 0.935555,
+          "zh_chat": 0.918316,
+          "other_chat": 0.810797,
+          "code": 0.911857,
+          "math": 0.928826
+        },
+        "id": {
+          "total": 0.690279,
+          "en_chat": 0.910541,
+          "zh_chat": 0.431583,
+          "other_chat": 0.594865,
+          "code": 0.837526,
+          "math": 0.883412
+        }
+      },
+      "65536": {
+        "freq": {
+          "total": 0.959558,
+          "en_chat": 0.975138,
+          "zh_chat": 0.963275,
+          "other_chat": 0.904605,
+          "code": 0.959588,
+          "math": 0.968627
+        },
+        "id": {
+          "total": 0.730308,
+          "en_chat": 0.959132,
+          "zh_chat": 0.445437,
+          "other_chat": 0.670418,
+          "code": 0.884064,
+          "math": 0.927729
+        }
+      },
+      "98304": {
+        "freq": {
+          "total": 0.980382,
+          "en_chat": 0.9891,
+          "zh_chat": 0.982362,
+          "other_chat": 0.950047,
+          "code": 0.979738,
+          "math": 0.986245
+        },
+        "id": {
+          "total": 0.837209,
+          "en_chat": 0.983362,
+          "zh_chat": 0.691676,
+          "other_chat": 0.715012,
+          "code": 0.926548,
+          "math": 0.95977
+        }
+      },
+      "100000": {
+        "freq": {
+          "total": 0.981121,
+          "en_chat": 0.989658,
+          "zh_chat": 0.983149,
+          "other_chat": 0.951145,
+          "code": 0.980565,
+          "math": 0.986977
+        },
+        "id": {
+          "total": 0.861545,
+          "en_chat": 0.984014,
+          "zh_chat": 0.758538,
+          "other_chat": 0.715352,
+          "code": 0.932163,
+          "math": 0.962219
+        }
+      },
+      "131072": {
+        "freq": {
+          "total": 0.990936,
+          "en_chat": 0.995558,
+          "zh_chat": 0.991732,
+          "other_chat": 0.975317,
+          "code": 0.991198,
+          "math": 0.993274
+        },
+        "id": {
+          "total": 0.939547,
+          "en_chat": 0.986073,
+          "zh_chat": 0.972702,
+          "other_chat": 0.716639,
+          "code": 0.949494,
+          "math": 0.973652
+        }
+      }
+    },
+    "accept.heldout": {
+      "32768": {
+        "freq": {
+          "total": 0.916701,
+          "en_chat": 0.939171,
+          "zh_chat": 0.926735,
+          "other_chat": 0.827316,
+          "code": 0.913561,
+          "math": 0.933193
+        },
+        "id": {
+          "total": 0.724358,
+          "en_chat": 0.917439,
+          "zh_chat": 0.494841,
+          "other_chat": 0.62093,
+          "code": 0.850145,
+          "math": 0.893227
+        }
+      },
+      "65536": {
+        "freq": {
+          "total": 0.963072,
+          "en_chat": 0.97654,
+          "zh_chat": 0.967292,
+          "other_chat": 0.91454,
+          "code": 0.960194,
+          "math": 0.97065
+        },
+        "id": {
+          "total": 0.763369,
+          "en_chat": 0.962487,
+          "zh_chat": 0.509738,
+          "other_chat": 0.695857,
+          "code": 0.895341,
+          "math": 0.934542
+        }
+      },
+      "98304": {
+        "freq": {
+          "total": 0.98227,
+          "en_chat": 0.989757,
+          "zh_chat": 0.984383,
+          "other_chat": 0.95597,
+          "code": 0.980142,
+          "math": 0.987205
+        },
+        "id": {
+          "total": 0.858219,
+          "en_chat": 0.985055,
+          "zh_chat": 0.731092,
+          "other_chat": 0.738564,
+          "code": 0.934695,
+          "math": 0.963704
+        }
+      },
+      "100000": {
+        "freq": {
+          "total": 0.982941,
+          "en_chat": 0.990285,
+          "zh_chat": 0.985067,
+          "other_chat": 0.956955,
+          "code": 0.980979,
+          "math": 0.987794
+        },
+        "id": {
+          "total": 0.879028,
+          "en_chat": 0.985656,
+          "zh_chat": 0.789907,
+          "other_chat": 0.738853,
+          "code": 0.939575,
+          "math": 0.965802
+        }
+      },
+      "131072": {
+        "freq": {
+          "total": 0.991926,
+          "en_chat": 0.995907,
+          "zh_chat": 0.992698,
+          "other_chat": 0.978608,
+          "code": 0.991421,
+          "math": 0.993687
+        },
+        "id": {
+          "total": 0.945126,
+          "en_chat": 0.987543,
+          "zh_chat": 0.976606,
+          "other_chat": 0.739961,
+          "code": 0.954128,
+          "math": 0.976285
+        }
+      }
+    }
+  },
+  "generator": "crates/spark-model/data/gen_mtp_vocab_rank.py"
+}

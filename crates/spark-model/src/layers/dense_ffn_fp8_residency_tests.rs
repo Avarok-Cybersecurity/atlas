@@ -202,3 +202,119 @@ fn every_small_batch_entry_point_runs_without_nvfp4_weights() {
         }
     });
 }
+
+/// The batch-M handles a target with `fp8_gemv_ada_batchm.cu` resolves.
+fn batchm_kernels() -> super::ada_kernels::verify::RowKernels {
+    super::ada_kernels::verify::RowKernels {
+        plain: KernelHandle(0xB21),
+        dual: KernelHandle(0xB2D),
+        silu_input: KernelHandle(0xB25),
+    }
+}
+
+#[test]
+fn the_batchm_verify_route_reads_only_the_fp8_weights() {
+    // Port row `ffn_fp8_verify_gemv` (L15): the verify rows on the batch-M
+    // GEMVs. Like every other small-batch entry point it must run on a layer
+    // whose NVFP4 fallbacks are NULL, without allocating a weight copy.
+    let gpu = MockGpuBackend::new();
+    let layer = native_fp8_layer(&gpu);
+    with_ctx(&gpu, |ctx, buffers| {
+        let start = gpu.launch_count();
+        let allocs = gpu.alloc_count();
+        let (input, out) = (buffers.norm_output(), buffers.moe_output());
+        for rows in 2..=8 {
+            assert!(
+                super::ada_kernels::verify::forward_km_fp8_with(
+                    &layer,
+                    &batchm_kernels(),
+                    input,
+                    rows,
+                    out,
+                    ctx,
+                    7
+                )
+                .unwrap(),
+                "a native FP8 layer is eligible at m={rows}"
+            );
+        }
+        assert_eq!(
+            gpu.alloc_count(),
+            allocs,
+            "verify must not allocate weight copies"
+        );
+        let launches = gpu.launches_snapshot();
+        assert!(launches.len() > start);
+        for launch in &launches[start..] {
+            for arg in &launch.args {
+                if let spark_runtime::gpu::mock::MockArg::Buffer(p) = arg {
+                    assert!(
+                        !p.is_null(),
+                        "a NULL weight reached a batch-M launch: {launch:?}"
+                    );
+                }
+            }
+        }
+    });
+}
+
+#[test]
+fn the_batchm_verify_route_is_selected_only_when_its_row_is_on() {
+    // With the row off (the default on every target) the 3.7.3 entry point
+    // declines before any lookup or launch, so `forward_km` keeps redirecting
+    // to `forward_prefill` exactly as #915 pinned above.
+    if crate::layers::ops::port_rows::ffn_fp8_verify_gemv::row() {
+        return;
+    }
+    let gpu = MockGpuBackend::new();
+    let layer = native_fp8_layer(&gpu);
+    with_ctx(&gpu, |ctx, buffers| {
+        let start = gpu.launch_count();
+        let lookups = gpu.kernel_lookups_snapshot().len();
+        let taken = super::ada_kernels::verify::forward_km_fp8(
+            &layer,
+            buffers.norm_output(),
+            4,
+            buffers.moe_output(),
+            ctx,
+            7,
+        )
+        .unwrap();
+        assert!(!taken);
+        assert_eq!(gpu.launch_count(), start);
+        assert_eq!(gpu.kernel_lookups_snapshot().len(), lookups);
+    });
+}
+
+#[test]
+fn a_layer_without_fp8_weights_never_takes_the_batchm_route() {
+    let gpu = MockGpuBackend::new();
+    let mut layer = DenseFfnLayer::new(
+        DenseFfnWeights {
+            gate_proj: QuantizedWeight::null(),
+            up_proj: QuantizedWeight::null(),
+            down_proj: QuantizedWeight::null(),
+            gate_proj_t: None,
+            up_proj_t: None,
+            down_proj_t: None,
+        },
+        &gpu,
+    )
+    .unwrap();
+    layer.act_mul = KernelHandle(0xAC7);
+    with_ctx(&gpu, |ctx, buffers| {
+        let start = gpu.launch_count();
+        let taken = super::ada_kernels::verify::forward_km_fp8_with(
+            &layer,
+            &batchm_kernels(),
+            buffers.norm_output(),
+            4,
+            buffers.moe_output(),
+            ctx,
+            7,
+        )
+        .unwrap();
+        assert!(!taken, "no FP8 overlay, no batch-M route");
+        assert_eq!(gpu.launch_count(), start);
+    });
+}

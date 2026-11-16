@@ -17,6 +17,8 @@ members = [
     "crates/xgrammar",
     "crates/avarok-governance",
     "crates/avarok-closure",
+    "crates/atlas-route-policy",
+    # @port:members
 ]
 
 # AMD/SCALE + native-HIP: the vendored cudarc 0.19.2 is byte-identical to

@@ -151,6 +151,7 @@ impl Qwen3AttentionLayer {
             v_weight: v_nvfp4.map(QuantWeight::Nvfp4),
             o_weight: None,
             o_dense_bf16: None,
+            w4_proj: Default::default(),
             mla: None,
             // ── DeepSeek-V4 Manifold-Constrained Hyper-Connections (mHC) ──
             // `hc` stays None for non-V4 models; the V4 loader attaches real
@@ -195,11 +196,11 @@ impl Qwen3AttentionLayer {
             // The shared name is the one `W8A8_PREFILL_KERNELS[0]` (#915)
             // spells for preflight, which derives it from the same constants.
             per_token_group_quant_fp8_k: crate::layers::ops::Fp8ActQuant::resolve(gpu),
-            fp8_gemm_t_blockscaled_k: super::super::try_kernel(
-                gpu,
-                super::types_weights::W8A8_PREFILL_KERNELS[1].0,
-                super::types_weights::W8A8_PREFILL_KERNELS[1].1,
-            ),
+            // `fp8_gemm_ada_w8a8` where the target compiled it (sm_89), else
+            // `W8A8_PREFILL_KERNELS[1]`: same arguments, grid and output bits
+            // (`layers/dense_ffn_ada_kernels.rs`), so only the speed changes.
+            fp8_gemm_t_blockscaled_k:
+                crate::layers::dense_ffn::ada_kernels::Fp8FfnKernels::w8a8_gemm(gpu),
             // Same optional adapter the SSM layer loads (`init.rs`): absent on
             // a shadow that has no `fp8_scale_transpose` module, which makes
             // the cuBLASLt W8A8 arms decline rather than hand the library the
@@ -209,6 +210,7 @@ impl Qwen3AttentionLayer {
                 "fp8_scale_transpose",
                 "fp8_act_scale_to_kmajor",
             ),
+            qkv_w8a8_prefill: false,
             rms_norm_k: gpu.kernel("norm", "rms_norm")?,
             rms_norm_w_k: if crate::ships_vanilla_norm_weights(config) {
                 gpu.kernel("rms_norm_vanilla", "rms_norm_vanilla")?
@@ -245,7 +247,12 @@ impl Qwen3AttentionLayer {
                 .unwrap_or(KernelHandle(0)),
             w4a16_gemv_k: gpu.kernel("w4a16_gemv", "w4a16_gemv")?,
             w4a16_gemv_sw_k: super::super::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_sw"),
-            w8a16_gemv_k: gpu.kernel("w8a16_gemv", "w8a16_gemv")?,
+            // The M=1 FP8 decode GEMV: the sm_89 drop-in `fp8_gemv_ada` where
+            // compiled, else `w8a16_gemv`, which stays required. Bit-identical.
+            w8a16_gemv_k: match crate::layers::dense_ffn::ada_kernels::Fp8FfnKernels::m1_gemv(gpu) {
+                h if h.0 != 0 => h,
+                _ => gpu.kernel("w8a16_gemv", "w8a16_gemv")?,
+            },
             w8a16_gemv_batch4_k: super::super::try_kernel(
                 gpu,
                 "w8a16_gemv_batch4",
@@ -277,6 +284,7 @@ impl Qwen3AttentionLayer {
                 "w8a16_gemm_m16_strided",
             ),
             m16_tc: crate::layers::dense_ffn::m16_tc::m16_tc_levers().attn,
+            gated_bf16_batchm: crate::layers::ops::attn_gated_bf16_batchm::row(),
             w8a16_gemv_ncol2_k: super::super::try_target_kernel(
                 gpu,
                 "w8a16_gemv_ncol",

@@ -189,6 +189,81 @@ pub struct TargetDefaults {
     /// (`silu_mul_strided.cu`) is a Hopper-owned source, so the row is inert
     /// on a target whose tree does not carry it.
     pub ffn_gateup_fused: bool,
+    /// Quantize a plain-BF16 dense checkpoint's FFN gate/up/down to 128x128
+    /// block-scaled FP8 (E4M3) AT LOAD and serve them on the native-FP8 arms
+    /// (`weight_loader/qwen35_dense/fp8_from_bf16.rs`), instead of keeping the
+    /// BF16 weights.
+    ///
+    /// A NUMERICS lever, unlike the speed-only rows above: E4M3 keeps 3
+    /// mantissa bits against BF16's 7. What it buys is bytes: half the FFN
+    /// weight memory, and half the FFN bytes a bandwidth-bound decode step
+    /// streams (a 4B Holo's FFN is 4.5 GB of its 8.7 GB in BF16).
+    ///
+    /// FALSE on every target in this tree: GB10's measured dense-FP8 kernels
+    /// lose to its NVFP4 ones, and the datacenter parts have the memory to
+    /// keep BF16. The 16 GB Ada target is the one it exists for.
+    /// `AVAROK_DENSE_FP8_FROM_BF16=0|1` is the A/B against BF16.
+    pub dense_fp8_from_bf16: bool,
+    /// The same load-time BF16 -> 128x128 block-scaled FP8 quantization for a
+    /// plain-BF16 dense checkpoint's GDN projections, `in_proj_qkvz` and
+    /// `out_proj` (`weight_loader/qwen35_dense/gdn_fp8_from_bf16.rs`), served
+    /// on the native-FP8 GDN arms: W8A16 GEMVs at decode, W8A8 at prefill.
+    ///
+    /// A NUMERICS lever like the row above, and independent of it. On a 4B
+    /// Holo the GDN projections are 2.0 GB of BF16 read per decode token.
+    /// FALSE on every target in this tree for want of an accuracy receipt;
+    /// `AVAROK_GDN_FP8_FROM_BF16=0|1` is the A/B against BF16.
+    pub gdn_fp8_from_bf16: bool,
+    /// The same load-time quantization for a plain-BF16 dense checkpoint's
+    /// full-attention q/k/v/o (`weight_loader/qwen35_dense/attn_fp8_from_bf16.rs`),
+    /// served on the native-FP8 attention overlay: W8A16 GEMVs at decode, W8A8
+    /// at prefill (the chunk-0 Q/K/V chain on the in-tree kernel, no
+    /// `AVAROK_CUBLAS_GEMM=attn` needed). A NUMERICS lever, independent of the
+    /// two rows above. FALSE on every target; `AVAROK_ATTN_FP8_FROM_BF16=0|1`
+    /// is the A/B against BF16.
+    pub attn_fp8_from_bf16: bool,
+    /// The cuBLASLt BF16 GEMM serves the BF16 dense-FFN PREFILL
+    /// (`layers/ops/ffn_bf16_cublas.rs`) in place of the hand-written
+    /// `dense_gemm_tc`, with no `AVAROK_CUBLAS_GEMM` in the environment.
+    ///
+    /// TRUE on ada only: RTX 4060 Ti 16 GB, 3,921-token prompt, one env change
+    /// on the same binary, Qwen3.5-0.8B 8,199 -> 13,113 tok/s and Qwen3.5-4B
+    /// 795 -> 3,677 tok/s, decode unchanged. Same numerics class (BF16 in,
+    /// FP32 accumulate). Narrower than `AVAROK_CUBLAS_GEMM=ffn`: it does NOT
+    /// arm the W8A8 FFN prefill or the MoE shared expert. A set
+    /// `AVAROK_CUBLAS_GEMM` (any value, `off` included) decides instead.
+    pub ffn_bf16_cublas_prefill: bool,
+    /// The K-token (MTP verify) GDN projections of a BF16-kept GDN layer go
+    /// through ONE cuBLASLt BF16 GEMM over all rows
+    /// (`layers/ops/gdn_batched_gemm.rs`): `in_proj_qkvz` at 3+ rows, where
+    /// it was one `dense_gemv` per row at 3 and 4 and the scalar `dense_gemm`
+    /// above, and `out_proj_dense` at 2+ rows, where it was the scalar
+    /// `dense_gemm`.
+    ///
+    /// FALSE everywhere: cuBLASLt reassociates the K reduction, so verify
+    /// logits move. A NUMERICS row with no receipt; `AVAROK_GDN_BATCHED_GEMM=1`
+    /// is the A/B.
+    pub gdn_batched_gemm: bool,
+    /// Output-gated dense-BF16 attention Q/K/V take the batched
+    /// `dense_gemv_batchm` tier in multi-sequence decode
+    /// (`layers/ops/attn_gated_bf16_batchm.rs`) instead of one GEMV per
+    /// stream. TRUE on ada only: bit-identical there (same kernel source as
+    /// the per-row `dense_gemv_bf16`, built with `--fmad=false`), so it is a
+    /// weight-pass change, not a numerics change. Other targets keep the
+    /// per-sequence loop until measured. `AVAROK_ATTN_GATED_BF16_BATCHM` is
+    /// the A/B.
+    pub attn_gated_bf16_batchm: bool,
+    /// Memory sizing tuned for a consumer card with a desktop beside the
+    /// serve: the measured 1.10x load multiplier for a BF16 dense Qwen3.5
+    /// checkpoint, the Qwen MTP headroom sized from what the head allocates
+    /// instead of a flat 4 GiB, no `mtp.*` upload without speculation, and a
+    /// draft LM head of only the `--mtp-vocab` rows MTP reads.
+    ///
+    /// TRUE on ada only (RTX 4060 Ti 16 GB: the 4B BF16 serve needed
+    /// `--oom-guard-mb 1024`, and BF16 + `--speculative` at 4k was refused at
+    /// the KV stage). FALSE on every other target, which keeps its sizing and
+    /// admission exactly as before. `AVAROK_MEMORY_FIT_CONSUMER=0|1` overrides.
+    pub memory_fit_consumer: bool,
     /// Upper `M` for the W8A8 block-scaled dense-FFN prefill on a WIDENING
     /// projection (`n > k`: gate/up). `u32::MAX` = no cap, the baseline.
     ///
@@ -210,4 +285,8 @@ pub struct TargetDefaults {
     /// Upper `M` for the same path on a NARROWING projection (`n <= k`: down).
     /// See [`Self::w8a8_prefill_max_m_widening`].
     pub w8a8_prefill_max_m_narrowing: u32,
+    /// The port sprint's rows (`port/consumer-opt`), every one off or at its
+    /// baseline on every target when it lands
+    /// ([`crate::target_defaults_port`]).
+    pub port: crate::target_defaults_port::PortDefaults,
 }

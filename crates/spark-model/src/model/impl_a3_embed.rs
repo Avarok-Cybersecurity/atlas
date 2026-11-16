@@ -33,6 +33,23 @@ impl TransformerModel {
     fn embed_row(&self, token: u32, output: DevicePtr, stream: u64) -> Result<()> {
         let h = self.config.hidden_size;
         let row_bytes = h * 2; // BF16 embedding row
+        // Row `embed_host_offload` (port lane L24): the table may live in
+        // mapped host memory (`port::embed_host`). The host knows this token,
+        // so the row goes over as an ordinary pinned host-to-device copy
+        // rather than a device-to-device copy through the mapped alias. Same
+        // bytes either way; a device table returns false and falls through.
+        if crate::layers::ops::port_rows::embed_host_offload::row()
+            && crate::port::embed_host::copy_host_row(
+                self.gpu.as_ref(),
+                self.embed_tokens.weight,
+                token,
+                row_bytes,
+                output,
+                stream,
+            )?
+        {
+            return self.scale_embeddings(output, 1, stream);
+        }
         let src = self.embed_tokens.weight.offset(token as usize * row_bytes);
         self.gpu.copy_d2d_async(src, output, row_bytes, stream)?;
         // Scale embeddings (Gemma-4: sqrt(hidden_size))

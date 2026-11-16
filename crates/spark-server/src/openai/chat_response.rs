@@ -67,6 +67,56 @@ pub struct Usage {
     /// `ir::Usage::total_time_ms` for what the origin excludes). ADDITIVE.
     #[serde(rename = "total_time_ms")]
     pub total_time_ms: f64,
+    /// Atlas fingerprints and confidence summary (`atlas_token_sha`,
+    /// `atlas_output_sha256`, `atlas_confidence`). Flattened into the usage
+    /// object and absent unless the request asked for them.
+    #[serde(flatten)]
+    pub atlas: AtlasUsageWire,
+}
+
+/// The wire form of [`crate::api::evidence::UsageExtras`]: every key is
+/// omitted when unset, so a response to a request that asked for nothing is
+/// byte-identical to one from before these keys existed.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct AtlasUsageWire {
+    /// SHA-256 of the generated token ids (little-endian `u32`), lowercase hex.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub atlas_token_sha: Option<String>,
+    /// SHA-256 over the content and reasoning digests, lowercase hex.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub atlas_output_sha256: Option<String>,
+    /// Confidence over the first K generated tokens.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub atlas_confidence: Option<AtlasConfidenceWire>,
+}
+
+/// `usage.atlas_confidence`.
+#[derive(Debug, Clone, Serialize)]
+pub struct AtlasConfidenceWire {
+    /// Mean probability of the model's top-1 token.
+    pub mean_top1: f32,
+    /// Smallest top-1 minus top-2 probability.
+    pub min_margin: f32,
+    /// Fraction of tokens whose top-1 probability was below 0.5.
+    pub low_frac: f32,
+    /// Tokens the summary covers (at most K).
+    pub tokens: u32,
+}
+
+impl From<&crate::api::evidence::UsageExtras> for AtlasUsageWire {
+    fn from(x: &crate::api::evidence::UsageExtras) -> Self {
+        use crate::api::evidence::to_hex;
+        Self {
+            atlas_token_sha: x.token_sha.as_ref().map(to_hex),
+            atlas_output_sha256: x.output_sha.as_ref().map(to_hex),
+            atlas_confidence: x.confidence.map(|c| AtlasConfidenceWire {
+                mean_top1: c.mean_top1,
+                min_margin: c.min_margin,
+                low_frac: c.low_frac,
+                tokens: c.tokens,
+            }),
+        }
+    }
 }
 
 impl From<&crate::ir::Usage> for Usage {
@@ -96,6 +146,7 @@ impl From<&crate::ir::Usage> for Usage {
             response_tokens_per_second: u.response_tokens_per_second,
             decode_time_ms: u.decode_time_ms,
             total_time_ms: u.total_time_ms(),
+            atlas: AtlasUsageWire::from(&u.atlas),
         }
     }
 }
@@ -263,5 +314,80 @@ impl ChatCompletionResponse {
             service_tier: None,
             metadata: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod atlas_usage_tests {
+    use super::*;
+    use crate::api::evidence::{UsageExtras, token_sha};
+    use crate::scheduler::conf_summary::ConfSummary;
+
+    const ATLAS_KEYS: [&str; 3] = ["atlas_token_sha", "atlas_output_sha256", "atlas_confidence"];
+
+    #[test]
+    fn a_response_to_a_plain_request_gains_no_key() {
+        let v = serde_json::to_value(Usage::from(&crate::ir::Usage::default())).unwrap();
+        let obj = v.as_object().unwrap();
+        for k in ATLAS_KEYS {
+            assert!(
+                !obj.contains_key(k),
+                "{k} must be absent unless requested: {v}"
+            );
+        }
+        // The shipped keys are still there.
+        for k in [
+            "prompt_tokens",
+            "completion_tokens",
+            "total_tokens",
+            "decode_time_ms",
+        ] {
+            assert!(obj.contains_key(k), "{k}: {v}");
+        }
+    }
+
+    #[test]
+    fn requested_fields_are_flattened_into_usage() {
+        let ir = crate::ir::Usage {
+            atlas: UsageExtras {
+                token_sha: Some(token_sha(&[1, 2, 3])),
+                output_sha: Some(token_sha(&[])),
+                confidence: Some(ConfSummary {
+                    tokens: 32,
+                    mean_top1: 0.75,
+                    min_margin: 0.125,
+                    low_frac: 0.25,
+                }),
+            },
+            ..Default::default()
+        };
+        let v = serde_json::to_value(Usage::from(&ir)).unwrap();
+        assert_eq!(
+            v["atlas_token_sha"],
+            "4636993d3e1da4e9d6b8f87b79e8f7c6d018580d52661950eabc3845c5897a4d"
+        );
+        assert_eq!(
+            v["atlas_output_sha256"],
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_eq!(v["atlas_confidence"]["mean_top1"], 0.75);
+        assert_eq!(v["atlas_confidence"]["min_margin"], 0.125);
+        assert_eq!(v["atlas_confidence"]["low_frac"], 0.25);
+        assert_eq!(v["atlas_confidence"]["tokens"], 32);
+    }
+
+    #[test]
+    fn each_field_is_independent() {
+        let ir = crate::ir::Usage {
+            atlas: UsageExtras {
+                token_sha: Some(token_sha(&[])),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let v = serde_json::to_value(Usage::from(&ir)).unwrap();
+        assert!(v.get("atlas_token_sha").is_some());
+        assert!(v.get("atlas_output_sha256").is_none());
+        assert!(v.get("atlas_confidence").is_none());
     }
 }

@@ -11,6 +11,7 @@ use super::ctx::MultiSeqCtx;
 use crate::layer::AttnMetadataDev;
 use crate::layers::ops;
 use crate::layers::qwen3_attention::Qwen3AttentionLayer;
+use crate::layers::qwen3_attention::sparse_seam::{self, SeamRows};
 
 /// One batched `reshape_and_cache` launch for all N sequences instead of one
 /// launch per sequence. Kill switch: `AVAROK_NO_ATTN_BATCH_CACHE_WRITE=1`.
@@ -199,11 +200,15 @@ impl Qwen3AttentionLayer {
 
     /// Phase 5: build contiguous Q buffer + run BATCHED paged decode.
     /// Returns the attn_out buffer pointer for downstream phases.
+    ///
+    /// `rows` carries the orchestrator's host lengths and block tables for the
+    /// sparse-attention seam (port L29); [`SeamRows::NONE`] keeps it off.
     pub(super) fn ms_phase_paged_decode(
         &self,
         c: &MultiSeqCtx<'_>,
         kv_cache: &mut PagedKvCache,
         meta: AttnMetadataDev,
+        rows: SeamRows<'_>,
     ) -> Result<DevicePtr> {
         let MultiSeqCtx {
             fwd,
@@ -295,25 +300,65 @@ impl Qwen3AttentionLayer {
                 .arg_u32(hd)
                 .launch(stream)?;
         }
-        self.run_paged_decode(
-            fwd.gpu,
-            q_contiguous,
-            kv_cache,
-            attn_out,
-            meta.block_table,
-            meta.seq_len,
-            meta.max_blocks_per_seq,
-            n as u32,
-            nq,
-            nkv,
-            hd,
-            bs,
-            inv_sqrt_d,
-            q_stride,
-            fwd.buffers.splitk_workspace(),
-            fwd.levers.max_decode_seqs,
-            stream,
-        )?;
+        if let Some(sel) = sparse_seam::active()
+            && let Some(route) = self.seam_decode_multi(
+                sel,
+                fwd,
+                kv_cache,
+                &meta,
+                rows,
+                n,
+                q_contiguous,
+                q_stride,
+                attn_out,
+                sparse_seam::SeamDims { nq, nkv, hd },
+                stream,
+            )?
+        {
+            // Sparse-attention seam: the selector's tables, or its custom
+            // attention already wrote `attn_out`.
+            if let sparse_seam::route::DecodeRoute::Run(t) = route {
+                self.run_paged_decode(
+                    fwd.gpu,
+                    q_contiguous,
+                    kv_cache,
+                    attn_out,
+                    t.block_table,
+                    t.seq_lens,
+                    t.max_blocks_per_seq,
+                    n as u32,
+                    nq,
+                    nkv,
+                    hd,
+                    bs,
+                    inv_sqrt_d,
+                    q_stride,
+                    fwd.buffers.splitk_workspace(),
+                    fwd.levers.max_decode_seqs,
+                    stream,
+                )?;
+            }
+        } else {
+            self.run_paged_decode(
+                fwd.gpu,
+                q_contiguous,
+                kv_cache,
+                attn_out,
+                meta.block_table,
+                meta.seq_len,
+                meta.max_blocks_per_seq,
+                n as u32,
+                nq,
+                nkv,
+                hd,
+                bs,
+                inv_sqrt_d,
+                q_stride,
+                fwd.buffers.splitk_workspace(),
+                fwd.levers.max_decode_seqs,
+                stream,
+            )?;
+        }
         if v_is_turbo && wht_runtime_active && self.wht_bf16_k_inv.0 != 0 {
             use spark_runtime::kernel_args::KernelLaunch;
             KernelLaunch::new(fwd.gpu, self.wht_bf16_k_inv)

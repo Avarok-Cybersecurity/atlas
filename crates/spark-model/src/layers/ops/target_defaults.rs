@@ -198,6 +198,25 @@ pub struct TargetLevers {
     /// (#927). No serving receipt on any target — off everywhere.
     pub attn_ncol_gemv: Resolved<bool>,
     pub ffn_gateup_fused: Resolved<bool>,
+    /// Quantize a BF16 checkpoint's dense FFN to block-scaled FP8 at load
+    /// (`weight_loader/qwen35_dense/fp8_from_bf16.rs`). A numerics row.
+    pub dense_fp8_from_bf16: Resolved<bool>,
+    /// The same for the GDN projections (`qwen35_dense/gdn_fp8_from_bf16.rs`).
+    pub gdn_fp8_from_bf16: Resolved<bool>,
+    /// And for attention q/k/v/o (`qwen35_dense/attn_fp8_from_bf16.rs`).
+    pub attn_fp8_from_bf16: Resolved<bool>,
+    /// The BF16 dense-FFN prefill on cuBLASLt (`layers/ops/ffn_bf16_cublas.rs`).
+    pub ffn_bf16_cublas_prefill: Resolved<bool>,
+    /// The BF16 GDN verify projections on one cuBLASLt GEMM
+    /// (`layers/ops/gdn_batched_gemm.rs`). A numerics row.
+    pub gdn_batched_gemm: Resolved<bool>,
+    /// Gated dense-BF16 Q/K/V on the batched GEMV in multi-seq decode
+    /// (`layers/ops/attn_gated_bf16_batchm.rs`). Bit-identical.
+    pub attn_gated_bf16_batchm: Resolved<bool>,
+    /// Consumer-card memory sizing (the 1.10x BF16 dense load multiplier, the
+    /// sized Qwen MTP headroom, no `mtp.*` upload without speculation, the
+    /// `--mtp-vocab` draft head). A sizing row: true on ada only.
+    pub memory_fit_consumer: Resolved<bool>,
     pub w8a8_prefill_max_m_widening: Resolved<u32>,
     pub w8a8_prefill_max_m_narrowing: Resolved<u32>,
 }
@@ -341,6 +360,51 @@ pub fn resolve(
             var("AVAROK_FFN_GATEUP_FUSED").as_deref(),
             false,
         ),
+        // The load-time BF16 -> FP8 route. Read ONCE per load by the loader,
+        // never per step. `=0` keeps a BF16 checkpoint in BF16 on a target
+        // that declares the route, which is both the accuracy A/B and the
+        // operator's way back to exact BF16 weights; `=1` takes the route on a
+        // target that does not declare it.
+        dense_fp8_from_bf16: resolve_toggle(
+            defaults.dense_fp8_from_bf16,
+            var("AVAROK_DENSE_FP8_FROM_BF16").as_deref(),
+            false,
+        ),
+        // The same route for the GDN projections, with its own A/B.
+        gdn_fp8_from_bf16: resolve_toggle(
+            defaults.gdn_fp8_from_bf16,
+            var("AVAROK_GDN_FP8_FROM_BF16").as_deref(),
+            false,
+        ),
+        attn_fp8_from_bf16: resolve_toggle(
+            defaults.attn_fp8_from_bf16,
+            var("AVAROK_ATTN_FP8_FROM_BF16").as_deref(),
+            false,
+        ),
+        // A set `AVAROK_CUBLAS_GEMM` (any value) decides, exactly as before the
+        // row; then the row's own variable; then the declaration. The order is
+        // `ffn_bf16_cublas::resolve`, which owns it.
+        ffn_bf16_cublas_prefill: super::ffn_bf16_cublas::resolve(
+            defaults.ffn_bf16_cublas_prefill,
+            var("AVAROK_CUBLAS_GEMM").as_deref(),
+            var(super::ffn_bf16_cublas::ENV).as_deref(),
+        ),
+        gdn_batched_gemm: super::gdn_batched_gemm::resolve(
+            defaults.gdn_batched_gemm,
+            var(super::gdn_batched_gemm::ENV).as_deref(),
+        ),
+        attn_gated_bf16_batchm: super::attn_gated_bf16_batchm::resolve(
+            defaults.attn_gated_bf16_batchm,
+            var(super::attn_gated_bf16_batchm::ENV).as_deref(),
+        ),
+        // Read once at boot by preflight, the weight loaders and the LM-head
+        // setup. `=0` returns ada to every other target's sizing; `=1` takes
+        // the consumer fits on a target that does not declare them.
+        memory_fit_consumer: resolve_toggle(
+            defaults.memory_fit_consumer,
+            var("AVAROK_MEMORY_FIT_CONSUMER").as_deref(),
+            false,
+        ),
     }
 }
 
@@ -367,68 +431,12 @@ pub fn declared() -> &'static avarok_kernels::TargetDefaults {
     &avarok_kernels::TARGET_DEFAULTS
 }
 
-/// `target defaults (<hw>): …` — one line naming every resolved value and
-/// which came from the environment.
-///
-/// Built here rather than in `spark-server` so the line and the resolution are
-/// the same code: a log that formats its own idea of the table is how a dead
-/// lever stays invisible for a campaign (`serve_flags.rs`'s own lesson).
-pub fn summary_line() -> String {
-    format_levers(resolved())
-}
-
-/// [`summary_line`] over a table the caller already has — pure, so the line can
-/// be graded for ANY target from a CPU test without touching the process
-/// environment or sealing the `OnceLock`.
-pub fn format_levers(l: &TargetLevers) -> String {
-    let onoff =
-        |r: Resolved<bool>| format!("{}{}", if r.value { "on" } else { "off" }, r.source.tag());
-    // `u32::MAX` is the no-cap baseline, not a chosen bound. Printing
-    // 4294967295 in the serve log would read as a decision someone made.
-    let cap = |v: u32| {
-        if v == u32::MAX {
-            "max".to_string()
-        } else {
-            v.to_string()
-        }
-    };
-    format!(
-        "target defaults ({hw}): sm_count={sms} \
-         lm_head_batchm_max={batchm}{batchm_src} \
-         ssm_batched_recurrent={recurrent} gdn_prefill_tc={gdn_tc} \
-         ssm_ba_gates_hopper={ba_gates} decode_split_silu={silu} \
-         attn_decode_splitk={splitk}{splitk_src} ffn_m16_tc={ffn_m16_tc} \
-         attn_m16_tc={attn_m16_tc} lm_head_m16_tc={lm_head_m16_tc} \
-         attn_ncol_gemv={attn_ncol_gemv} ffn_gateup_fused={gateup} \
-         fp8_act_quant_hopper={act_quant} \
-         w8a8_prefill_max_m={w8a8_wide}/{w8a8_narrow}{w8a8_src}",
-        hw = if l.hw.is_empty() { "unknown" } else { l.hw },
-        // Not a resolvable lever — it is a FACT about the part, cross-checked
-        // at boot against the driver. Printed on this line because the levers
-        // that will read it (grid sizing) are on it, and a reader comparing
-        // two campaign logs needs both in one grep.
-        sms = avarok_kernels::TARGET_SM_COUNT,
-        batchm = l.lm_head_batchm_max.value,
-        batchm_src = l.lm_head_batchm_max.source.tag(),
-        recurrent = onoff(l.ssm_batched_recurrent),
-        gdn_tc = onoff(l.gdn_prefill_tc),
-        ba_gates = onoff(l.ssm_ba_gates_hopper),
-        act_quant = onoff(l.fp8_act_quant_hopper),
-        silu = onoff(l.decode_split_silu),
-        splitk = l.attn_decode_splitk.value.label(),
-        splitk_src = l.attn_decode_splitk.source.tag(),
-        ffn_m16_tc = onoff(l.ffn_m16_tc),
-        attn_m16_tc = onoff(l.attn_m16_tc),
-        lm_head_m16_tc = onoff(l.lm_head_m16_tc),
-        attn_ncol_gemv = onoff(l.attn_ncol_gemv),
-        gateup = onoff(l.ffn_gateup_fused),
-        // Printed as widening/narrowing. `max` reads as "no cap" rather than
-        // 4294967295, which would look like a number someone chose.
-        w8a8_wide = cap(l.w8a8_prefill_max_m_widening.value),
-        w8a8_narrow = cap(l.w8a8_prefill_max_m_narrowing.value),
-        w8a8_src = l.w8a8_prefill_max_m_widening.source.tag(),
-    )
-}
+// The boot line (`summary_line`, `format_levers`), moved to a child file
+// unchanged to keep this one under the 500-line cap. Re-exported, so every
+// caller keeps the `target_defaults::` path.
+#[path = "target_defaults_boot.rs"]
+mod boot;
+pub use boot::{format_levers, summary_line};
 
 /// The declaration a target that says nothing gets — kept in sync with
 /// `avarok-kernels/build_defaults.rs::baseline` by

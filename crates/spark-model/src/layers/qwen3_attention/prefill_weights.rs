@@ -266,6 +266,13 @@ impl Qwen3AttentionLayer {
     /// Install the fused [q|k|v] transposed twin. Separate from
     /// `set_prefill_weights` so the fused path is opt-in per loader and the
     /// separate twins stay available as the fallback.
+    /// Arm the in-tree W8A8 arm of the chunk-0 Q/K/V prefill chain
+    /// (`prefill_qkv_w8a8.rs`) without `AVAROK_CUBLAS_GEMM=attn`. Called by the
+    /// load-time BF16 -> FP8 attention route only.
+    pub fn set_w8a8_qkv_prefill(&mut self, on: bool) {
+        self.qkv_w8a8_prefill = on;
+    }
+
     pub fn set_fused_qkv_prefill_weight(&mut self, qkv_nvfp4_t: Option<QuantizedWeight>) {
         self.qkv_nvfp4_t = qkv_nvfp4_t;
     }

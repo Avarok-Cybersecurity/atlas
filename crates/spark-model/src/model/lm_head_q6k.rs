@@ -11,6 +11,13 @@
 //! launch over the vocab. Installed by the factory only when the store holds
 //! `lm_head.weight` as [`WeightDtype::Q6K`]; every other head is untouched.
 //!
+//! A build without the `kquant_moe` module (the Ada targets: only the
+//! deepseek model directory compiles it) serves the same blocks through the
+//! port sprint's Ada keep-packed GEMV instead (`port::packed_head`, lane L24):
+//! the same `Q6_K x q8_1` dot from the same vendored engine, reached through
+//! `W4Linear`. A build that has the module takes exactly the path it always
+//! did.
+//!
 //! [`WeightDtype::Q6K`]: spark_runtime::weights::WeightDtype::Q6K
 
 use anyhow::Result;
@@ -22,14 +29,19 @@ use crate::layers::ops;
 /// Rows of hidden state one `kquant_mmvq_*_w` launch takes (`KQ_MAX_M`).
 const MAX_M: u32 = 8;
 
-/// The resident Q6_K head and the two kernels that serve it.
-pub(crate) struct LmHeadQ6k {
-    /// `[vocab][hidden / 256]` raw 210-byte super-blocks.
-    blocks: DevicePtr,
-    mmvq_w: KernelHandle,
-    q8_rows: KernelHandle,
-    /// `block_q8_1 [MAX_M][hidden / 32]` scratch for the quantised hidden rows.
-    q8_scratch: DevicePtr,
+/// The resident Q6_K head and what serves it.
+pub(crate) enum LmHeadQ6k {
+    /// The two `kquant_moe` kernels (every build that compiles the module).
+    Kquant {
+        /// `[vocab][hidden / 256]` raw 210-byte super-blocks.
+        blocks: DevicePtr,
+        mmvq_w: KernelHandle,
+        q8_rows: KernelHandle,
+        /// `block_q8_1 [MAX_M][hidden / 32]` scratch for the quantised hidden rows.
+        q8_scratch: DevicePtr,
+    },
+    /// The Ada keep-packed GEMV over the same blocks (`port::packed_head`).
+    Packed(crate::port::packed_head::PackedHead),
 }
 
 impl TransformerModel {
@@ -42,6 +54,21 @@ impl TransformerModel {
             h.is_multiple_of(256),
             "Q6_K lm_head: hidden {h} is not a multiple of 256"
         );
+        if !self.gpu.has_module(ops::KQUANT_MODULE) {
+            let head = crate::port::packed_head::PackedHead::new(
+                self.gpu.as_ref(),
+                blocks,
+                v as usize,
+                h as usize,
+            )?;
+            tracing::info!(
+                "LM head served from raw Q6_K blocks (Ada keep-packed GEMV, port::packed_head, \
+                 vocab={v}, {} MB resident)",
+                head.device_bytes() >> 20
+            );
+            self.lm_head_q6k = Some(LmHeadQ6k::Packed(head));
+            return Ok(());
+        }
         let mmvq_w = self.gpu.kernel(ops::KQUANT_MODULE, "kquant_mmvq_q6_k_w")?;
         let q8_rows = self
             .gpu
@@ -51,7 +78,7 @@ impl TransformerModel {
             "LM head served from raw Q6_K blocks (K-quant GEMV, vocab={v}, {} MB resident)",
             ops::kquant_weight_bytes(v, h, ops::Q6K_BLOCK_BYTES) >> 20
         );
-        self.lm_head_q6k = Some(LmHeadQ6k {
+        self.lm_head_q6k = Some(LmHeadQ6k::Kquant {
             blocks,
             mmvq_w,
             q8_rows,
@@ -73,26 +100,28 @@ impl TransformerModel {
         let Some(ref q6) = self.lm_head_q6k else {
             return Ok(false);
         };
+        let gpu = self.gpu.as_ref();
+        let (blocks, mmvq_w, q8_rows, q8_scratch) = match q6 {
+            LmHeadQ6k::Packed(head) => {
+                head.run(gpu, hidden, m as usize, logits, stream)?;
+                return Ok(true);
+            }
+            LmHeadQ6k::Kquant {
+                blocks,
+                mmvq_w,
+                q8_rows,
+                q8_scratch,
+            } => (*blocks, *mmvq_w, *q8_rows, *q8_scratch),
+        };
         let h = self.config.hidden_size as u32;
         let v = self.config.vocab_size as u32;
-        let gpu = self.gpu.as_ref();
         let mut done = 0u32;
         while done < m {
             let mm = (m - done).min(MAX_M);
             let x = hidden.offset(done as usize * h as usize * 2);
             let out = logits.offset(done as usize * v as usize * 2);
-            ops::kquant_q8_1_rows(gpu, q6.q8_rows, x, q6.q8_scratch, mm, h, stream)?;
-            ops::kquant_mmvq_w(
-                gpu,
-                q6.mmvq_w,
-                q6.blocks,
-                q6.q8_scratch,
-                out,
-                v,
-                h,
-                mm,
-                stream,
-            )?;
+            ops::kquant_q8_1_rows(gpu, q8_rows, x, q8_scratch, mm, h, stream)?;
+            ops::kquant_mmvq_w(gpu, mmvq_w, blocks, q8_scratch, out, v, h, mm, stream)?;
             done += mm;
         }
         Ok(true)

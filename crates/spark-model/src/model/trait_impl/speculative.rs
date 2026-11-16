@@ -549,7 +549,10 @@ impl TransformerModel {
             attn_metadata: None,
             profile: false,
             comm: None,
-            graph_capture: false,
+            // L11 `mtp_propose_graph`: the MTP batched propose is a host-wait-free
+            // chain (one readback per round); never set for a block drafter.
+            graph_capture: crate::layers::ops::port_rows::mtp_propose_graph::row()
+                && proposer.block_gamma().is_none(),
             decode_step: false,
             gdn_exact_replay: false,
             gdn_write_on_accept: false,

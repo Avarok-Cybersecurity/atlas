@@ -1,0 +1,128 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 770" width="1200" height="770" font-family="Inter, ui-sans-serif, system-ui, Segoe UI, Helvetica, Arial, sans-serif" role="img" aria-labelledby="t d">
+  <title id="t">Where 16 GB goes: the 4B model before and after</title>
+  <desc id="d">Three stacked bars of the 15,660 MiB free on a 16 GB card before the load, for the 4B hybrid model at the default batch of 8. Before: BF16 FFN 4,320 MiB, other weights 3,958, an unused NVFP4 FFN fallback 2,430 and a decode ring of 3,264, leaving 1,688 MiB for KV cache and everything else. After the memory changes: the fallback is not built and the ring is capped at 1,632, leaving 5,750 MiB. With the FFN quantized to FP8 at load: the FFN takes 2,160 MiB, leaving 7,910 MiB. The bars are computed from the model shapes and the code's sizing rules. A panel at the bottom gives what an RTX 4060 Ti 16 GB measured: 14.84 GiB free with a desktop session, the NVFP4 copy reported as not built, the ring at 4 slots by 8 sequences (1.59 GiB, was 3.19) and 8 slots at batch 1, and peak use 2,165 MiB lower with the FP8 FFN than in BF16.</desc>
+
+  <rect width="1200" height="770" fill="#0F1216"/>
+
+  <text x="40" y="44" font-size="23" font-weight="650" fill="#C9CCD4">Where 16 GB goes: the 4B model, batch 8</text>
+  <text x="40" y="66" font-size="13.5" fill="#82868F">MiB of the 15,660 free before the load. Computed from the model shapes and the code's sizing rules; the bottom panel is what the card measured.</text>
+
+  <!-- scale: 15,660 MiB over x 220..1120 (900 px): 0.057471 px per MiB -->
+
+  <!-- ===== bar A: before ===== -->
+  <text x="40" y="128" font-size="13" font-weight="650" fill="#C9CCD4">Before</text>
+  <text x="40" y="146" font-size="11" fill="#82868F">main</text>
+  <rect x="220" y="108" width="248.3" height="44" fill="#BE9DF8"/>
+  <rect x="468.3" y="108" width="227.5" height="44" fill="#7E6AA8"/>
+  <rect x="695.8" y="108" width="139.7" height="44" fill="#F28B82"/>
+  <rect x="835.5" y="108" width="187.6" height="44" fill="#EFB338"/>
+  <rect x="1023.1" y="108" width="96.9" height="44" fill="#1E242B" stroke="#12B981" stroke-dasharray="4 3"/>
+  <g font-size="11.5" font-weight="650" fill="#0F1216">
+    <text x="230" y="127">FFN, BF16</text><text x="230" y="143" font-weight="400">4,320</text>
+    <text x="478" y="127">other weights</text><text x="478" y="143" font-weight="400">3,958</text>
+    <text x="705" y="127">NVFP4 copy</text><text x="705" y="143" font-weight="400">2,430</text>
+    <text x="845" y="127">decode ring</text><text x="845" y="143" font-weight="400">3,264</text>
+  </g>
+  <text x="1031" y="127" font-size="11.5" font-weight="650" fill="#12B981">left</text>
+  <text x="1031" y="143" font-size="11.5" fill="#12B981">1,688</text>
+
+  <!-- ===== bar B: after the memory changes ===== -->
+  <text x="40" y="218" font-size="13" font-weight="650" fill="#C9CCD4">After</text>
+  <text x="40" y="236" font-size="11" fill="#82868F">16 GB memory fit</text>
+  <rect x="220" y="198" width="248.3" height="44" fill="#BE9DF8"/>
+  <rect x="468.3" y="198" width="227.5" height="44" fill="#7E6AA8"/>
+  <rect x="695.8" y="198" width="93.8" height="44" fill="#EFB338"/>
+  <rect x="789.6" y="198" width="330.4" height="44" fill="#1E242B" stroke="#12B981" stroke-dasharray="4 3"/>
+  <g font-size="11.5" font-weight="650" fill="#0F1216">
+    <text x="230" y="217">FFN, BF16</text><text x="230" y="233" font-weight="400">4,320</text>
+    <text x="478" y="217">other weights</text><text x="478" y="233" font-weight="400">3,958</text>
+    <text x="703" y="217">ring</text><text x="703" y="233" font-weight="400">1,632</text>
+  </g>
+  <text x="799" y="217" font-size="11.5" font-weight="650" fill="#12B981">left for KV cache and the rest</text>
+  <text x="799" y="233" font-size="11.5" fill="#12B981">5,750</text>
+
+  <!-- ===== bar C: with FP8 FFN ===== -->
+  <text x="40" y="308" font-size="13" font-weight="650" fill="#C9CCD4">FP8 FFN</text>
+  <text x="40" y="326" font-size="11" fill="#82868F">dense_fp8_from_bf16 on</text>
+  <rect x="220" y="288" width="124.1" height="44" fill="#12B981"/>
+  <rect x="344.1" y="288" width="227.5" height="44" fill="#7E6AA8"/>
+  <rect x="571.6" y="288" width="93.8" height="44" fill="#EFB338"/>
+  <rect x="665.4" y="288" width="454.6" height="44" fill="#1E242B" stroke="#12B981" stroke-dasharray="4 3"/>
+  <g font-size="11.5" font-weight="650" fill="#0F1216">
+    <text x="230" y="307">FFN, FP8</text><text x="230" y="323" font-weight="400">2,160</text>
+    <text x="354" y="307">other weights</text><text x="354" y="323" font-weight="400">3,958</text>
+    <text x="579" y="307">ring</text><text x="579" y="323" font-weight="400">1,632</text>
+  </g>
+  <text x="675" y="307" font-size="11.5" font-weight="650" fill="#12B981">left for KV cache and the rest</text>
+  <text x="675" y="323" font-size="11.5" fill="#12B981">7,910</text>
+
+  <!-- axis -->
+  <line x1="220" y1="352" x2="1120" y2="352" stroke="#82868F"/>
+  <g stroke="#82868F">
+    <line x1="220" y1="348" x2="220" y2="356"/>
+    <line x1="449.9" y1="348" x2="449.9" y2="356"/>
+    <line x1="679.8" y1="348" x2="679.8" y2="356"/>
+    <line x1="909.7" y1="348" x2="909.7" y2="356"/>
+    <line x1="1120" y1="348" x2="1120" y2="356"/>
+  </g>
+  <g font-size="10.5" fill="#82868F" text-anchor="middle">
+    <text x="220" y="372">0</text>
+    <text x="449.9" y="372">4,000</text>
+    <text x="679.8" y="372">8,000</text>
+    <text x="909.7" y="372">12,000</text>
+    <text x="1120" y="372">15,660 MiB</text>
+  </g>
+
+  <!-- ===== notes ===== -->
+  <g font-size="11.5">
+    <rect x="40" y="402" width="360" height="226" rx="4" fill="#171B21" stroke="#2E353F"/>
+    <text x="56" y="426" font-weight="650" fill="#C9CCD4">Where each number comes from</text>
+    <text x="56" y="448" fill="#82868F">FFN: 32 layers x 3 x 2560 x 9216, BF16.</text>
+    <text x="56" y="466" fill="#82868F">FP8 FFN: one byte each plus 128x128</text>
+    <text x="56" y="482" fill="#82868F">FP32 scales (fp8_weight_bytes).</text>
+    <text x="56" y="504" fill="#82868F">Weights total 8.68 GB = 8,278 MiB, the</text>
+    <text x="56" y="520" fill="#82868F">figure the loader's comments give.</text>
+    <text x="56" y="542" fill="#82868F">NVFP4 copy: dense_ffn_nvfp4_bytes, gate,</text>
+    <text x="56" y="558" fill="#82868F">up and down with their transposed twins.</text>
+    <text x="56" y="580" fill="#82868F">Free memory 15 GiB + 300 MiB and the</text>
+    <text x="56" y="596" fill="#82868F">51 MiB state blob: ssm_reserve budget</text>
+    <text x="56" y="612" fill="#82868F">tests for this card.</text>
+
+    <rect x="420" y="402" width="360" height="226" rx="4" fill="#171B21" stroke="#2E353F"/>
+    <text x="436" y="426" font-weight="650" fill="#C9CCD4">The decode ring</text>
+    <text x="436" y="448" fill="#82868F">depth x batch x blob: 8 x 8 x 51 MiB = 3,264.</text>
+    <text x="436" y="470" fill="#82868F">Memory beside the weights is free memory</text>
+    <text x="436" y="486" fill="#82868F">minus the checkpoint, clamped to half of</text>
+    <text x="436" y="502" fill="#82868F">free: 15,660 - 7,830 = 7,830 MiB.</text>
+    <text x="436" y="524" fill="#82868F">The ring may take a third: 2,610 MiB. It</text>
+    <text x="436" y="540" fill="#82868F">sheds depth down 8, 4, 2, 1, 0 and lands</text>
+    <text x="436" y="556" fill="#82868F">on 4 (1,632 MiB). Batch 1 keeps depth 8</text>
+    <text x="436" y="572" fill="#82868F">(408 MiB); batch 16 gets depth 2.</text>
+    <text x="436" y="594" fill="#82868F">--ssm-decode-ring-slots N pins a depth</text>
+    <text x="436" y="610" fill="#82868F">and is never capped.</text>
+
+    <rect x="800" y="402" width="360" height="226" rx="4" fill="#171B21" stroke="#2E353F"/>
+    <text x="816" y="426" font-weight="650" fill="#C9CCD4">Not drawn</text>
+    <text x="816" y="448" fill="#82868F">Marconi snapshots: none by default,</text>
+    <text x="816" y="464" fill="#82868F">because prefix caching is off. With it on,</text>
+    <text x="816" y="480" fill="#82868F">16 slots x 51 MiB = 816 MiB, under the</text>
+    <text x="816" y="496" fill="#82868F">1/8 share of 978 MiB, so all 16 are kept.</text>
+    <text x="816" y="518" fill="#82868F">"Left" covers the KV cache, activations,</text>
+    <text x="816" y="534" fill="#82868F">workspaces and preflight's own reserve.</text>
+    <text x="816" y="556" fill="#82868F">BF16 KV costs 32 KiB per token on this</text>
+    <text x="816" y="572" fill="#82868F">model: 8 attention layers x K and V x</text>
+    <text x="816" y="588" fill="#82868F">4 heads x 256 x 2 bytes. The 24 GDN layers</text>
+    <text x="816" y="604" fill="#82868F">keep a fixed state per sequence instead.</text>
+  </g>
+
+  <!-- ===== measured on the card ===== -->
+  <g font-size="11.5">
+    <rect x="40" y="648" width="1120" height="102" rx="4" fill="#171B21" stroke="#12B981"/>
+    <text x="56" y="672" font-weight="650" fill="#12B981">Measured on the card</text>
+    <text x="214" y="672" fill="#82868F">RTX 4060 Ti 16 GB under WSL 2, with a desktop session holding about 1.1 GB. 4B, BF16 checkpoint, --gpu-memory-utilization 0.93.</text>
+    <text x="56" y="696" fill="#C9CCD4">Free before the load: 14.84 GiB (15,196 MiB), so 7.42 GiB beside the weights and a ring share of 2.47 GiB.</text>
+    <text x="56" y="716" fill="#C9CCD4">Batch 8: NVFP4 copy "not built 2.55 GB" (the 2,430 MiB above); ring 4 slots x 8 seqs x 51.0 MiB = 1.59 GiB (was 3.19). Batch 1: 8 slots, 0.40 GiB.</text>
+    <text x="56" y="736" fill="#C9CCD4">Peak use above the desktop: 14,659 MiB at batch 8 (default FP8 KV); at batch 1 with BF16 KV, 12,758 in BF16 and 10,593 with the FP8 FFN, 2,165 MiB lower (2,160 computed).</text>
+  </g>
+</svg>

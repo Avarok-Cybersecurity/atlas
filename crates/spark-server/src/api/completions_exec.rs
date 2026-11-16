@@ -48,6 +48,9 @@ pub(super) struct CompletionParams {
     pub length_penalty: f32,
     /// NLLB beam search: early stopping.
     pub early_stopping: bool,
+    /// Constrained decoding. `/v1/completions` never sets one; the llama.cpp
+    /// `/completion` route does (`json_schema` / `grammar`).
+    pub grammar_spec: Option<super::inference_types::GrammarSpec>,
 }
 
 /// Run every (prompt × n) choice sequentially and assemble the response.
@@ -111,7 +114,7 @@ pub(super) async fn run_blocking(
                 tools_present: false,
                 suppress_tool_call: false,
                 disable_mtp: false,
-                grammar_spec: None,
+                grammar_spec: p.grammar_spec.clone(),
                 // Distinct choices need distinct sampling streams; same
                 // offset scheme as chat_blocking's n>1 loop.
                 seed: req
@@ -220,6 +223,7 @@ pub(super) async fn run_blocking(
         response_tokens_per_second: last_tps,
         decode_time_ms: last_decode_time_ms,
         total_time_ms: last_ttft + last_decode_time_ms,
+        atlas: Default::default(),
     };
 
     Json(CompletionResponse::from_choices(
@@ -263,6 +267,7 @@ impl CompletionParams {
             num_beams: 1,
             length_penalty: 1.0,
             early_stopping: false,
+            grammar_spec: None,
         }
     }
 }

@@ -426,9 +426,16 @@ pub struct PagedKvCache {
     trace: block_trace::BlockTrace,
 }
 
+/// Block transfer primitives shared by the sequence swap and the host KV tier (port L25).
+pub mod block_io;
 mod block_trace;
 mod catalog;
+/// Quest page summaries: per-page key min/max layout and arena (port L30, `attn_page_sparse`).
+pub mod page_summary;
 mod paged_impl;
+/// Per-page pre-RoPE key sketch of the bounded KV view (port L31; built only when
+/// `kv_view_selection` is on).
+pub mod sketch;
 /// Release both pools of every layer.
 ///
 /// Each layer allocates its K and V pools separately, so freeing per layer is

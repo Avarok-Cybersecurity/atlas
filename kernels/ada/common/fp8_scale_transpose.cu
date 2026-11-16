@@ -1,0 +1,1 @@
+../../gb10/common/fp8_scale_transpose.cu

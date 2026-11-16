@@ -1,0 +1,159 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 900" width="1200" height="900" font-family="Inter, ui-sans-serif, system-ui, Segoe UI, Helvetica, Arial, sans-serif" role="img" aria-labelledby="t d">
+  <title id="t">Single-stream decode ceiling at 288 GB/s</title>
+  <desc id="d">A log-log plot of the decode ceiling, tokens per second equals 288 GB/s divided by the weight bytes read per token. The 0.8B model reads 1.50 GB per token in BF16, a ceiling of 191 tokens per second, and 1.24 GB with its FFN in FP8, a ceiling of 232. The 4B model reads 8.41 GB in BF16, a ceiling of 34.2, and 6.15 GB with an FP8 FFN, a ceiling of 46.9. Hollow circles mark computed ceilings for rows beyond the sprint-1 measurements: FP8 attention and GDN projections reach 4.84 GB and 59.5 on the 4B, and 4.21 GB and 68.5 with an FP8 LM head. The November runs measured both on the eight-slot server: with FP8 attention and GDN projections one user decodes at 50 tokens per second (a diamond under the 59.5 point), and the FP8 LM head gave plus 10 percent for one user and minus 27 percent total at eight users. The circles are ceilings computed from model shapes, without KV cache and recurrent state traffic. Diamonds below them are single-stream decode measured on an RTX 4060 Ti 16 GB, median of five runs: 141.8 and 169.1 tokens per second for the 0.8B in BF16 and with an FP8 FFN (73 to 74% of the ceiling, a 1.19x gain), and 28.6 and 38.4 for the 4B (82 to 84%, 1.34x).</desc>
+
+  <rect width="1200" height="900" fill="#0F1216"/>
+
+  <text x="40" y="44" font-size="23" font-weight="650" fill="#C9CCD4">Decode is a bandwidth problem: the ceiling at 288 GB/s</text>
+  <text x="40" y="66" font-size="13.5" fill="#82868F">Ceiling tok/s = 288 GB/s / weight bytes read per token (circles, computed). Diamonds are measured on the card. Log scales on both axes.</text>
+
+  <!-- plot frame: x 160..1060 is 0.5..10 GB, y 110..530 is 500..20 tok/s -->
+  <rect x="160" y="110" width="900" height="420" fill="#171B21" stroke="#2E353F"/>
+  <!-- grid -->
+  <g stroke="#2E353F" stroke-width="1">
+    <line x1="368.3" y1="110" x2="368.3" y2="530"/>
+    <line x1="576.5" y1="110" x2="576.5" y2="530"/>
+    <line x1="851.8" y1="110" x2="851.8" y2="530"/>
+    <line x1="160" y1="410.5" x2="1060" y2="410.5"/>
+    <line x1="160" y1="320" x2="1060" y2="320"/>
+    <line x1="160" y1="229.6" x2="1060" y2="229.6"/>
+  </g>
+  <g font-size="11" fill="#82868F" text-anchor="middle">
+    <text x="160" y="550">0.5</text>
+    <text x="368.3" y="550">1</text>
+    <text x="576.5" y="550">2</text>
+    <text x="851.8" y="550">5</text>
+    <text x="1060" y="550">10</text>
+    <text x="610" y="572" fill="#C9CCD4">weight bytes read per token, GB</text>
+  </g>
+  <g font-size="11" fill="#82868F" text-anchor="end">
+    <text x="150" y="534">20</text>
+    <text x="150" y="414">50</text>
+    <text x="150" y="324">100</text>
+    <text x="150" y="234">200</text>
+    <text x="150" y="114">500</text>
+  </g>
+  <text x="96" y="320" font-size="11" fill="#C9CCD4" text-anchor="middle" transform="rotate(-90 96 320)">decode, tokens per second</text>
+
+  <!-- the roofline -->
+  <line x1="217.2" y1="116.4" x2="1060.1" y2="482.4" stroke="#49C3DB" stroke-width="2.5"/>
+  <text x="640" y="268" font-size="12" font-weight="650" fill="#49C3DB" transform="rotate(23.5 640 268)">288 GB/s</text>
+
+  <!-- FP8 moves along the line: arrows from BF16 to FP8 points -->
+  <g stroke="#12B981" stroke-width="1.5" fill="none" stroke-dasharray="4 3">
+    <path d="M 482 231 L 442 214"/>
+    <path d="M 998 456 L 924 423"/>
+  </g>
+
+  <!-- points (numbered) -->
+  <g font-size="10.5" font-weight="700" text-anchor="middle">
+    <circle cx="491" cy="235.3" r="9" fill="#BE9DF8"/><text x="491" y="239" fill="#0F1216">1</text>
+    <circle cx="433" cy="210.1" r="9" fill="#12B981"/><text x="433" y="214" fill="#0F1216">2</text>
+    <circle cx="370.4" cy="183" r="9" fill="#0F1216" stroke="#12B981" stroke-width="2"/><text x="370.4" y="187" fill="#12B981">3</text>
+    <circle cx="1008.1" cy="459.9" r="9" fill="#BE9DF8"/><text x="1008.1" y="463.6" fill="#0F1216">4</text>
+    <circle cx="913.8" cy="418.9" r="9" fill="#12B981"/><text x="913.8" y="422.6" fill="#0F1216">5</text>
+    <circle cx="842.2" cy="387.8" r="9" fill="#0F1216" stroke="#12B981" stroke-width="2"/><text x="842.2" y="391.5" fill="#12B981">6</text>
+    <circle cx="799.9" cy="369.4" r="9" fill="#0F1216" stroke="#12B981" stroke-width="2"/><text x="799.9" y="373.1" fill="#12B981">7</text>
+  </g>
+
+  <!-- measured decode, short prompt: same x as its ceiling point, y from the same log scale -->
+  <g stroke-width="1.5" stroke-dasharray="2 3">
+    <line x1="491" y1="244.3" x2="491" y2="270" stroke="#BE9DF8"/>
+    <line x1="433" y1="219.1" x2="433" y2="245" stroke="#12B981"/>
+    <line x1="1008.1" y1="468.9" x2="1008.1" y2="475" stroke="#BE9DF8"/>
+    <line x1="913.8" y1="427.9" x2="913.8" y2="437" stroke="#12B981"/>
+  </g>
+  <g stroke="#0F1216" stroke-width="1.5">
+    <rect x="485" y="270.8" width="12" height="12" fill="#BE9DF8" transform="rotate(45 491 276.8)"/>
+    <rect x="427" y="246" width="12" height="12" fill="#12B981" transform="rotate(45 433 252)"/>
+    <rect x="1002.1" y="476" width="12" height="12" fill="#BE9DF8" transform="rotate(45 1008.1 482)"/>
+    <rect x="907.8" y="437.9" width="12" height="12" fill="#12B981" transform="rotate(45 913.8 443.9)"/>
+  </g>
+  <g font-size="11.5" font-weight="650">
+    <text x="505" y="281" fill="#BE9DF8">141.8</text>
+    <text x="447" y="256" fill="#12B981">169.1</text>
+    <text x="994" y="486" fill="#BE9DF8" text-anchor="end">28.6</text>
+    <text x="899" y="448" fill="#12B981" text-anchor="end">38.4</text>
+  </g>
+
+  <!-- measured in November (fp8cov, one user on the eight-slot server): same x as point 6, y from the same log scale -->
+  <line x1="842.2" y1="396.8" x2="842.2" y2="403" stroke="#12B981" stroke-width="1.5" stroke-dasharray="2 3"/>
+  <rect x="836.2" y="404.4" width="12" height="12" fill="#12B981" stroke="#0F1216" stroke-width="1.5" transform="rotate(45 842.2 410.4)"/>
+  <text x="857" y="415" font-size="11.5" font-weight="650" fill="#12B981">50</text>
+
+  <!-- in-plot key, lower left (empty region under the line) -->
+  <rect x="180" y="330" width="470" height="186" rx="4" fill="#0F1216" stroke="#2E353F"/>
+  <g font-size="11.5">
+    <text x="196" y="352" fill="#C9CCD4" font-weight="650">0.8B (hidden 1024, 24 layers)</text>
+    <text x="196" y="372" fill="#BE9DF8">1</text><text x="212" y="372" fill="#C9CCD4">BF16 weights: 1.50 GB, ceiling 191 tok/s</text>
+    <text x="196" y="390" fill="#12B981">2</text><text x="212" y="390" fill="#C9CCD4">FP8 FFN: 1.24 GB, ceiling 232 (1.21x)</text>
+    <text x="196" y="408" fill="#12B981">3</text><text x="212" y="408" fill="#82868F">+ FP8 attention and GDN: 1.01 GB, 286</text>
+    <text x="196" y="434" fill="#C9CCD4" font-weight="650">4B (hidden 2560, 32 layers)</text>
+    <text x="196" y="454" fill="#BE9DF8">4</text><text x="212" y="454" fill="#C9CCD4">BF16 weights: 8.41 GB, ceiling 34.2 tok/s</text>
+    <text x="196" y="472" fill="#12B981">5</text><text x="212" y="472" fill="#C9CCD4">FP8 FFN: 6.15 GB, ceiling 46.9 (1.37x)</text>
+    <text x="196" y="490" fill="#12B981">6</text><text x="212" y="490" fill="#82868F">+ FP8 attention and GDN: 4.84 GB, 59.5; measured 50</text>
+    <text x="196" y="508" fill="#12B981">7</text><text x="212" y="508" fill="#82868F">+ FP8 LM head: 4.21 GB, 68.5; measured +10% (1 user), -27% (8 users)</text>
+  </g>
+  <text x="1050" y="134" font-size="11" fill="#82868F" text-anchor="end">filled: sprint 1; hollow: computed ceilings of later rows (6 and 7 were measured in November, see the key)</text>
+  <text x="1050" y="152" font-size="11" fill="#82868F" text-anchor="end">diamonds: measured on an RTX 4060 Ti 16 GB</text>
+
+  <!-- ===== bytes table ===== -->
+  <text x="40" y="614" font-size="15" font-weight="650" fill="#C9CCD4">Weight bytes read per decode token, from the model shapes</text>
+  <text x="40" y="634" font-size="11.5" fill="#82868F">BF16 is 2 bytes per weight; block-scaled FP8 is 1 byte plus one FP32 scale per 128x128 block. The embedding reads one row and is left out.</text>
+
+  <rect x="40" y="650" width="1120" height="32" fill="#1E242B"/>
+  <g font-size="12" font-weight="650" fill="#C9CCD4">
+    <text x="56" y="671">Model</text>
+    <text x="250" y="671">Dense FFN</text>
+    <text x="400" y="671">GDN projections</text>
+    <text x="560" y="671">Attention</text>
+    <text x="690" y="671">LM head</text>
+    <text x="820" y="671">Total</text>
+    <text x="940" y="671">Ceiling at 288 GB/s</text>
+    <text x="1070" y="671">Measured</text>
+  </g>
+  <g font-size="12">
+    <rect x="40" y="682" width="1120" height="30" fill="#171B21"/>
+    <text x="56" y="702" fill="#C9CCD4">4B, BF16</text>
+    <text x="250" y="702" fill="#C9CCD4">4.53 GB</text>
+    <text x="400" y="702" fill="#C9CCD4">2.02 GB</text>
+    <text x="560" y="702" fill="#C9CCD4">0.59 GB</text>
+    <text x="690" y="702" fill="#C9CCD4">1.27 GB</text>
+    <text x="820" y="702" fill="#C9CCD4">8.41 GB</text>
+    <text x="940" y="702" fill="#C9CCD4">34.2 tok/s</text>
+    <text x="1070" y="702" fill="#C9CCD4">28.6 (84%)</text>
+
+    <text x="56" y="732" fill="#12B981">4B, FP8 FFN</text>
+    <text x="250" y="732" fill="#12B981">2.27 GB</text>
+    <text x="400" y="732" fill="#C9CCD4">2.02 GB</text>
+    <text x="560" y="732" fill="#C9CCD4">0.59 GB</text>
+    <text x="690" y="732" fill="#C9CCD4">1.27 GB</text>
+    <text x="820" y="732" fill="#12B981">6.15 GB</text>
+    <text x="940" y="732" fill="#12B981">46.9 tok/s</text>
+    <text x="1070" y="732" fill="#12B981">38.4 (82%)</text>
+
+    <rect x="40" y="742" width="1120" height="30" fill="#171B21"/>
+    <text x="56" y="762" fill="#C9CCD4">0.8B, BF16</text>
+    <text x="250" y="762" fill="#C9CCD4">0.53 GB</text>
+    <text x="400" y="762" fill="#C9CCD4">0.38 GB</text>
+    <text x="560" y="762" fill="#C9CCD4">0.09 GB</text>
+    <text x="690" y="762" fill="#C9CCD4">0.51 GB</text>
+    <text x="820" y="762" fill="#C9CCD4">1.50 GB</text>
+    <text x="940" y="762" fill="#C9CCD4">191 tok/s</text>
+    <text x="1070" y="762" fill="#C9CCD4">141.8 (74%)</text>
+
+    <text x="56" y="792" fill="#12B981">0.8B, FP8 FFN</text>
+    <text x="250" y="792" fill="#12B981">0.26 GB</text>
+    <text x="400" y="792" fill="#C9CCD4">0.38 GB</text>
+    <text x="560" y="792" fill="#C9CCD4">0.09 GB</text>
+    <text x="690" y="792" fill="#C9CCD4">0.51 GB</text>
+    <text x="820" y="792" fill="#12B981">1.24 GB</text>
+    <text x="940" y="792" fill="#12B981">232 tok/s</text>
+    <text x="1070" y="792" fill="#12B981">169.1 (73%)</text>
+  </g>
+  <text x="40" y="828" font-size="11.5" fill="#82868F">Real decode lands below the line: the KV cache, the recurrent GDN state (about 51 MiB per sequence on the 4B, read and written each step),</text>
+  <text x="40" y="846" font-size="11.5" fill="#82868F">activations and launch gaps all cost time, and no kernel reaches the full 288 GB/s. The ratio between two points is the more reliable number.</text>
+  <text x="40" y="870" font-size="11.5" fill="#82868F">Measured: single-stream decode on a 25-token prompt, median of five, RTX 4060 Ti 16 GB. Each model keeps its fraction of the ceiling in both formats (1.19x and 1.34x measured).</text>
+  <text x="40" y="888" font-size="11.5" fill="#82868F">The diamond labeled 50 is one user on the November eight-slot server (FP8 FFN, GDN and attention), not this median of five: guide sections 10 and 12.</text>
+</svg>

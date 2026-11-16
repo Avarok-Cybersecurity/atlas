@@ -6,10 +6,17 @@
 
 use std::collections::HashMap;
 
+use super::partial_tail::SubBlockMode;
+
+mod cow_walk;
 mod evict;
+pub(super) mod lru_index;
+
+use cow_walk::FullWalk;
 
 type NodeId = usize;
 
+#[derive(Clone)]
 pub(super) struct RadixNode {
     /// Children keyed by the token chunk (block_size tokens).
     children: HashMap<Vec<u32>, NodeId>,
@@ -53,6 +60,7 @@ fn context_hash_combine(parent_hash: u64, tokens: &[u32]) -> u64 {
 }
 
 /// Inner state protected by mutex.
+#[derive(Clone)]
 pub(super) struct RadixTreeInner {
     nodes: Vec<RadixNode>,
     /// Indices of deleted nodes available for reuse.
@@ -76,10 +84,28 @@ pub(super) struct RadixTreeInner {
     /// unsound arms stay deterministically exercisable from a test binary,
     /// where a process-global env read is not.
     pub(super) partial_tail_sharing: bool,
+    /// Copy-on-write sub-block tails (row `prefix_cow_tail`, or
+    /// `AVAROK_PREFIX_SUBBLOCK=cow`): `walk_cow` may end a match inside a block
+    /// and names the source block for the caller to COPY, never to share.
+    /// Mutually exclusive with `partial_tail_sharing`.
+    pub(super) cow_tail: bool,
+    /// The ordered victim index (`lru_index.rs`). `None` with the row off in
+    /// production; always present in test builds, where every pick is checked
+    /// against the scan.
+    pub(super) lru: Option<lru_index::LruIndex>,
+    /// Whether `evict` takes its victim from `lru` (row `radix_lru_index`).
+    pub(super) use_lru: bool,
+    /// Nodes evicted so far, for `atlas_prefix_evict_victims_total`.
+    pub(super) evicted_nodes_total: u64,
 }
 
 impl RadixTreeInner {
     pub(super) fn new() -> Self {
+        Self::new_with(lru_index::enabled(), super::partial_tail::resolved_mode())
+    }
+
+    /// A tree with explicit levers: the LRU index row and the sub-block mode.
+    pub(super) fn new_with(lru_index: bool, sub_block: SubBlockMode) -> Self {
         let root = RadixNode {
             children: HashMap::new(),
             block_idx: u32::MAX,     // sentinel — root has no block
@@ -98,7 +124,11 @@ impl RadixTreeInner {
             free_nodes: Vec::new(),
             roots,
             access_counter: 0,
-            partial_tail_sharing: super::partial_tail::partial_tail_sharing_enabled(),
+            partial_tail_sharing: sub_block == SubBlockMode::Share,
+            cow_tail: sub_block == SubBlockMode::Cow,
+            lru: (lru_index || cfg!(test)).then(lru_index::LruIndex::default),
+            use_lru: lru_index,
+            evicted_nodes_total: 0,
         }
     }
 
@@ -158,34 +188,17 @@ impl RadixTreeInner {
         block_size: usize,
         adapter_id: u64,
     ) -> (Vec<u32>, Vec<u32>, usize) {
-        let mut current = match self.root_for_read(adapter_id) {
-            Some(r) => r,
-            None => return (Vec::new(), Vec::new(), 0), // adapter has nothing cached
+        let Some(full) = self.walk_full(tokens, block_size, adapter_id) else {
+            return (Vec::new(), Vec::new(), 0); // adapter has nothing cached
         };
-        let mut matched_blocks = Vec::new();
-        let mut matched_disk = Vec::new();
-        let mut matched_tokens = 0;
-        let mut parent_ctx_hash: u64 = 0; // root context hash
-
+        let FullWalk {
+            blocks: mut matched_blocks,
+            disk: mut matched_disk,
+            matched: mut matched_tokens,
+            node: current,
+            ctx_hash: parent_ctx_hash,
+        } = full;
         let num_full_blocks = tokens.len() / block_size;
-        for i in 0..num_full_blocks {
-            let chunk = &tokens[i * block_size..(i + 1) * block_size];
-            let expected_hash = context_hash_combine(parent_ctx_hash, chunk);
-            match self.nodes[current].children.get(chunk) {
-                Some(&child)
-                    if self.nodes[child].context_hash == expected_hash
-                        && self.nodes[child].ref_count > 0 =>
-                {
-                    // Context chain matches AND block is still live — safe to reuse.
-                    matched_blocks.push(self.nodes[child].block_idx);
-                    matched_disk.push(self.nodes[child].disk_block_id);
-                    matched_tokens += block_size;
-                    parent_ctx_hash = expected_hash;
-                    current = child;
-                }
-                _ => break, // Token match but context mismatch or freed block — stop.
-            }
-        }
 
         // Sub-block matching: when remaining tokens don't fill a full block,
         // check two locations for a match:
@@ -266,6 +279,7 @@ impl RadixTreeInner {
             if let Some(&child) = self.nodes[current].children.get(chunk) {
                 self.nodes[child].ref_count += 1;
                 self.nodes[child].last_access = access;
+                self.lru_refresh(child);
                 current = child;
             } else {
                 break;
@@ -293,6 +307,7 @@ impl RadixTreeInner {
                 if self.nodes[child].ref_count > 0 {
                     self.nodes[child].ref_count -= 1;
                 }
+                self.lru_refresh(child);
                 current = child;
             } else {
                 break;
@@ -381,6 +396,7 @@ impl RadixTreeInner {
                     self.nodes[child].disk_block_id = disk_id;
                     newly_acquired.push(disk_id);
                 }
+                self.lru_refresh(child);
                 parent_ctx_hash = ctx_hash;
                 current = child;
             } else {
@@ -402,6 +418,9 @@ impl RadixTreeInner {
                 self.nodes[current]
                     .children
                     .insert(chunk.to_vec(), child_id);
+                // The parent stops being a leaf; the new node is one.
+                self.lru_refresh(current);
+                self.lru_refresh(child_id);
                 if hss_active && disk_id != u32::MAX {
                     newly_acquired.push(disk_id);
                 }

@@ -248,6 +248,7 @@ pub async fn completions(
         num_beams,
         length_penalty,
         early_stopping,
+        grammar_spec: None,
     };
 
     if req.stream {
@@ -277,7 +278,7 @@ pub async fn completions(
 ///
 /// Extracted from `completions_stream` so the `min_tokens` passthrough is
 /// unit-testable; behavior identical to the original inline construction.
-fn build_streaming_request(
+pub(super) fn build_streaming_request(
     req: &CompletionRequest,
     p: super::completions_exec::CompletionParams,
     prompt_tokens: std::sync::Arc<Vec<u32>>,
@@ -322,7 +323,7 @@ fn build_streaming_request(
         tools_present: false,
         suppress_tool_call: false,
         disable_mtp: false,
-        grammar_spec: None,
+        grammar_spec: p.grammar_spec,
         seed: req.seed,
         top_logprobs: logprobs_k,
         prompt_logprobs: if echo { logprobs_k } else { None },
@@ -469,6 +470,7 @@ pub(super) async fn completions_stream(
                     response_tokens_per_second: tps,
                     decode_time_ms,
                     total_time_ms: time_to_first_token_ms + decode_time_ms,
+                    atlas: Default::default(),
                 };
                 if include_usage {
                     // Chat parity: finish chunk without usage, then a

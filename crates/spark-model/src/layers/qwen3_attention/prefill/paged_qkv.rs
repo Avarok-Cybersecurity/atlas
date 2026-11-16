@@ -9,6 +9,7 @@ use anyhow::Result;
 use spark_runtime::gpu::DevicePtr;
 
 use super::super::Qwen3AttentionLayer;
+use super::super::w4_proj::W4Slot;
 use crate::layer::ForwardContext;
 use crate::layers::ops;
 
@@ -203,11 +204,20 @@ impl Qwen3AttentionLayer {
             );
         }
 
+        let w4 = self.w4_proj.get(match proj {
+            Proj::Q => W4Slot::Q,
+            Proj::K => W4Slot::K,
+            Proj::V => W4Slot::V,
+        });
         let force_w8a8 = ctx.dispatch.fp8_blockscaled_prefill;
         // W8A8 + FP32 epilogue: requires NON-transposed FP8 weights with
         // block scales (matches the kernel signature). The attn layer stores
         // those via set_fp8_weights — accessible via weight_opt.as_fp8().
-        if ctx.dispatch.cutlass_nvfp4_attn_qkv(label)
+        if let Some(w4) = w4 {
+            // Packed q/k/v (port lane L22b, `w4_proj.rs`); the LoRA fold below still runs.
+            let (m, n_out, k_in) = (n as usize, out_dim as usize, h as usize);
+            self.w4_prefill_rows(w4, label, ctx, normed, m, out, n_out, k_in, stream)?;
+        } else if ctx.dispatch.cutlass_nvfp4_attn_qkv(label)
             && let Some(nvfp4_t) = nvfp4_t
         {
             ops::log_cutlass_nvfp4_route(ctx.gpu, label, n, out_dim, h);

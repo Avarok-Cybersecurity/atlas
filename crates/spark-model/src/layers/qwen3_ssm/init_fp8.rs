@@ -42,6 +42,14 @@ impl Qwen3SsmLayer {
         self.out_proj_fp8w = out_proj;
     }
 
+    /// Arm the in-tree W8A8 `out_proj` prefill arm by default
+    /// (`trait_prefill_helper.rs`), as the QKVZ prefill already is whenever a
+    /// block-scaled weight is installed. The load-time BF16 -> FP8 GDN route
+    /// calls it; `AVAROK_FP8_SINGLE_SCALE` still turns it off.
+    pub fn set_w8a8_out_proj_prefill(&mut self, on: bool) {
+        self.out_proj_w8a8_prefill = on;
+    }
+
     /// Install PER-ROW FP8 weights for the row-wise cuBLASLt PREFILL arm
     /// (`AVAROK_FP8_ROWWISE=1`, mixed-precision compressed-tensors
     /// checkpoints). Decode is untouched and keeps the NVFP4 copy.

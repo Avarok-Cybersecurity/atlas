@@ -11,8 +11,16 @@
 mod expert;
 #[path = "weight_map/fp8_dequant.rs"]
 mod fp8_dequant;
+// The host mirror of the block-scaled FP8 kernels; `pub` so the GPU oracle in
+// `examples/fp8_ada_microtest.rs` can compare device output against it.
+#[path = "weight_map/fp8_blockscale_ref.rs"]
+pub mod fp8_blockscale_ref;
 #[path = "weight_map/fp8_lut.rs"]
 mod fp8_lut;
+// The host mirror of the sm_89 fused SwiGLU + FP8 activation quantizer, `pub`
+// for `examples/fp8_ada_swiglu_microtest.rs`.
+#[path = "weight_map/fp8_swiglu_ref.rs"]
+pub mod fp8_swiglu_ref;
 pub(crate) use fp8_lut::dequant_nvfp4_to_bf16;
 #[path = "weight_map/loaders_fp8.rs"]
 mod loaders_fp8;

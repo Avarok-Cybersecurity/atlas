@@ -51,7 +51,14 @@
 //! best-effort, mirrors greedy unroll.
 
 mod argmax;
+mod device_accept;
+#[cfg(test)]
+mod device_accept_order_tests;
+#[cfg(test)]
+mod device_accept_tests;
 mod fast_masked;
+#[cfg(test)]
+mod kill_switch_tests;
 mod pick_positions;
 #[cfg(test)]
 mod pick_positions_tests;
@@ -61,6 +68,9 @@ use crate::scheduler::ActiveSeq;
 use crate::scheduler::helpers::bf16_to_f32;
 use crate::scheduler::logit_processors::LogitsContext;
 use spark_model::traits::Model;
+
+// The L12 accounting the MTP step wrapper needs (`mtp_stats::account_step`).
+pub(in crate::scheduler) use device_accept::{account_verify_passes, row as device_accept_row};
 
 // `AVAROK_DISABLE_FAST_GREEDY` is now `SchedLevers::fast_greedy_grammar`,
 // read off `LogitsContext::sampling` at the one site that gated on it.
@@ -260,10 +270,36 @@ pub fn verify_pick_all_with_pipeline(
     ctx: &LogitsContext,
     row_base: usize,
 ) -> Vec<u32> {
+    verify_pick_all_via(model, argmax_ids, a, ctx, row_base, |a| {
+        device_accept::try_device_picks(model, argmax_ids, a, ctx, row_base)
+    })
+}
+
+/// [`verify_pick_all_with_pipeline`] over any device-acceptance function: the model's
+/// (`device_accept::try_device_picks`, which answers `None` at its first line with the
+/// `mtp_device_accept` row off) or a test's.
+///
+/// `device` is asked FIRST, ahead of the greedy shortcuts. With the row off that changes nothing.
+/// With it on, every call records its device rows or the reason it kept the paths below, and a
+/// row the planner accepts is picked by the device path even where a shortcut would have answered
+/// (`device_accept.rs` has what that changes and why the hook moved).
+fn verify_pick_all_via(
+    model: &dyn Model,
+    argmax_ids: &[u32],
+    a: &mut ActiveSeq,
+    ctx: &LogitsContext,
+    row_base: usize,
+    device: impl FnOnce(&mut ActiveSeq) -> Option<Vec<u32>>,
+) -> Vec<u32> {
     use crate::scheduler::mtp_timing::Phase;
     let k = argmax_ids.len();
     if k == 0 {
         return Vec::new();
+    }
+
+    // L12 `mtp_device_accept` (off by default): the device path picks, or says why not.
+    if let Some(picks) = device(a) {
+        return picks;
     }
 
     // ── CHAT FAST PATH (2026-07-08): masked-greedy == raw-argmax guard ──

@@ -291,6 +291,10 @@ fn parse_config_dispatch(json: &str) -> Result<ModelConfig> {
         }
         "gemma4" => parse_gemma4_params(&raw),
         "laguna" => parse_laguna(&raw),
+        // Liquid AI LFM3 (port sprint L37): gated short convs + sliding/full
+        // attention + sandwich norms. `lfm3_vl` (d1, VL) is a different family
+        // and is not routed here.
+        "lfm3" => super::parsers::parse_lfm3(&raw),
         "longcat_flash_ngram" | "longcat_flash" => parse_longcat_ngram(&raw),
         // Nested text_config like qwen3_5_moe, but hyper-connections, the QSA
         // indexer and PLE n-gram injection put it outside that arm.

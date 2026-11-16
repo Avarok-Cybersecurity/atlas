@@ -30,6 +30,11 @@ impl Qwen3SsmLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
+        // W4 pair (`w4_proj.rs`): the only live QKVZ weight once installed, so
+        // it precedes every arm below; it places and deinterleaves like them.
+        if self.w4_proj.is_some() {
+            return self.w4_qkvz_prefill(ctx, normed, deinterleaved, k as usize, stream);
+        }
         let proj_dst = if self.sequential_qkvz {
             deinterleaved
         } else {

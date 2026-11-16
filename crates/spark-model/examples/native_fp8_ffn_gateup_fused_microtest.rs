@@ -188,7 +188,9 @@ fn gemm(
 
 fn main() -> Result<()> {
     let gpu = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
-    let quant = gpu.kernel("per_token_group_quant_fp8", "per_token_group_quant_fp8")?;
+    let quant = ops::Fp8ActQuant::shared_only(
+        gpu.kernel("per_token_group_quant_fp8", "per_token_group_quant_fp8")?,
+    );
     let kmajor = gpu.kernel("fp8_scale_transpose", "fp8_act_scale_to_kmajor")?;
     let silu = gpu.kernel("moe_silu_mul", "moe_silu_mul")?;
     let silu_strided = gpu.kernel("silu_mul_strided", "silu_mul_strided")?;

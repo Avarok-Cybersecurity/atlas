@@ -67,6 +67,7 @@ from pathlib import Path
 # Hardware set -> kernel source extension (must mirror
 # build_target.rs `source_extension()` per vendor).
 HW_SOURCE_EXT = {
+    "ada": "cu",
     "b200": "cu",
     "b300": "cu",
     "gb10": "cu",
@@ -83,6 +84,7 @@ HW_SOURCE_EXT = {
 # crates/avarok-kernels/tests/support/inherited.rs `INHERITED`; adding a target
 # means adding it in both, which is the moment to decide what it inherits.
 MIRRORED_COMMON = {
+    "ada": "gb10",
     "b200": "gb10",
     "hopper": "gb10",
 }

@@ -14,6 +14,9 @@
 #[cfg(feature = "cuda")]
 pub mod gpu;
 
+// The L04 routing-gate study (CPU only, no CUDA types): see `route_gate/mod.rs`.
+pub mod route_gate;
+
 use std::io::BufRead;
 use std::sync::Barrier;
 use std::time::{Duration, Instant};

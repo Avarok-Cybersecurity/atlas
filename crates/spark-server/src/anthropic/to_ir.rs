@@ -255,6 +255,11 @@ impl From<MessagesRequest> for ir::ChatRequest {
             seed: None,
             timeout_secs: None,
             return_token_ids: false,
+            // The Atlas request extensions exist on the OpenAI chat surface only.
+            template_terse: None,
+            no_drafts: false,
+            evidence: false,
+            confidence: false,
         }
     }
 }

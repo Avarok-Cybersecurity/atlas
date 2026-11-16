@@ -375,6 +375,7 @@ impl TransformerModel {
 
             if use_graphs {
                 let graph = self.gpu.end_capture(stream)?;
+                super::graph_family::note_capture(graph);
                 if graph.0 != 0 {
                     tracing::info!(
                         "DFlash fused CUDA graph captured (slot={}, M={})",

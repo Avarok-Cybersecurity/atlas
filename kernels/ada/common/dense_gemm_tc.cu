@@ -1,0 +1,1 @@
+../../gb10/common/dense_gemm_tc.cu

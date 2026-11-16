@@ -22,6 +22,7 @@ mod gemma4;
 pub mod glm5_next;
 pub mod kimi_k3;
 mod laguna;
+mod lfm3;
 mod longcat;
 mod minimax;
 mod nemotron;
@@ -47,6 +48,7 @@ pub use glm5_next_load::Glm5NextWeightLoader;
 pub(crate) use glm5_next_mtp::{Glm5NextMtpModule, load_glm5next_mtp_module};
 pub use kimi_k3::KimiK3WeightLoader;
 pub use laguna::LagunaWeightLoader;
+pub use lfm3::Lfm3WeightLoader;
 pub use longcat::LongcatWeightLoader;
 pub use minimax::MinimaxM2WeightLoader;
 pub use nemotron::NemotronHWeightLoader;
@@ -56,6 +58,9 @@ pub use qwen3_vl::Qwen3VLWeightLoader;
 pub use qwen4_exp::Qwen4ExpWeightLoader;
 pub use qwen35::Qwen35WeightLoader;
 pub use qwen35_dense::Qwen35DenseWeightLoader;
+/// The dense BF16 -> FP8 FFN route; the server's post-load audit reads
+/// `deferred_free_bytes` from it.
+pub use qwen35_dense::fp8_from_bf16;
 /// The native-FP8 dense loader's derived-copy decision table and the shape
 /// arithmetic that prices it (#915).
 pub use qwen35_dense::fp8_residency;

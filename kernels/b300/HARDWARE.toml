@@ -32,5 +32,670 @@ attn_m16_tc = false
 lm_head_m16_tc = false
 attn_ncol_gemv = false
 ffn_gateup_fused = false
+dense_fp8_from_bf16 = false
+gdn_fp8_from_bf16 = false
+attn_fp8_from_bf16 = false
+ffn_bf16_cublas_prefill = false
+gdn_batched_gemm = false
+attn_gated_bf16_batchm = false
+memory_fit_consumer = false
 w8a8_prefill_max_m_widening = 4294967295
 w8a8_prefill_max_m_narrowing = 4294967295
+# ── Port sprint rows (port/consumer-opt) ──
+# The port rows (`crates/avarok-kernels/build_defaults_port.rs`). Each
+# is false, or its baseline, on this target: the receipts are Ada
+# ones, and no row changes here. Rows are inserted immediately
+# before the marker line below.
+# Collect the per-request logprob confidence summary (mean top-1 probability,
+# minimum top-1 margin, fraction of tokens with top-1 below 0.5, over the first
+# AVAROK_CONF_SUMMARY_K generated tokens, default 32) for every chat request and
+# feed the atlas_conf_* series on /metrics. It never changes sampling or the
+# token stream; it makes the scheduler extract top-2 logprobs for the first K
+# tokens of each request, which uses the host-logits path for those tokens
+# instead of the GPU argmax, so it stays off until the receipt shows no tok/s
+# change. A request that sets atlas_confidence gets the summary in
+# usage.atlas_confidence whatever this row says, and the field appears only when
+# asked for. The receipt that may flip it: bench5 with the row on versus off
+# within spread, and an equal greedy token SHA.
+conf_summary = false
+# D-Cut v2 for the batched MTP verify (`scheduler/mtp_dcut_cost.rs`): instead of
+# keeping a fixed 0.75 of the optional draft rows, keep the number that
+# maximizes expected tokens per second, B* = argmax_B (n + sum of survivals) /
+# cost(2n + B), with cost(R) an online EWMA of the measured round wall per
+# verify row count and survival taken from a logistic acceptance model of the
+# drafter's top-1 confidence fitted while serving by damped Newton-IRLS
+# (`scheduler/mtp_accept_estimator.rs`, after vLLM adaptive verification). It
+# only chooses how many drafts to verify, so accept and reject stay exact; every
+# sequence keeps at least one draft, the width cap (8 sequences) and the row
+# budget stay, and until the table is calibrated D-Cut v1's fixed ratio runs
+# (with a periodic full-width probe). OFF until the receipt on this card: conc
+# A/B at C=1,2,4,8,16 with no loss at any width and a gain of at least 2% at
+# C=8. `AVAROK_MTP_DCUT_COST=1` is the A/B; `atlas_mtp_dcut_plans_total{source}`
+# shows how many plans the model decided.
+mtp_dcut_cost_model = false
+# When a batched decode or batched verify CUDA-graph cache is full and misses,
+# update its least-recently-used executable in place with cuGraphExecUpdate when
+# the new capture has the same topology, instead of destroying it and
+# instantiating the capture (`model/trait_impl/graph_family.rs`). Same keys,
+# same LRU order, and a replay runs the new capture's parameters, so greedy
+# output is bit-identical by construction. OFF until the receipt on this card:
+# greedy SHA equal at C=1 and C=8 and `atlas_graph_instantiations_total` flat
+# after warmup (`AVAROK_GRAPH_COUNTERS=1` reads the row-off arm's churn).
+# `AVAROK_GRAPH_EXEC_UPDATE=1` is the A/B.
+graph_exec_update = false
+# GDN write-on-accept for the batched speculative verify. With it on, the MTP
+# batched K-row verify asks for the write-on-accept twin on uniform K = 2..4
+# batches and folds every verdict's accepted rows into the GDN state once, after
+# the verdict and before its commits (`scheduler/verify_k4_batch_step.rs`),
+# instead of the parent kernel writing every intermediate state and a partial
+# accept copying one back: per step and head 2 reads + K writes (+1 restore
+# copy) become 1 read + 1 read + 1 write. K = 4 uses the existing pair
+# (`gated_delta_rule_wy4_woa.cu`); the other widths (2, 3 and 5..16, which also
+# serve the DFlash batched verify) use the Ada K-generic twin and fold
+# (`kernels/ada/common/gated_delta_rule_wyn_woa.cu`). `AVAROK_GDN_WOA=1` is
+# still required, and the f16 h-state, `--exact-verify` and ragged D-Cut batches
+# keep the parent kernels. Claimed bit-identical (same expressions and order as
+# each parent under `--fmad=false`). OFF until the receipt on this card:
+# `gdn_woa_oracle` and `gdn_wyn_woa_oracle` all PASS (bit-equal), greedy texts
+# identical to row-off at C=8, a conc A/B gain at C=2/4/8, and no SimHash
+# semantic-loop watchdog fires at C=4 and C=8 (the unexplained DFlash
+# write-on-accept fault behind `AVAROK_GDN_WOA` being opt-in,
+# `gdn_flags::gdn_woa_enabled`). `AVAROK_GDN_WOA_MTP=1` (with
+# `AVAROK_GDN_WOA=1`) is the A/B; `atlas_gdn_woa_folds_total{k}` counts the
+# folds.
+gdn_woa_mtp = false
+# Which LM-head rows the MTP draft-only NVFP4 head holds. id: the first
+# --mtp-vocab token ids, the head every target has always built. freq: the
+# --mtp-vocab most frequent tokens of the Cinference-derived ranking
+# (crates/spark-model/data/mtp_vocab_rank_qwen35.*, Apache-2.0 data, token
+# counts by NInfer authors, source corpus not published), the tokenizer's added
+# tokens forced in, with the drafter's argmax rows mapped back to token ids on
+# the device (kernels/ada/common/draft_vocab_remap.cu). Held-out coverage at
+# 100,000 rows: 98.1% against 86.2% for the first ids; the first-N head can
+# never draft <|im_end|>, <think> or a tool-call tag. Only drafts change, every
+# one is verified by the main head, so outputs are those of the id head. It
+# applies only when the served tokenizer.json is one the ranking was verified
+# for (Qwen3.5) and the remap kernel is in the build; otherwise it logs once and
+# keeps id. CLI --mtp-vocab-rank {id,freq}. Off until the receipt: greedy token
+# SHA equal id vs freq, and MTP acceptance up per category on the L03 corpus.
+mtp_vocab_rank = "id"
+# Run the MTP propose chain device-resident: each draft position after the first
+# gathers its input embeddings on the device from the previous position's ids,
+# and the round reads every draft back once, instead of one blocking readback
+# per draft (per-sequence propose) or per position (batched propose). The same
+# kernels run on the same bytes, so drafts and outputs are bit-identical; only
+# host waits go. It covers grammar-free rows with 2 to 16 drafts and declines
+# when the draft-confidence, shadow top-k or debug-norm diagnostics are armed,
+# since those read logits on the host by design. Off until the receipt: greedy
+# token SHA equal at C=1 and C=8, and the propose phase time (L06 device phases)
+# down beyond the ABBA bound.
+mtp_propose_graph = false
+# Pick MTP verify positions on the device
+# (kernels/ada/common/spec_accept_sample_ada.cu, lane L12) instead of copying
+# the [K, vocab] BF16 verify logits to the host and running the pre-sample
+# pipeline there. It covers rows with no grammar, no logit_bias, no live LZ or
+# DRY penalty and no stateful thinking stage (F2 confidence stop, an armed
+# forced think end, the legacy tool-call pin); the pipeline's masks, penalties
+# and biases travel as a sparse edit list, and every other row keeps the host
+# pipeline, counted by reason in atlas_mtp_device_accept_fallback_total. Greedy
+# picks are bit-identical to the host pipeline; sampled picks are
+# distribution-exact, not bit-identical (the RNG is keyed by seed
+# and position, not the host sampler's stream). Only Ada builds the kernel; any
+# other target has no module and keeps the host pipeline with one log line. Off
+# until the receipt: spec_accept_oracle (greedy equal, sampled chi-square),
+# qual.py top-20 KL and a sampled-pick chi-square against the host, and steady
+# C=8 sampled waves no slower.
+mtp_device_accept = false
+# Copy drafter for MTP speculative rounds
+# (`spark-server/src/scheduler/copy_draft/`): a per-sequence index over
+# committed tokens (16/8/4/2-token windows, latest earlier occurrence, backward
+# match extension, period continuation) proposes the tokens that followed an
+# earlier copy of the context. `chain` replaces the MTP verify chain with the
+# copy chain of the same width when the source agrees on at least
+# --copy-draft-min-match tokens (8) and the per-request yield gate says it pays;
+# `rounds` verifies a confident copy (per-window estimate >= 0.96) of up to
+# --copy-draft-max-len tokens (15) alone through the variable-width verify,
+# single sequence only; `auto` does both; with the row on, the legacy
+# --ngram-speculative mode also answers from an incremental index that returns
+# the token its scan returns. The target verifies every copied token through the
+# same pipeline, so outputs stay the target's own, and grammar-constrained rows
+# never take a copy plan. OFF until the receipt on this card: greedy token SHA
+# equal to off on the 8 agreement prompts and the copy fixture, a gain on the
+# copy cell, and no code, chat or long-context cell slower than off beyond its
+# spread. `AVAROK_COPY_DRAFT=chain|rounds|auto` is the A/B; the `atlas_copy_*`
+# series show how often a copy ran and how much of it was accepted.
+copy_draft = "off"
+# The dense FFN's FP8 speculative-verify rows (M = 2..8) on the sm_89 batch-M
+# GEMVs (kernels/ada/common/fp8_gemv_ada_batchm.cu,
+# layers/dense_ffn_ada_kernels/verify.rs): one pass over each FP8 weight for all
+# M rows, through the same down arm the M=1 decode forward takes, instead of the
+# prefill ladder (w8a16_gemv_batch4 at M <= 4, the padded tile GEMMs or the
+# lossy W8A8 arm at M 5..8). Every row is byte-identical to M launches of
+# fp8_gemv_ada, so a verify row's FFN output equals the decode output for the
+# same token; at M <= 4 that is also what the ladder computes today, at M 5..8
+# it moves verify logits toward the decode values. Only targets that compile the
+# module can take it (no lookup elsewhere). Off until the receipt:
+# examples/fp8_ada_batchm_microtest.rs all PASS, greedy token SHA equal at
+# --num-drafts 3 with the row on and off, and the verify time
+# (AVAROK_MTP_TIMING) down at --num-drafts 3 and 5.
+ffn_fp8_verify_gemv = false
+# The sm_89 FP8 decode and verify GEMVs load their weights with an explicit
+# evict-first L2 policy (createpolicy.fractional.L2::evict_first on
+# ld.global.nc.L1::no_allocate.L2::cache_hint; the _l2ef twins in
+# kernels/ada/common/fp8_gemv_ada.cu and fp8_gemv_ada_batchm.cu, after
+# Cinference, Apache-2.0), so the once-read weight stream stops displacing the
+# activations, scales and the next layer's GDN state from the 32 MB L2. Output
+# bits are unchanged; only the cache policy moves. Cinference reports a CUDA
+# 13.1 ptxas fault on hinted loads, so the hint is compiled out on 13.0 and
+# 13.1, and CUDA 13.3 is unvalidated. Off until the receipt: the SASS check
+# (every hinted LDG carries a written cache-policy operand),
+# examples/fp8_ada_l2hint_microtest.rs all PASS, then a bench5 ABBA decode gain
+# beyond the bound.
+l2_evict_first_weights = false
+# The prefill FFN-norm of a Qwen3 / Qwen3.5 layer (residual add + offset
+# RMSNorm) also writes the dense FFN's W8A8 gate/up activation, E4M3 codes and
+# 1x128 FP32 scales, in the same launch
+# (kernels/ada/common/rmsnorm_quant_fp8_ada.cu,
+# layers/dense_ffn_w8a8_prefill/norm_fused.rs), so per_token_group_quant_fp8 and
+# its re-read of the normed rows go. Taken only where the FFN's gate and up both
+# take the W8A8 arm and nothing else runs between the norm and the FFN; bytes
+# equal to the unfused pair. Off until the receipt:
+# examples/rmsnorm_quant_fp8_microtest.rs all PASS on all five outputs, greedy
+# token SHA equal on the FP8 FFN route, and a TTFT ABBA gain at a 3,921-token
+# prompt.
+rmsnorm_fp8_quant_fused = false
+# When a 4-bit BF16 load route is on (dense_affine4_from_bf16,
+# gdn_affine4_from_bf16, attn_affine4_from_bf16), every projection the Marlin
+# kernels serve (N a multiple of 64, K of 128, more than one group) is quantized
+# once at load by round-to-nearest int4 at group 128 (GPTQ's symmetric uint4b8
+# grid, --w4-clip-search shrink candidates per group) instead of the MLX affine
+# codes, and served through W4Linear on vLLM's Marlin W4A16 GEMM
+# (kernels/ada/common/marlin_ada.cu, host crates/spark-model/src/port/marlin/):
+# decode and verify rows 1..64 in one launch on one thread configuration fixed
+# per weight (row invariant), prompts on vLLM's M split. A projection Marlin
+# does not serve keeps the affine quantizer (one log line). 4.125 bits a weight
+# (a bf16 scale per 128 inputs) against affine's 4.5 at group 64. It changes
+# nothing on a target without the marlin_ada module (every non-Ada target) and
+# nothing when no 4-bit route is on. Round-to-nearest int4 is a numerics change,
+# so it is off until marlin_ada_microtest passes on the card (every entry within
+# 2 BF16 ulps plus the FP32 term bound at M = 1, 8, 16, 17, 32, 64, row
+# invariance across M) and the KL gate on the 4B (teacher-forced NLL delta at
+# most twice the FP8 FFN route's, full-vocabulary KL mean at most 0.05,
+# coherence, MTP drafted output equal to plain at temperature 0); GPTQ and AWQ
+# checkpoints, whose codes are the checkpoint's, load through the same kernels
+# at the packed install sites.
+marlin_w4a16 = false
+# A dense Qwen3.5-family GGUF (arch qwen35) keeps its IQ4_XS, Q4_K and Q6_K
+# projections as the file's raw super-blocks in VRAM (the dense FFN, the
+# full-attention q/k/v/o, and the two GDN input projections with their
+# value-head row reorder applied to the packed bytes), tagged WeightDtype::Iq4Xs
+# / Q4K / Q6K for the sm_89 keep-packed decode GEMVs (M = 1..8) and MMQ prefill
+# GEMMs (kernels/ada/common/kquant_mmvq_q4_ada.cu, iq4_xs_mmq_ada.cu,
+# kquant_q8_1_ada.cu over the vendored llama.cpp MIT engine; host
+# port/gguf_q4/), instead of expanding them to BF16 at 2 bytes a weight. IQ4_XS,
+# IQ4_NL and Q5_K tensors the route does not keep are expanded on the GPU
+# (dequant_iq4xs_q5k_bf16_ada.cu, bit-exact with the CPU decoder), and the
+# file's MTP head (blk.<L>.nextn.*) is mapped to the mtp.* names. Off: the
+# container refuses IQ4 types as before and the loader is byte-identical. Off
+# until the receipt: examples/iq4xs_gemv_microtest.rs all PASS (dequant bitwise,
+# GEMV and MMQ within the float64 bound, row invariance), the R2 and R3 bars (M
+# = 1 at 85% of 288 GB/s, M = 8 within 25% of M = 1), and a KL check against
+# BF16 on a Qwen3.5-4B or Qwen3.8-27B IQ4_XS GGUF.
+gguf_native_iq4 = false
+# EXL3 trellis matrices (ExLlamaV3's QTIP-style codes, 1 to 8 bits a weight with
+# mul1 half-bit steps, read by spark-runtime's weights/exl3 reader) are served
+# from their packed codes on sm_89: the input rotated into the Hadamard domain
+# (exl3_hadamard_ada.cu), the decode-row linear decoding each 16 x 16 tile
+# straight into mma fragments for 1 to 128 rows with split-K partials
+# (exl3_linear_ada.cu), and longer prefills declined to the BF16 dequant and the
+# caller's GEMM (host port/exl3/, after ExLlamaV3 MIT via TensorFold
+# Apache-2.0). Off: port::exl3::from_exl3_tensors refuses and route_enabled is
+# false, so no loader builds an EXL3 weight and every target is unchanged. Off
+# until the receipt: examples/exl3_microtest.rs all PASS (dequant byte-equal to
+# the host mirror at every width, the linear within the float64 bound at M =
+# 1..128, row invariance, the five-run repeat), one real tensor of
+# turboderp/Qwen3.8-27B-exl3 dequantized byte for byte (--real-dir), and a KL
+# check of the 27B at 3.0 / 3.5 bpw against its BF16 source once a loader route
+# installs EXL3 weights.
+weights_exl3 = false
+# On a plain-BF16 dense Qwen3.5 checkpoint (Holo 3.1 0.8B and 4B), the dense
+# FFN's gate, up and down are quantized once at load by the GPU quantizer into
+# MLX affine codes (a bf16 scale and bias per group of inputs; --w4-bits and
+# --w4-group, default 4 bits at group 64, 4.5 bits a weight), each BF16 source
+# freed right after its own quantize, and served through W4Linear: decode and
+# verify rows 1..16 on TensorFold's lane MMA GEMV
+# (kernels/ada/common/affine4_lane_ada.cu), prompts on the affine prompt GEMM or
+# a BF16 dequant plus cuBLASLt
+# (weight_loader/qwen35_dense/affine4_from_bf16.rs). On the 4B it keeps 1.27 GB
+# of FFN weights where BF16 keeps 4.53 GB and FP8 2.27 GB, which is what a
+# bandwidth-bound decode step reads. It declines on tensor parallel, a pending
+# LoRA adapter, an unserved width and group, or absent kernels (every non-Ada
+# target), and dense_fp8_from_bf16 wins when both are on. Round-to-nearest 4-bit
+# is a numerics change, so it is off until the D7 receipt on the 4B:
+# teacher-forced NLL delta at most twice the FP8 FFN route's, full-vocabulary KL
+# mean at most 0.05, coherence and 4K/8K recall pass, and MTP drafted output
+# equal to plain at temperature 0.
+dense_affine4_from_bf16 = false
+# On a plain-BF16 dense Qwen3.5 checkpoint, each GDN layer's [Q|K|V|Z]
+# in-projection (the loader's BF16 concat) and out_proj are quantized once at
+# load to MLX affine codes (the common --w4-bits and --w4-group, or
+# AVAROK_W4_GDN_GROUP for these projections alone, for example 32), each BF16
+# source freed after its own quantize, and served through W4Linear on the same
+# kernels (weight_loader/qwen35_dense/gdn_affine4_from_bf16.rs). On the 4B the
+# 24 GDN layers keep 0.57 GB where BF16 keeps 2.01 GB. The same declines as the
+# FFN route; gdn_fp8_from_bf16 wins when both are on. A projection error feeds
+# the recurrent state, so it is off until the D7 receipt plus a long-context
+# degeneration check (longctx.py recall at 4K and 8K, no drift the BF16 serve
+# does not share).
+gdn_affine4_from_bf16 = false
+# On a plain-BF16 dense Qwen3.5 checkpoint, each full-attention layer's q
+# (doubled when gated), k, v and o are quantized once at load to MLX affine
+# codes (--w4-bits, --w4-group), each checkpoint tensor freed after its own
+# quantize, and served through W4Linear on the same kernels
+# (weight_loader/qwen35_dense/attn_affine4_from_bf16.rs). On the 4B the 8
+# attention layers keep 0.17 GB where BF16 keeps 0.59 GB. The same declines as
+# the FFN route; attn_fp8_from_bf16 wins when both are on. A numerics change,
+# independent of the FFN and GDN rows; off until the D7 receipt with the FFN and
+# GDN routes on.
+attn_affine4_from_bf16 = false
+# The affine routes' prompt GEMM (more than 16 rows) quantizes the activation
+# rows to int8 per group and runs the W4A8 int8 tensor-core GEMM over the same
+# 4-bit codes (kernels/ada/common/affine_prefill_ada.cu, port::affine::prefill)
+# instead of the BF16-activation prompt GEMM; a chunk with a non-finite or
+# overflowing activation group falls back to BF16 and is counted. Only 4-bit
+# affine weights have it, and it changes nothing unless an affine route row is
+# on. Int8 tensor cores run at twice the FP8 rate on Ada, so the 4B FFN prompt
+# GEMMs are expected faster than the FP8 W8A8 route's. Off until the receipt:
+# prompt-row full-vocabulary KL against BF16 within the D7 bound and a TTFT ABBA
+# gain at a 3,921-token prompt against the same routes with the row off.
+affine4_prefill_int8 = false
+# On a plain-BF16 dense Qwen3.5 checkpoint (Holo 3.1 0.8B and 4B), the dense
+# FFN's gate, up and down are quantized once at load with the existing NVFP4
+# quantizer (E2M1 codes, E4M3 per-16 scales, one F32 tensor scale; 4.5 bits a
+# weight), each BF16 source freed right after its own quantize, and served
+# through W4Linear over the w4a16_gemv family every CUDA target already compiles
+# (weight_loader/qwen35_dense/nvfp4_from_bf16.rs, port/w4/nvfp4.rs): decode and
+# verify rows 1..16 on w4a16_gemv / _batch2 / _batch3 / _batchN (row invariant
+# by construction), prompts on w4a16_gemm or a BF16 dequant plus cuBLASLt. On
+# the 4B it keeps 1.27 GB of FFN weights where BF16 keeps 4.53 GB and FP8 2.27
+# GB. The FP8 FFN route and the affine 4-bit FFN route both win over it; it
+# declines on tensor parallel, a pending LoRA adapter, or absent kernels. Ada
+# has no FP4 datapath, so whether the software-dequant GEMV reaches the
+# bandwidth that makes this a win was never measured; off until a bandwidth
+# measurement shows at least 85% of the measured DRAM bandwidth at M=1, then the D7 gate
+# (teacher-forced NLL delta at most twice the FP8 FFN route's, full-vocabulary
+# KL, coherence, recall).
+dense_nvfp4_from_bf16 = false
+# The input embedding table (one row read per token) is copied once at load into
+# page-locked host memory and the model reads it through the region's
+# device-visible alias, so every existing gather, the MTP head's device-side
+# embed_from_argmax included, keeps working over PCIe, and the device copy is
+# freed after the loader's prune step (crates/spark-model/src/port/embed_host/).
+# The central single-row embed copies the row from the host table. Same bytes,
+# so it is bit-identical by construction; it frees 2.37 GiB of VRAM on
+# Qwen3.8-27B, which is what lets the 27B fit a 16 GB card. It declines for a
+# tied LM head, a table that is not BF16, or a backend that refuses mapped
+# memory (Metal, and possibly WSL2 for a region this large), and a refusal fails
+# a --speculative start. Off until the receipt: greedy token SHA equal with the
+# row off and on, solo and at C=8, and the freed VRAM in the boot ledger
+# (a GPU script outside this repository).
+embed_host_offload = false
+# Batched sequence swap
+# (`spark-model/src/model/trait_impl/sequence/state_io.rs`,
+# `spark-runtime/src/kv_cache/block_io.rs`): a swapped-out sequence's image
+# (each block's K and V for every attention layer, then each GDN layer's h and
+# conv state) is gathered with batched async copies (`cuMemcpyBatchAsync` where
+# it resolved, else one async copy per region and one event wait per chunk) into
+# one reused page-locked staging buffer of at most one `--pinned-pool-chunk-mb`
+# chunk, and the file write of one chunk overlaps the copy of the next; restore
+# mirrors it. The file is byte-identical to the per-region path, so either
+# reader reads either writer's file. OFF until the receipt on this card:
+# `kv_swap_roundtrip` passes G1 and G2 at 1K, 4K and 32K tokens
+# and G3 at 32K, batched >= 5x the per-region path and >= 8 GB/s for save and
+# restore. `AVAROK_KV_SWAP_TIMING=1` logs one line per image on either path.
+kv_batched_swap = false
+# SSM tier blob store eviction order
+# (`spark-model/src/model/ssm_tier/store.rs`): a capped host-RAM `MemBlobStore`
+# gives up the least recently used blob (a fault-in hit and a put both make a
+# key the most recent) instead of the oldest insert, and the model removes the
+# tier blobs the snapshot index orphans when a fresh save re-homes a spilled
+# prefix or the tail sweep drops one
+# (`spark-runtime/src/radix_tree/snapshot_insert.rs`). Only matters with the SSM
+# tier on (`AVAROK_SSM_TIER`): no entry is ever spilled without it. OFF until
+# the receipt on this card: the reuse ladder (rung C) shows no
+# tok/s, TTFT or SSM-hit loss against off. Outputs are unchanged either way: a
+# missing blob is a recompute.
+ssm_store_lru = false
+# Host-RAM KV tier (`spark-runtime/src/kv_host_tier/`, glue
+# `spark-model/src/model/kv_tier_glue.rs`): every full prompt block the prefix
+# cache newly holds is copied to a pinned host pool on a dedicated copy stream
+# (one extra block reference keeps the block alive until its D2H completed), and
+# a later prompt whose prefix the GPU cache already evicted restores those
+# blocks by one batched H2D into fresh blocks that re-enter the radix tree, so
+# its prefill sees an ordinary GPU hit. On a hybrid model the restore ends at
+# the block holding an SSM snapshot past the GPU match and loads nothing without
+# one. It serves only with this row on AND a `--kv-host-tier-gb` budget AND the
+# prefix cache on (`--hermetic` closes it), so the row alone changes nothing.
+# OFF until the receipt on this card: a multi-turn run with a shrunk KV pool
+# shows tier hits, restored tokens about equal to the evicted prefix, greedy
+# output and top-5 logprobs equal to a never-evicted HBM-hit run, TTFT within 3x
+# of the HBM hit and at least 10x better than recompute, and 4-stream decode
+# within 2% of the tier off. `AVAROK_KV_HOST_TIER=1` plus `--kv-host-tier-gb N`
+# is the A/B; the `atlas_kv_tier_*` series show residency, hits, restores and
+# gate declines.
+kv_host_tier = false
+# Asynchronous host-tier KV restore (spark-server scheduler/restore_queue.rs,
+# lane L27): a new request whose prefix the host KV tier (kv_host_tier) restores
+# is parked outside the batch while its host-to-device copy runs on the tier's
+# copy stream, every other sequence keeps its decode ticks, and the request
+# re-enters the front of the pending queue at the top of the tick after the copy
+# finished, then admits as an HBM prefix hit. A failed, stuck (10 s) or
+# past-deadline restore admits the request for recompute; a client that
+# disconnects while parked is dropped and its restore finishes in the
+# background; a request is parked at most once. It only reorders when a request
+# is admitted, so outputs are unchanged. OFF until the receipt on this card:
+# reuse.py mixed (4 decoding streams plus one 12K-token restore) with decode p99
+# inter-chunk gap during the restore no worse than the synchronous arm's and
+# within 1.5x of the no-restore baseline, and atlas_kv_restore_parked_total > 0.
+kv_restore_async = false
+# Disk tier and warm restart for the host KV tier (spark-runtime
+# kv_host_tier/disk.rs, lane L27): blocks the host tier evicts are demoted to
+# one record file each under --kv-tier-dir (temp file plus atomic rename,
+# O_DIRECT when aligned with a logged buffered fallback, budget
+# --kv-tier-disk-gb, least recently used first), a later lookup promotes them
+# back after checking the record's checksums, and a restarted server adopts the
+# records a previous run wrote for the same model fingerprint. Needs the host
+# tier (kv_host_tier) and both flags; refused under --hermetic, since it carries
+# KV state across restarts. OFF until the receipt on this card: the restart test
+# (prime, stop, start, query) shows atlas_kv_tier_disk_adopted_total > 0 and
+# atlas_kv_tier_disk_hits_total > 0 with greedy output equal to the primed run,
+# and a promote is faster than recomputing the same prefix.
+kv_tier_disk = false
+# Radix prefix-cache eviction takes its victim from an ordered (last_access,
+# node id) index of evictable leaves, maintained at every transition of the
+# victim predicate, instead of scanning every node once per evicted block
+# (`spark-runtime/src/radix_tree/inner/lru_index.rs`). Ties break toward the
+# lowest node id exactly as the scan does, so the victim sequence is identical
+# by construction and by a randomized oracle (`radix_tree/tests/lru_index.rs`).
+# OFF until the receipt on this card: greedy SHA equal and
+# `atlas_prefix_evict_seconds_total` per victim down at least 10x on a saturated
+# pool (`AVAROK_PREFIX_EVICT_TIMING=1` times the row-off scan arm).
+# `AVAROK_RADIX_LRU_INDEX=1` is the A/B.
+radix_lru_index = false
+# A prefix-cache hit may end inside a KV block: the chunked prefill copies that
+# block into a private block (every attention layer's K and V, D2D on the
+# prefill stream before the block table is used) instead of sharing the donor's
+# writable tail, which is the issue #1193 aliasing bug
+# (`radix_tree/inner/cow_walk.rs`, `prefill_b/prefix_cow.rs`). Saves up to
+# block_size - 1 prefill tokens per warm hit and lets an exact repeat of a
+# non-aligned prompt reach its leaf snapshot. Never in a multi-rank world or
+# under --high-speed-swap. `AVAROK_PREFIX_SUBBLOCK` (0, 1, cow) still wins when
+# set. OFF until the receipt on this card: the #1193 shape at C=4 (identical
+# prompts, MTP on) equal to cache-off at temperature 0 and free of cross-stream
+# identity at 0.7, and prefix-repetition TTFT no worse.
+# `AVAROK_PREFIX_COW_TAIL=1` is the A/B.
+prefix_cow_tail = false
+# Quest page-sparse decode attention (`spark-model/src/port/sparse_quest/`,
+# `kernels/ada/common/attn_page_sparse_ada.cu`), plugged into the
+# sparse-attention seam: per attention layer, 64-token page and KV head the
+# channel min and max of the keys (f16, kept in the slot of the page's first
+# physical block, charged to the KV budget at model build), and per decode or
+# verify step the Quest bound `sum_c max(q_c*kmin_c, q_c*kmax_c)` of every page;
+# the step attends only to the first `--attn-sparse-sink-pages` pages, the
+# `--attn-sparse-topk-pages` best pages and the last
+# `--attn-sparse-recent-tokens` tokens through a compacted block table, once the
+# context passes `--attn-sparse-min-ctx` (below it the view is the dense table,
+# bit-identical). APPROXIMATE, so OFF on every target and never default on; the
+# module exists only in the Ada image (elsewhere the row logs once and attention
+# stays dense). The receipts that only ever record it (never flip it):
+# `examples/page_sparse_microtest.rs` PASS (summary bytes, scores, exact top-k
+# sets, the identity gate bit-identical), then the L02 NIAH grid at
+# 32K/64K/128K/262K, decode ms/step against context, perplexity drift and one
+# agent task at 64K+.
+attn_page_sparse = false
+# Bounded KV view (APPROXIMATE; `spark-model/src/port/kv_view/`, core
+# `spark-runtime/src/kv_select/` and `kv_cache/sketch.rs`, kernels
+# `kv_view_table_ada.cu`, `kv_page_sketch_ada.cu`, `kv_page_score_ada.cu`;
+# KVMem's idea, arXiv:2609.04852, implemented independently): once per user
+# turn, at the end of the final user message's prefill, the context's 128-token
+# blocks are scored against that message's last query rows (page-softmax over a
+# per-page pre-RoPE mean-key sketch) and the full-attention layers' decode and
+# verify attention then reads only the view (sink, the recent window, the
+# question and the best blocks within `--kv-view-budget-tokens`, plus every
+# token appended after), and so do the paged prefill chunks of the
+# conversation's next turn; GDN layers and the MTP head stay dense, the first
+# output token comes from the full prefill. It serves only with this row on AND
+# a budget, and only on Ada (the table kernel is an Ada override). OFF on every
+# target and never flipped in this sprint: changing answers is the price, and
+# the bar for any future default is needle recall at least 95% of dense at 5
+# depths x 16K-128K with a 16K view and multi-needle within 2 points.
+# `AVAROK_KV_VIEW=1` plus `--kv-view-budget-tokens 16384` is the A/B; the
+# `atlas_kv_view_*` series show selections, view tokens, recall mass and skips
+# by reason.
+kv_view_selection = false
+# RetroInfer retrieval attention (spark-model port/retro, lanes L33 and L34): at
+# or above --retro-min-context tokens, each full-attention layer's decode
+# attends exactly to the first --retro-sink tokens, the recent tail and the
+# tokens of the few highest-scoring clusters of a segmented spherical k-means
+# index over its keys (retrieval zone, --retro-retrieval-budget of the
+# clusters), estimates the next clusters through their centroids and value sums
+# (--retro-estimation-budget), and drops the rest; the index is built once per
+# sequence, grown every --retro-update-interval generated tokens and reused by
+# sequences that share a prefix. It is APPROXIMATE attention, so outputs differ
+# from dense attention; decode runs without CUDA graphs while it is on, and BF16
+# or FP8 KV with head dim 256 is served (other layers stay dense). OFF on every
+# target and never flipped by default; the receipt that would justify any
+# default is the shadow gate on this card (--retro-shadow at 64K and 128K on all
+# 8 layers: mass recall at least 0.97 and output error at most 0.03), then the
+# L02 NIAH grid and RULER within 2 points of dense, and decode tok/s above dense
+# at 128K.
+retro_attn = false
+# APPROXIMATE block-sparse prefill attention, XAttention-style
+# (`kernels/ada/common/prefill_block_sparse_ada.cu`,
+# `spark-model/src/port/sparse_prefill/`). A chunk of the paged prefill that
+# attends to at least `--prefill-sparse-min-tokens` keys (default 32768) scores
+# every pair of 128-token query and key blocks by a strided antidiagonal sum
+# (`--prefill-sparse-stride`, default 8), keeps per query block the key blocks
+# that hold `--prefill-sparse-threshold` (default 0.9) of its softmax mass plus
+# the sink block and the diagonal band, and runs flash attention over the kept
+# blocks only. BF16 or FP8 KV, head_dim 128 or 256, no sliding window;
+# everything else, and chunk 0, keeps the dense kernels. It changes outputs, so
+# it is OFF on every target and never defaults on: the receipts it owes are the
+# identity gate (threshold 1.0 serves through the dense kernel, greedy SHA
+# equal), `examples/sparse_prefill_microtest.rs` PASS, TTFT at 32K and 128K, and
+# RULER and NIAH grid deltas plus KL at length against the row off.
+# `AVAROK_PREFILL_SPARSE_ATTN=1` is the A/B.
+prefill_sparse_attn = false
+# Host-resident window desk (`spark-model/src/port/kv_window/`, page API
+# `spark-runtime/src/kv_host_tier/pages.rs`, view kernel
+# `kv_page_fetch_ada.cu`): APPROXIMATE attention for contexts past what VRAM
+# holds. A long sequence keeps on the GPU only its first
+# `--kv-window-head-tokens` positions (2048, the sinks), its last
+# `--kv-window-tokens` positions (32768) and up to 2048 positions of pages a
+# recall scorer brings back; every other full KV block moves to host RAM in
+# batches of 1024 positions, its table entry points at one hole block so every
+# position and RoPE stays, and the full-attention layers read the desk through a
+# compacted block table rebuilt inside the decode graph each step. MTP heads
+# attend their sinks plus the same recent window. It refuses the prefix cache,
+# --high-speed-swap, vision input and KV dtypes other than BF16 and FP8. NEVER
+# default on, on any target: it changes outputs whenever a sequence outgrows the
+# desk. `AVAROK_KV_WINDOW_DESK=1` is the A/B; the receipts (on the 27B) are
+# KV capacity, needle recall at 128K and
+# 262K, restore at least 10 GB/s and at most 15% decode loss from misses;
+# `atlas_kv_window_*` show residency, fetches and demotions.
+kv_window_desk = false
+# Convert an LFM3 checkpoint's projections to 128x128 block-scaled FP8 (E4M3) at
+# load: the dense FFN (w1, w3, w2), the attention q/k/v/o (their BF16 is freed)
+# and the gated short convolution's in_proj and out_proj (E4M3 decode copies;
+# the BF16 stays for prefill, +0.22 GB). The head gate, norms, conv taps,
+# embedding and head stay BF16. It touches LFM3 checkpoints only. LFM3 decode is
+# weight-bandwidth bound (3.46 GB of BF16 per step against 288 GB/s), so E4M3 is
+# the route to the roughly 1.5x decode expected; it stays off because
+# E4M3 keeps 3 mantissa bits against BF16's 7, a numerics change. The existing
+# dense_fp8_from_bf16 and attn_fp8_from_bf16 rows convert only their own class
+# on an LFM3 BF16 checkpoint, and Liquid's own LiquidAI/LFM3-1.7B-FP8 loads its
+# E4M3 projections natively whatever this row says. The receipt that may flip
+# it: mean top-20 KL against the BF16 serve under 0.003 on the lfm3_qual panel,
+# greedy coherence equal on the tool-call suite, and decode and prefill gains in
+# bench5.
+lfm3_fp8_all = false
+# Time every hot-swap by phase (drain, teardown, load, total) and keep the last
+# 8 swap durations per model, feed the atlas_model_swap_seconds{phase},
+# atlas_model_swap_total{outcome}, atlas_model_swap_estimate_seconds{model} and
+# atlas_model_resident_bytes series on /metrics, and add x_atlas (resident,
+# resident_bytes, swap_seconds_estimate) to the /v1/models list and to a
+# retrieved model. Observability only: a swap does exactly what it did before,
+# and with the row off /v1/models is byte-identical and every series renders
+# zero. It stays off until a no-regression check shows /v1/models and the swap
+# path unchanged with it on; the receipt that supplies the number a routing
+# policy needs is one run that swaps 4B to 27B and back three times with the row
+# on and logs the seconds.
+model_swap_timing = false
+# Multi-sequence DECODE (2 to 8 streams) serves a native-FP8 dense FFN on the
+# sm_89 batch-M GEMVs (kernels/ada/common/fp8_gemv_ada_batchm.cu, the kernels
+# of ffn_fp8_verify_gemv) in both layer kinds, instead of the prefill ladder:
+# w8a16_gemv_batch4 at 2..4 streams and, at 5..8 streams, the W8A8 arm, which
+# quantizes the activations and runs at about 1.6x the weight-bandwidth floor
+# at every width (L07 sweep, RTX 4060 Ti 16 GB: 141 to 176 us a projection
+# against 90 us for the M=1 GEMV; the measured C=4 to C=8 step grows by 4.9
+# ms more than the C=1 to C=4 slope predicts). It applies to decode steps only
+# (ForwardContext::decode_step), so the speculative verify keeps whatever
+# ffn_fp8_verify_gemv chooses (layers/dense_ffn/fp8_decode_gemv.rs). Each
+# stream's FFN output is then byte-identical to the single-stream decode FFN
+# for the same input at every width: at 2..4 streams that is what the ladder
+# computes today, at 5..8 streams it replaces the lossy W8A8 arithmetic, so
+# greedy output at 5..8 streams changes, toward the single-stream output.
+# What it buys in time is narrower than the W8A8 figure suggests: the batch-M
+# kernel holds the weight-bandwidth floor to 4 rows and is compute bound above
+# them (fp8_ada_batchm_microtest on this card, 4B gate/up shape, warm: 104 us
+# at M=1, 97 at M=4, 184 at M=8), so at 8 streams it costs about what W8A8
+# does and the gain is at 5 and 6 streams. Only targets that compile the
+# module can take it (no lookup elsewhere). Off until the receipt:
+# examples/fp8_ada_batchm_microtest.rs all PASS, greedy token SHA at C=2 and
+# C=4 equal with the row on and off, C=8 text equal to the same prompts served
+# alone, a steady gain at C=5 and C=6 beyond the ABBA bound, and C=8 no
+# slower. AVAROK_FFN_FP8_DECODE_GEMV=1 is the A/B.
+ffn_fp8_decode_gemv = false
+# MTP by live batch width (spark-server scheduler/mtp_width_policy.rs). The
+# throughput gate arbitrates MTP against plain decode on counters of aggregate
+# tokens (re-probe every 256, window 16 steps) and discards both baselines
+# whenever the batch width changes. At 8 streams that re-probes the losing
+# mode every 32 steps for 16 steps: a third of the steps, over half the time
+# (tier-0 on the RTX 4060 Ti 16 GB, 4B FP8, one draft: an MTP step at 8
+# streams costs 99 ms for 13.4 tokens against 39 ms for 8, and the serve
+# delivers 157 tok/s where plain decode delivers 197). With the row on the
+# gate keeps one set of baselines and one standing decision per batch width,
+# so a width seen before resumes without a probe; its re-probe and refresh
+# intervals count tokens per stream, so the probe duty cycle at any width is
+# the single-stream one; and a re-probe that confirms the standing decision
+# doubles the next interval, up to 8x, until a flip resets it. It only chooses
+# between two modes that both emit verified tokens, so outputs are those of
+# whichever mode runs; it is not bit-identical to the row off, because the two
+# modes are interleaved differently. Off until the receipt on this card: conc
+# A/B with --speculative at C=1, 2, 4 and 8 with no loss at any width against
+# the row off, and at C=8 no loss against a serve without --speculative.
+# AVAROK_MTP_WIDTH_POLICY=1 is the A/B; the gate logs every switch.
+mtp_width_policy = false
+# The MTP-verify GDN projections of a BF16-kept GDN layer (the Qwen3.5 dense
+# Bf16Raw load) on dense_gemv_bf16_batchm, 16 rows a weight pass
+# (layers/ops/gdn_verify_gemv.rs): in_proj_qkvz at 3 or more rows, where the
+# verify runs one dense_gemv per row at 3 and 4 rows (3 or 4 passes over a 63
+# MB weight a layer on the 4B) and the scalar dense_gemm above 4, and
+# out_proj_dense at 2 or more rows, where it runs the scalar dense_gemm at
+# every width. Tier-S timing on the RTX 4060 Ti 16 GB (4B, FP8 FFN): the
+# verify forward is 47.9 ms for the 4 rows of one stream and 92.6 ms for the
+# 16 rows of 8 streams, against decode steps of 27 and 40 ms; the scalar
+# kernel turns about 0.6 TFLOP/s, and it is why MTP loses at 8 streams. The
+# batched GEMV reads each weight once for up to 16 rows near the bandwidth
+# floor (L07 sweep: in_proj_qkvz 234 us at 1 row, 310 at 16), and every row is
+# bit-identical to the M=1 decode GEMV (same source, --fmad=false, as
+# attn_gated_bf16_batchm), so a verify row's GDN projections equal the
+# decode's. At 3 and 4 rows in_proj_qkvz keeps today's bits; above 4 rows,
+# and for out_proj_dense at every width, the scalar GEMM's summation order
+# becomes the decode order, so verify logits move toward plain decode. It
+# differs from gdn_batched_gemm, which makes the same launches on cuBLASLt
+# and reassociates: with both on, this row serves up to 16 rows and cuBLASLt
+# the wider batches; alone, it runs one pass per 16 rows. Only a BF16-kept GDN
+# layer takes it (gdn_fp8_from_bf16 and the 4-bit routes have their own
+# arms). Off until the receipt: examples/dense_gemv_bf16_batchm_microtest PASS
+# at the two GDN shapes up to 16 rows, greedy agreement of --speculative
+# against plain decode on the 8 agreement prompts no worse than with the row
+# off, the MTP verify time (AVAROK_MTP_TIMING) down at C=1 and C=8, and a conc
+# gain with --speculative at C=1, 2, 4 and 8. AVAROK_GDN_VERIFY_GEMV=1 is the
+# A/B.
+gdn_verify_gemv = false
+# A BF16 LM head's speculative-verify rows above 8 on dense_gemv_bf16_batchm,
+# 16 rows a weight pass (layers/ops/lm_head_verify_gemv.rs), instead of the
+# scalar dense_gemm, which is the only arm a BF16 head has at 9 or more verify
+# rows (model/impl_a3.rs: the wide arms are NVFP4 only). A batched verify of 8
+# streams with one draft each is 16 rows; on the 4B's tied BF16 head (248,070
+# x 2,560, 1.27 GB) that is 10.2 G scalar multiply-adds a pass. Tier-S timing
+# on the RTX 4060 Ti 16 GB (4B, FP8 FFN): the verify forward is 92.6 ms at 16
+# rows and 148 ms at 32, against a 40 ms decode step of 8 rows; this head and
+# the GDN projections (gdn_verify_gemv) are the two scalar GEMMs in it. The
+# batched GEMV measures 6.8 ms on this head at 16 rows against 5.0 ms at 8
+# (L07 sweep). Every row is bit-identical to the M=1 decode head, as verify
+# rows 2..8 already are; rows above 8 leave the scalar GEMM's summation order
+# for the decode order, so their logits move toward plain decode. Only a BF16
+# head on one rank takes it; the decode head's band (lm_head_batchm_max) is
+# not touched. Off until the receipt: examples/dense_gemv_bf16_batchm_microtest
+# PASS at the head shape up to 16 rows, greedy agreement of --speculative
+# against plain decode at C=8 no worse than with the row off, and the MTP
+# verify time (AVAROK_MTP_TIMING) and conc tok/s with --speculative better at
+# C=8. AVAROK_LM_HEAD_VERIFY_GEMV=1 is the A/B.
+lm_head_verify_gemv = false
+# A greedy decode step whose sequences still have a min_tokens floor to reach
+# stays on the device argmax (spark-server scheduler/min_floor_fast.rs).
+# Today an active floor sends the whole batch through the host sampling
+# pipeline for the floor's EOS mask alone: every step copies the [n, vocab]
+# logits to the host, widens them to FP32 and scans them once per sequence
+# (3.97 MB and eight 248,070-element passes a step at 8 streams on the 4B). A
+# fixed-length benchmark sets min_tokens = max_tokens, so every step of every
+# conc run pays it; AVAROK_DECODE_TIMING=1 prints the copy and the scan. With
+# temperature 0 and neutral penalties the pipeline's token is the argmax of
+# the masked logits, and masking an entry that is not the maximum does not
+# move it, so the device argmax is the same token unless it is one of the
+# sequence's EOS ids; that is checked afterwards and only such a step is
+# redone on the host, as the two-id think mask already is. A request with any
+# penalty set keeps the host pipeline. One thing does change, the tie-break:
+# where the two top logits tie exactly (1.3% of greedy positions in the quality
+# dumps of an earlier GPU run) the device argmax keeps the id with the lower index mod 1024
+# and the host pipeline the lower index. So a floored greedy run is NOT
+# bit-identical to the row off; it emits what the same request emits without
+# a floor, which already takes the device argmax. Off until the receipt: on
+# fixed-length runs at C=1 and C=8, tokens equal to the same prompts served
+# without min_tokens up to their first EOS, the fallback case exercised (the
+# 8 agreement prompts with min_tokens below their natural length), and steady
+# tok/s no lower. AVAROK_MIN_TOKENS_GPU_ARGMAX=1 is the A/B.
+min_tokens_gpu_argmax = false
+# A native-FP8 dense FFN over 5 to 16 rows (a decode step of 5 to 8 streams, a
+# speculative verify of up to 16 rows) on the sm_89 16-row tensor-core GEMM
+# (kernels/ada/common/fp8_gemm_ada_m16.cu): gate and up in one launch, the
+# layer's activation multiply, then down, each weight read once
+# (layers/dense_ffn/fp8_m16_tc.rs). It replaces what those widths run today:
+# the W8A8 arm, which quantizes the activations to E4M3 and costs 143 us a
+# projection at every width from 1 to 64 rows on the RTX 4060 Ti 16 GB (L07
+# sweep, 4B gate/up, 23.6 MB, against a 91 us floor at the measured 260 GB/s),
+# or, with ffn_fp8_verify_gemv or ffn_fp8_decode_gemv on, the batch-M GEMV,
+# which holds the floor to 4 rows, is compute bound above them (97 us at M=4,
+# 184 at M=8) and stops at 8. The kernel keeps the activations BF16 and widens
+# the E4M3 weights in registers (exact), one m16n8k16 per 128 weight bytes,
+# with the weights streamed global-to-register the way the decode GEMV streams
+# them. An FP8 mma would need E4M3 activations, which is the W8A8 arithmetic
+# this row exists to leave. Numerics: the kernel REASSOCIATES the K reduction (16
+# products per MMA, one block-scale fold per 128 K on an FP32 accumulator), so
+# a row is not bit-identical to the M=1 decode GEMV; the contract is the M16
+# tensor-core one (at most 2 BF16 ULP, or under the FP32 accumulation floor
+# for a cancelled output), and a row's bits do not depend on how many rows
+# share the launch. Rows 2..4 keep w8a16_gemv_batch4, which is bit-exact and
+# already at the floor (AVAROK_FFN_FP8_M16_TC_MIN_ROWS=2 lowers the bound for
+# a measurement); above 16 rows nothing changes; a prompt pass never takes
+# it. With this row on it is asked before ffn_fp8_verify_gemv and
+# ffn_fp8_decode_gemv at the widths it takes. Only targets that compile the
+# module can take it (no lookup elsewhere). Off until the receipt:
+# examples/fp8_ada_m16_tc_microtest.rs all PASS with memcheck clean, a conc
+# gain at C=8 without --speculative beyond the ABBA bound with top-20 KL
+# against the row off inside the bar, and with --speculative at C=8 the verify
+# time (AVAROK_MTP_TIMING) down. AVAROK_FFN_FP8_M16_TC=1 is the A/B.
+ffn_fp8_m16_tc = false
+# @port:defaults

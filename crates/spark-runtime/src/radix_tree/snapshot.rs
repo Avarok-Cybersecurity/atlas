@@ -97,6 +97,8 @@ pub(super) struct SsmSnapshotIndex {
     /// `recompute_tokens_on_hit` after tail-protect + a large pool is exactly
     /// what Phase 1 (spill-not-drop) converts from recompute → fault-in.
     pub(super) stats: SnapshotStats,
+    /// Tier keys whose blob lost its entry (`snapshot_insert.rs`, port L25).
+    pub(super) orphaned_tier_keys: Vec<u64>,
 }
 
 /// Tail-lease kill switch. Default ON; opt out with
@@ -182,6 +184,7 @@ impl SsmSnapshotIndex {
             last_lookup_session: 0,
             evictions_since_lookup: 0,
             stats: SnapshotStats::default(),
+            orphaned_tier_keys: Vec::new(),
         }
     }
 

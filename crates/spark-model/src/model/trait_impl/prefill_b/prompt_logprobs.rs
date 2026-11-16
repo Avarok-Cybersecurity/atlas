@@ -81,6 +81,8 @@ impl TransformerModel {
             self.gpu.synchronize(stream)?;
             let bytes = &mut host[..count * v * 2];
             self.gpu.copy_d2h(self.buffers.logits(), bytes)?;
+            // AVAROK_PROMPT_LOGITS_DUMP: the full rows, before the top-k is taken.
+            crate::port::logit_dump::dump_batch(tokens, chunk_start + start, count, v, bytes);
             for j in 0..count {
                 let target = tokens[chunk_start + start + j + 1];
                 let row = &bytes[j * v * 2..(j + 1) * v * 2];

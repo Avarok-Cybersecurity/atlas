@@ -140,6 +140,7 @@ mod from_str_tests {
             ("F8_E4M3", FP8E4M3),
             ("F8_E8M0", FP8E8M0),
             ("I64", Int64),
+            ("I32", Int32), // compressed-tensors pack-quantized int4 words
         ] {
             assert_eq!(
                 WeightDtype::from_safetensors_str(s).unwrap(),

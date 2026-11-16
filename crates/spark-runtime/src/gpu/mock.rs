@@ -8,6 +8,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[path = "mock_counters.rs"]
 mod mock_counters;
+#[path = "mock_mem.rs"]
+mod mock_mem;
+#[path = "mock_port.rs"]
+mod mock_port;
+use mock_mem::{find_alloc, find_alloc_mut};
 
 #[derive(Debug)]
 pub struct MockAlloc {
@@ -57,6 +62,9 @@ pub struct MockGpuBackend {
     /// re-upload `[0..T]` history; token-append H2D stays O(1) in T.
     h2d: AtomicUsize,
     h2d_bytes: AtomicUsize,
+    /// Emulation state of the port-sprint extensions (graph templates, batched
+    /// copies, held events); see `mock_port.rs`.
+    port: mock_port::MockPortState,
 }
 
 #[derive(Debug, Clone)]
@@ -105,41 +113,12 @@ impl MockGpuBackend {
             host_pinned_allocs: AtomicUsize::new(0),
             h2d: AtomicUsize::new(0),
             h2d_bytes: AtomicUsize::new(0),
+            port: mock_port::MockPortState::default(),
         }
     }
 
     pub fn read_alloc(&self, ptr: DevicePtr) -> Option<Vec<u8>> {
         self.allocs.lock().get(&ptr.0).map(|a| a.data.clone())
-    }
-
-    /// `bytes` from `src` to `dst` inside the simulated device memory.
-    ///
-    /// Real byte movement, not a no-op: a D2D that silently succeeds without
-    /// moving anything lets a test "pass" while asserting the destination is
-    /// still zero — the exact shape of a rollback bug this backend exists to
-    /// catch. Source is staged through a temporary so `src` and `dst` may sit
-    /// in the same allocation (the borrow checker would otherwise reject it,
-    /// and the real `cudaMemcpyAsync` accepts it for non-overlapping ranges).
-    fn blit(&self, src: DevicePtr, dst: DevicePtr, bytes: usize) -> Result<()> {
-        if bytes == 0 {
-            return Ok(());
-        }
-        let mut allocs = self.allocs.lock();
-        let staged = {
-            let (offset, alloc) = find_alloc(&allocs, src)
-                .ok_or_else(|| anyhow::anyhow!("copy_d2d: src {src} not allocated"))?;
-            if offset + bytes > alloc.bytes {
-                anyhow::bail!("copy_d2d: src {src} + {bytes} overruns its allocation");
-            }
-            alloc.data[offset..offset + bytes].to_vec()
-        };
-        let (offset, alloc) = find_alloc_mut(&mut allocs, dst)
-            .ok_or_else(|| anyhow::anyhow!("copy_d2d: dst {dst} not allocated"))?;
-        if offset + bytes > alloc.bytes {
-            anyhow::bail!("copy_d2d: dst {dst} + {bytes} overruns its allocation");
-        }
-        alloc.data[offset..offset + bytes].copy_from_slice(&staged);
-        Ok(())
     }
 
     /// Every launch recorded so far, in dispatch order. Lets a test assert
@@ -168,29 +147,6 @@ impl MockGpuBackend {
             .lock()
             .push((module.to_owned(), func_name.to_owned()));
     }
-}
-
-/// Find the allocation containing `ptr` (supports offset pointers).
-fn find_alloc(allocs: &HashMap<u64, MockAlloc>, ptr: DevicePtr) -> Option<(usize, &MockAlloc)> {
-    for (&base, alloc) in allocs.iter() {
-        if ptr.0 >= base && ptr.0 < base + alloc.bytes as u64 {
-            return Some(((ptr.0 - base) as usize, alloc));
-        }
-    }
-    None
-}
-
-/// Mutable version of find_alloc.
-fn find_alloc_mut(
-    allocs: &mut HashMap<u64, MockAlloc>,
-    ptr: DevicePtr,
-) -> Option<(usize, &mut MockAlloc)> {
-    for (&base, alloc) in allocs.iter_mut() {
-        if ptr.0 >= base && ptr.0 < base + alloc.bytes as u64 {
-            return Some(((ptr.0 - base) as usize, alloc));
-        }
-    }
-    None
 }
 
 impl GpuBackend for MockGpuBackend {
@@ -448,5 +404,65 @@ impl GpuBackend for MockGpuBackend {
 
     fn live_alloc_count(&self) -> usize {
         self.allocs.lock().len()
+    }
+
+    // ── Port sprint extensions (contract 3.7.1): emulation in `mock_port.rs` ──
+    fn begin_capture(&self, stream: u64) -> Result<()> {
+        self.port_begin_capture(stream);
+        Ok(())
+    }
+    fn end_capture_template(&self, stream: u64) -> Result<(GraphHandle, GraphTemplate)> {
+        self.port_end_capture_template(stream)
+    }
+    fn end_capture_graph(&self, stream: u64) -> Result<GraphTemplate> {
+        self.port_end_capture_graph(stream)
+    }
+    fn graph_instantiate(&self, t: &GraphTemplate) -> Result<GraphHandle> {
+        self.port_instantiate(t)
+    }
+    fn graph_template_destroy(&self, t: GraphTemplate) -> Result<()> {
+        self.port_template_destroy(t)
+    }
+    fn graph_topology_signature(&self, t: &GraphTemplate) -> Result<u64> {
+        self.port_signature(t)
+    }
+    fn graph_exec_update(&self, exec: GraphHandle, t: &GraphTemplate) -> Result<bool> {
+        self.port_exec_update(exec, t)
+    }
+    fn graph_upload(&self, exec: GraphHandle, _stream: u64) -> Result<()> {
+        self.port_upload(exec)
+    }
+    fn supports_graph_exec_update(&self) -> bool {
+        self.port_graph_update_supported()
+    }
+    fn destroy_graph(&self, graph: GraphHandle) -> Result<()> {
+        self.port_destroy_exec(graph);
+        Ok(())
+    }
+    fn copy_batch_d2h_async(&self, e: &[CopyEntry], stream: u64) -> Result<()> {
+        self.port_copy_batch(e, stream, true)
+    }
+    fn copy_batch_h2d_async(&self, e: &[CopyEntry], stream: u64, _any: bool) -> Result<()> {
+        self.port_copy_batch(e, stream, false)
+    }
+    fn supports_copy_batch(&self) -> bool {
+        self.port_copy_batch_supported()
+    }
+    fn create_copy_stream(&self) -> Result<u64> {
+        Ok(self.port_next_copy_stream())
+    }
+    fn create_event(&self) -> Result<u64> {
+        Ok(self.port_create_event())
+    }
+    fn record_event(&self, event: u64, _stream: u64) -> Result<()> {
+        self.port_record_event(event);
+        Ok(())
+    }
+    fn event_query(&self, event: u64) -> Result<bool> {
+        Ok(self.port_event_done(event))
+    }
+    fn event_synchronize(&self, event: u64) -> Result<()> {
+        self.complete_event(event);
+        Ok(())
     }
 }

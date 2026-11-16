@@ -1271,6 +1271,13 @@ pub trait Model: Send + Sync {
     fn synchronize(&self, _stream: u64) -> Result<()> {
         Ok(())
     }
+
+    /// The port sprint's model-level entry points
+    /// ([`crate::traits::port_ext::ModelPortExt`]). `None` for every model that
+    /// does not implement them; `TransformerModel` returns itself.
+    fn port_ext(&self) -> Option<&dyn crate::traits::port_ext::ModelPortExt> {
+        None
+    }
 }
 
 #[cfg(test)]

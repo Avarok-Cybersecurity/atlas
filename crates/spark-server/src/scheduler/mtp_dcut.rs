@@ -36,8 +36,22 @@
 //! * Pruning changes only the VERIFY width. The propose already ran at full
 //!   width when this is called, so v1 banks the row saving, not a drafter
 //!   saving.
+//!
+//! # v2 (`mtp_dcut_cost_model`, off)
+//!
+//! With the row on, [`cost`] replaces the fixed ratio by the budget that
+//! maximizes expected tokens per second under an online cost table, with
+//! survival scores calibrated by [`estimator`]. The envelope is v1's (one draft
+//! per sequence at least, the width cap, the row budget); until the table is
+//! calibrated the fixed ratio runs. With the row off [`plan`] is v1 exactly.
 
 use super::types::ActiveSeq;
+
+// D-Cut v2 (port sprint): the cost-optimal budget and its calibration.
+#[path = "mtp_dcut_cost.rs"]
+pub(super) mod cost;
+#[path = "mtp_accept_estimator.rs"]
+pub(super) mod estimator;
 
 /// The paper's discrete retention buckets.
 const BUCKETS: [f32; 4] = [0.25, 0.5, 0.75, 1.0];
@@ -235,6 +249,11 @@ pub(super) fn plan(
         || batchable.is_empty()
         || batchable.len() > dcut_width_cap()
     {
+        // Uniform shape: every drafted row is verified. Leave the depth for
+        // `account_step`'s per-position accounting.
+        for &idx in batchable.iter() {
+            cost::stash(&mut active[idx]);
+        }
         return ks;
     }
     let confs: Vec<&[f32]> = batchable
@@ -250,7 +269,14 @@ pub(super) fn plan(
             }
         })
         .collect();
-    let retained = select(&confs, ladder_nd, VERIFY_ROW_BUDGET, dcut_ratio());
+    // Row off: `Legacy`, i.e. the fixed ratio below, byte for byte.
+    let decision = cost::decide(&confs, ladder_nd, VERIFY_ROW_BUDGET, dcut_ratio());
+    let retained = match &decision {
+        cost::Decision::Retained(r) => r.clone(),
+        cost::Decision::Probe => select(&confs, ladder_nd, VERIFY_ROW_BUDGET, 1.0),
+        cost::Decision::Warmup(ratio) => select(&confs, ladder_nd, VERIFY_ROW_BUDGET, *ratio),
+        cost::Decision::Legacy => select(&confs, ladder_nd, VERIFY_ROW_BUDGET, dcut_ratio()),
+    };
     for (pos, r) in retained.iter().enumerate() {
         ks[pos] = (*r).clamp(1, ladder_nd) + 1;
     }
@@ -286,7 +312,9 @@ pub(super) fn plan(
         );
         a.pending_drafts.truncate(k - 1);
         a.pending_draft_conf.truncate(k - 1);
+        cost::stash(a);
     }
+    cost::note_plan(&decision, ks_out.iter().sum());
     record(batchable.len() * rows, ks_out.iter().sum(), &ks_out);
     *batchable = reordered;
     ks_out

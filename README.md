@@ -506,6 +506,8 @@ The per-state commands, exit conditions and the invariants an agent must not vio
 
 The full recipe is in [`docs/HARDWARE.md`](docs/HARDWARE.md#adding-a-new-hardware-target). The short version: implement two traits (`ComputeTarget` for the build-time compiler, `GpuBackend` for the runtime), drop kernel sources into `kernels/<your-hw>/`, add one match arm in the registry. There is a `MockGpuBackend` in `spark-runtime` that lets you write and test the entire scaffold without owning the hardware — every layer above the GPU trait is hardware-agnostic, so unit tests can run on a laptop. We bolted the project from "single CUDA target" to "trait-pluggable across vendors" specifically so that the next ports stop being our problem and start being yours — and the Strix Halo port under [`kernels/strix/`](kernels/strix/) is the worked example.
 
+For a consumer NVIDIA card, [`docs/porting/consumer-nvidia-ada.md`](docs/porting/consumer-nvidia-ada.md) walks through the Ada (sm_89) port end to end: the RTX 4060 Ti 16 GB as the reference part, what broke and why, the 16 GB memory fit, the FP8 path and the llama.cpp API.
+
 <a id="new-model"></a>
 
 ## 🧬 Adding a New Model

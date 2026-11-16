@@ -106,6 +106,7 @@ pub(crate) fn load_model(
     // 0. Resolve model directory from HF ID or path
     spark_runtime::progress::phase(1, "model resolve");
     let model_dir = serve_phases::resolve_model_dir(&args)?;
+    spark_model::layers::mtp_head::vocab_rank::note_model_dir(&model_dir);
 
     tracing::info!("Port: {}", args.port);
 
@@ -393,6 +394,17 @@ pub(crate) fn load_model(
         );
         config.vision = None;
     }
+    // `--no-vision`: the operator asked for a text-only serve. Clearing the
+    // vision config is what the API's media gate reads (an image part is a
+    // 400) and what makes the loader bind no tower; `load_weight_store` also
+    // skips uploading the tower's tensors.
+    if args.no_vision && config.vision.is_some() {
+        tracing::info!(
+            "--no-vision: serving TEXT-ONLY; the vision tower is not loaded and image or \
+             video input is refused with a 400."
+        );
+        config.vision = None;
+    }
 
     // Resolve num_drafts: explicit --num-drafts (any value) → MODEL.toml
     // [behavior].default_num_drafts → engine default. After this call
@@ -462,6 +474,14 @@ pub(crate) fn load_model(
         w8a8_prefill_kernels: spark_model::layers::qwen3_attention::w8a8_prefill_kernels_loaded(
             gpu.as_ref(),
         ),
+        // The same clauses the post-load audit's credit uses, read before the
+        // checkpoint is (`deferred_free_bytes` below needs the store).
+        fp8_ffn_freed: spark_model::weight_loader::fp8_from_bf16::predicted_free_bytes(
+            gpu.as_ref(),
+            &config,
+            world_size,
+            !args.lora_adapter.is_empty(),
+        ),
     };
     let serve_phases::ReservePreflight {
         inference_reserve,
@@ -469,7 +489,14 @@ pub(crate) fn load_model(
         gdn_two_phase_bytes,
         ssm_prefill_chunk,
         max_batch_tokens_pre,
+        dflash_gamma,
     } = serve_phases::preflight_reserve(&args, &config, free_mem, &post_load_inputs)?;
+    // Row `AVAROK_DFLASH_FIT`: the verify width the fit chose is pinned like
+    // `--dflash-gamma`, before the drafter, the pools and the scheduler read it.
+    // `None` with the row off, so nothing is written.
+    if dflash_gamma.is_some() {
+        args.dflash_gamma = dflash_gamma;
+    }
     let total_reserve = inference_reserve + buffer_arena_bytes;
 
     // 2a-2. OOM watchdog: background async task that polls GPU memory every 2s.
@@ -594,6 +621,13 @@ pub(crate) fn load_model(
         total_reserve,
         gdn_two_phase_bytes,
         max_batch_tokens_pre,
+        spark_model::weight_loader::fp8_from_bf16::deferred_free_bytes(
+            gpu.as_ref(),
+            &store,
+            &config,
+            world_size,
+            !args.lora_adapter.is_empty(),
+        ),
     )?;
 
     // 5. Build model via factory.
@@ -867,6 +901,10 @@ pub(crate) fn load_model(
     // decode_logits_seq.rs / compile_tools.rs; `lean` was an Atlas-only
     // decode artifact, now fixed at the grammar `first_char` rule.)
 
+    // Opt-in `--chat-template` / AVAROK_CHAT_TEMPLATE (stored by port_apply): replaces the chat template
+    // and its OpenAI variant. With no choice stored the tokenizer is returned unchanged.
+    let tokenizer = crate::tokenizer::template_select::apply_selected(tokenizer)?;
+
     // Tokenizer-derived runtime: vocab cap, reasoning parser, think tokens,
     // im_start hard-stop, tool-call open/close tokens, and the XGrammar
     // engine.
@@ -888,6 +926,10 @@ pub(crate) fn load_model(
         supports_thinking,
         &model_dir,
     );
+    // Recorded before the engine moves into the scheduler: the HTTP layer
+    // cannot see the engine, but the llama.cpp `/completion` route must know
+    // whether `json_schema` / `grammar` can be enforced at all.
+    let grammar_available = grammar_engine.is_some();
 
     // 7. Create scheduler channel + spawn scheduler
     spark_runtime::progress::phase(9, "scheduler");
@@ -1272,6 +1314,8 @@ pub(crate) fn load_model(
         .map(parse_default_chat_template_kwargs)
         .transpose()?
         .unwrap_or_default();
+    // Server-wide `terse` default for the Sharp chat template (`--default-chat-template-kwargs`).
+    crate::tokenizer::terse_render::set_default_terse(default_kwargs.terse);
 
     let state = Arc::new(AppState {
         tokenizer,
@@ -1288,6 +1332,8 @@ pub(crate) fn load_model(
             lora_states.first().map(|l| l.name.clone()),
         )),
         max_seq_len: args.max_seq_len,
+        max_num_seqs: args.max_num_seqs,
+        grammar_available,
         request_tx,
         rotation_tx: if lora_states.is_empty() {
             None

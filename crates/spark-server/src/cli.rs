@@ -22,6 +22,9 @@ pub(crate) mod flag_values;
 pub(crate) mod hermetic;
 pub(crate) mod manifest;
 mod serve_args;
+// The port sprint's (`port/consumer-opt`) serve flags, flattened into
+// `ServeArgs::port`.
+pub mod serve_args_port;
 pub(crate) mod sync_recipes;
 mod validate;
 pub use bench_args::BenchmarkArgs;

@@ -164,7 +164,105 @@ pub(super) fn cache_skip_qkv_cublas_selected(
         && (kmajor_ready || !ops::cublas_scale_layout_kmajor())
 }
 
+/// Which arm the cache-skip Q/K/V chain takes. One decision per chain, for
+/// all three projections (see [`cache_skip_qkv_cublas_selected`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum QkvW8a8 {
+    /// The W8A16 / NVFP4 / BF16 arms, as on every build before the route.
+    Off,
+    /// cuBLASLt W8A8 (`AVAROK_CUBLAS_GEMM=attn`).
+    Cublas,
+    /// The in-tree W8A8 kernel (`fp8_gemm_ada_w8a8` on sm_89), armed by the
+    /// load-time BF16 -> FP8 attention route.
+    Kernel,
+}
+
+/// Whether the chain takes the IN-TREE W8A8 kernel. Only on a layer the
+/// load-time BF16 -> FP8 attention route armed (`armed`): with FP8 weights and
+/// only the W8A16 tile GEMMs this chain is slower on sm_89 than the BF16
+/// cuBLASLt path it replaces, so the route must not depend on
+/// `AVAROK_CUBLAS_GEMM=attn` for its W8A8.
+///
+/// The in-tree kernel writes exactly `m` rows, so none of the cuBLASLt arm's
+/// padded-extent clauses (or its `m >= 16`) apply: q, k and v land in their
+/// regions exactly as the W8A16 arms write them. The clauses that remain:
+/// the arming, both kill switches, all three weights block-scaled, the
+/// 128-multiple N and K, room for the one shared activation quantization, and
+/// both kernels.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn cache_skip_qkv_kernel_selected(
+    armed: bool,
+    fp8_blockscaled_prefill: bool,
+    w8a16_only: bool,
+    formats: [Option<WeightQuantFormat>; 3],
+    m: u32,
+    q_n: u32,
+    kv_n: u32,
+    k: u32,
+    act_capacity_bytes: usize,
+    act_scale_capacity_bytes: usize,
+    quant_k: ops::Fp8ActQuant,
+    gemm_k: KernelHandle,
+) -> bool {
+    let m_pad = ops::cublas_fp8_m_pad(m) as usize;
+    armed
+        && fp8_blockscaled_prefill
+        && !w8a16_only
+        && m > 0
+        && formats
+            .iter()
+            .all(|f| *f == Some(WeightQuantFormat::Fp8BlockScaled))
+        && q_n.is_multiple_of(128)
+        && kv_n.is_multiple_of(128)
+        && k.is_multiple_of(128)
+        && m_pad * (k as usize) <= act_capacity_bytes
+        && m_pad * (k as usize / 128) * 4 <= act_scale_capacity_bytes
+        && quant_k.available()
+        && gemm_k.0 != 0
+}
+
 impl Qwen3AttentionLayer {
+    /// The arm this layer's cache-skip Q/K/V chain takes: cuBLASLt when it is
+    /// selected (unchanged), else the in-tree kernel when the route armed it.
+    pub(super) fn cache_skip_qkv_w8a8_arm(
+        &self,
+        ctx: &ForwardContext,
+        m: u32,
+        q_proj_dim: u32,
+        kv_dim: u32,
+        k: u32,
+    ) -> QkvW8a8 {
+        if self.cache_skip_qkv_w8a8_selected(ctx, m, q_proj_dim, kv_dim, k) {
+            return QkvW8a8::Cublas;
+        }
+        let fmt = |w: Option<&crate::weight_map::QuantWeight>| {
+            w.and_then(|w| w.as_fp8()).map(|f| f.scale_format)
+        };
+        let kernel = cache_skip_qkv_kernel_selected(
+            self.qkv_w8a8_prefill,
+            ctx.dispatch.fp8_blockscaled_prefill,
+            attn_qkv_w8a16_only(),
+            [
+                fmt(self.q_weight.as_ref()),
+                fmt(self.k_weight.as_ref()),
+                fmt(self.v_weight.as_ref()),
+            ],
+            m,
+            q_proj_dim,
+            kv_dim,
+            k,
+            ctx.buffers.fp8_act_bytes(),
+            ctx.buffers.fp8_act_scale_bytes(),
+            self.per_token_group_quant_fp8_k,
+            self.fp8_gemm_t_blockscaled_k,
+        );
+        if kernel {
+            QkvW8a8::Kernel
+        } else {
+            QkvW8a8::Off
+        }
+    }
+
     /// Whether this layer's cache-skip Q/K/V chain runs on cuBLASLt W8A8.
     ///
     /// `m` is the chunk's token count, `k` the hidden size all three contract
@@ -235,16 +333,17 @@ impl Qwen3AttentionLayer {
     }
 
     /// One projection of the chain: `out[m, n] = a_fp8[m, k] @ weight[n, k]ᵀ`
-    /// with both block-scale sets folded in an FP32 epilogue, through cuBLASLt.
+    /// with both block-scale sets folded in an FP32 epilogue, through the arm
+    /// [`Self::cache_skip_qkv_w8a8_arm`] chose (cuBLASLt or the in-tree kernel).
     ///
     /// Consumes the activation [`Self::cache_skip_qkv_w8a8_quant`] produced;
-    /// allocates nothing. Callers MUST have checked
-    /// [`Self::cache_skip_qkv_w8a8_selected`] — this does not re-check and does
-    /// not fall back.
+    /// allocates nothing. Callers MUST pass the chain's own decision and never
+    /// [`QkvW8a8::Off`] — this does not re-check and does not fall back.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn cache_skip_qkv_w8a8_gemm(
         &self,
         ctx: &ForwardContext,
+        arm: QkvW8a8,
         fp8w: &Fp8Weight,
         out: DevicePtr,
         m: u32,
@@ -252,6 +351,22 @@ impl Qwen3AttentionLayer {
         k: u32,
         stream: u64,
     ) -> Result<()> {
+        debug_assert!(arm != QkvW8a8::Off, "the W8A8 GEMM was not selected");
+        if arm == QkvW8a8::Kernel {
+            return ops::fp8_gemm_t_blockscaled(
+                ctx.gpu,
+                self.fp8_gemm_t_blockscaled_k,
+                ctx.buffers.fp8_act(),
+                ctx.buffers.fp8_act_scale(),
+                fp8w.weight,
+                fp8w.row_scale,
+                out,
+                m,
+                n,
+                k,
+                stream,
+            );
+        }
         ops::cublas_fp8_proj_prequant(
             ctx.gpu,
             self.fp8_act_scale_kmajor_k,
@@ -270,9 +385,16 @@ impl Qwen3AttentionLayer {
     /// Log-once route line for the cache-skip Q/K/V prefill, emitted from BOTH
     /// arms so the absence of the W8A8 line is never ambiguous between "not
     /// armed" and "log lost".
-    pub(super) fn log_cache_skip_qkv_route(&self, ctx: &ForwardContext, cublas: bool) {
+    pub(super) fn log_cache_skip_qkv_route(&self, ctx: &ForwardContext, arm: QkvW8a8) {
         if ctx.stats.once("log:attn_cache_skip_qkv_prefill") {
-            if cublas {
+            if arm == QkvW8a8::Kernel {
+                tracing::info!(
+                    "[avarok] attention Q/K/V prefill (chunk 0, cache-skip): W8A8 block-scaled \
+                     via kernel, activation quantized once for all three (per-token 1x128 act \
+                     scales x 128x128 weight scales, FP32 epilogue). Armed by the BF16 -> FP8 \
+                     attention route; AVAROK_ATTN_QKV_W8A16_ONLY restores W8A16."
+                );
+            } else if arm == QkvW8a8::Cublas {
                 tracing::info!(
                     "[avarok] attention Q/K/V prefill (chunk 0, cache-skip): W8A8 block-scaled \
                      via cuBLASLt, activation quantized once for all three \

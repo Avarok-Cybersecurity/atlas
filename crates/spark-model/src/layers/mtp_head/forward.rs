@@ -64,7 +64,13 @@ impl MtpHead {
         let embed_out = ctx.buffers.ssm_qkvz(); // reuse scratch
         let row_bytes = h as usize * 2;
         let src = self.embed_tokens.weight.offset(token as usize * row_bytes);
-        ctx.gpu.copy_d2d_async(src, embed_out, row_bytes, stream)?;
+        // L11 propose chain: past position 0 the embedding is gathered on the device.
+        if !self
+            .v2
+            .chain_embed(ctx.gpu, self.embed_tokens.weight, embed_out, 1, h, stream)?
+        {
+            ctx.gpu.copy_d2d_async(src, embed_out, row_bytes, stream)?;
+        }
 
         // 2. RMSNorm embedding and hidden separately
         let normed_embed = ctx.buffers.ssm_deinterleaved();
@@ -250,12 +256,16 @@ impl MtpHead {
         }
 
         let meta_base = ctx.buffers.scratch().offset(MTP_META_OFFSET); // after target metadata
-        let max_blocks = state.block_table.len() as u32;
+        // L11 KV window: the rows attention reads (the whole table when unbounded).
+        let (view_table, view_len) = self
+            .v2
+            .window_view(&state.block_table, state.seq_len + 1, bs);
+        let max_blocks = view_table.len() as u32;
 
         // Batch all metadata into a single H2D copy (saves 3 CUDA API calls).
         let block_idx = state.block_table[state.seq_len / bs];
         let global_slot = (block_idx as i64) * (bs as i64) + ((state.seq_len % bs) as i64);
-        let actual_seq_len = (state.seq_len + 1) as i32;
+        let actual_seq_len = view_len as i32;
 
         // The slab grows with the block table, i.e. with the context length, so
         // the destination bound is the tail of the shared scratch arena past
@@ -266,7 +276,7 @@ impl MtpHead {
             position as u32,
             global_slot,
             actual_seq_len,
-            &state.block_table,
+            &view_table,
             ctx.buffers.scratch_bytes().saturating_sub(MTP_META_OFFSET),
         )?;
         ctx.gpu.copy_h2d_async(&meta_buf, meta_base, stream)?;
@@ -564,7 +574,7 @@ impl MtpHead {
                 for i in 0..vocab {
                     denom += ((at(i) - max) as f64).exp();
                 }
-                let ids: Vec<usize> = top.iter().map(|t| t.1).collect();
+                let ids: Vec<usize> = top.iter().map(|t| self.v2.token_of_row(t.1)).collect();
                 let probs: Vec<f32> = top
                     .iter()
                     .map(|t| (((t.0 - max) as f64).exp() / denom.max(1e-30)) as f32)
@@ -576,7 +586,28 @@ impl MtpHead {
         // 13. Argmax
         let out_ptr = ctx.buffers.scratch();
 
-        let token_id = if let Some(bitmask) = grammar_bitmask {
+        let embed_staging = draft_embed_target.map(|t| {
+            (
+                self.embed_from_argmax_k,
+                self.embed_tokens.weight,
+                t,
+                self.draft_token_id_dev,
+                h,
+            )
+        });
+        let token_id = if let Some(tok) = self.v2.grammar_argmax(
+            ctx.gpu,
+            logits,
+            v,
+            grammar_bitmask,
+            out_ptr,
+            embed_staging,
+            position,
+            stream,
+        )? {
+            // L11: a ranked head's grammar row (mask translated into row space).
+            tok
+        } else if let Some(bitmask) = grammar_bitmask {
             // Grammar-masked CPU argmax path.
             //
             // D2H the full logits vector (BF16), apply the XGrammar bitmask
@@ -660,7 +691,10 @@ impl MtpHead {
             }
         } else {
             ops::argmax_bf16(ctx.gpu, self.argmax_k, logits, out_ptr, v, stream)?;
-            if let Some(embed_target) = draft_embed_target {
+            // L11: head row -> token id (ranked head); the chain keeps the id.
+            if self.v2.after_argmax(ctx.gpu, out_ptr, 1, stream)? {
+                0u32
+            } else if let Some(embed_target) = draft_embed_target {
                 // GPU-side embedding: write draft embedding to verify input buffer
                 // and token ID to deferred readback buffer. No D2H sync needed.
                 ops::embed_from_argmax(

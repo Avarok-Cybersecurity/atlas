@@ -1,0 +1,211 @@
+# Ada target: kernel set inherited from gb10 via symlink, reached through
+# kernel_source = "holo-3.1-4b" (no new symlinks). expected_absent is
+# NOT yet harvested on Ada hardware (`spark serve --check-kernels`): the tables
+# below are holo-3.1-4b's, carried because the compiled kernel set is the same.
+# No Ada correctness or performance measurement is claimed for this target.
+#
+# ── Why this directory looks the way it does ──────────────────────────────
+# GB10 and Hopper serve Qwen3.8-27B by redirecting to qwen3.6-27b's kernel tree.
+# There is no kernels/ada/qwen3.6-27b, and that gb10 tree carries w4a4_gemm.cu
+# and nvfp4_mmq.cu, which need the FP4 MMA sm_89 lacks. So this target compiles
+# the curated Ada set of an existing Ada directory instead: kernels/ada/common
+# (Ada's mirror of gb10's common, plus the Ada-owned overrides) and
+# holo-3.1-4b/nvfp4 (gated_delta_rule.cu, gated_delta_rule_wy17.cu,
+# w4a16_gemm.cu, moe_w4a16_grouped_gemm.cu, vision_encoder.cu). holo-3.1-4b is
+# the same architecture family (qwen3_5 dense hybrid GDN + full attention +
+# MRoPE), so every lookup the dense path issues for this model is a lookup the
+# 4B target already makes. The 27B-only pieces arrive as real files in
+# kernels/ada/common (the keep-packed GGUF IQ4_XS / Q4_K / Q6_K kernels;
+# the affine and EXL3 families), registered in
+# kernels/ada/HARDWARE.toml [kernels] overrides.
+#
+# ── What fits a 16 GB card (every number inferred) ──
+#   weights on device (UD-IQ4_XS keep-packed, Q6_K head, MTP head)  12.50 GiB
+#   embedding table off the device (row embed_host_offload)          -2.37 GiB BF16
+#   CUDA context, cuBLASLt, graphs                                    0.45 GiB
+#   prefill chunk 2,048 workspace, logits, scratch                    0.60 GiB
+#   GDN live state per stream (48 x 48 x 128 x 128 x 4 B)              0.14 GiB
+#   MTP verify planes, 3 drafts, FP16 h-state                         0.28 GiB
+#   KV resident (remainder of 15.29 GiB usable)                       about 1.3 GiB
+# MTP and eight streams do not coexist at 4.25 bits: the verify pools of a
+# 16 GB card cover only the slots that fit (ssm_reserve::consumer_fit, keyed
+# on the memory_fit_consumer row), and the other slots plain-decode.
+#
+# ── FP16 h-state ──────────────────────────────────────────────────────────
+# The 77 budget assumes `--ssm-h-dtype f16` (FP16 GDN state, K <= 4). The
+# FP16 decode twins (gated_delta_rule_decode_f16_norm and
+# gated_delta_rule_decode_f16_strided_norm_half) are NOT in this compiled set
+# (they live in gb10's qwen3.6-27b tree), see the honesty note on
+# [expected_absent.gated_delta_rule] below. Until an Ada file supplies them,
+# serve this target with the FP32 state (the default) and size with the FP32
+# column of docs/porting/qwen3.8-27b-ada.md.
+[model]
+name = "qwen3.8-27b"
+hf_id = "Qwen/Qwen3.8-27B"
+params = "27B"
+active_params = "27B"
+architecture = "Hybrid Attention + GDN + Dense FFN + MRoPE"
+
+# Breaks a future (qwen3_5, 5120) tie on Ada the way gb10's declaration does;
+# today this is the only Ada target with hidden size 5120.
+match_names = ["qwen3.8-27b"]
+kernel_source = "holo-3.1-4b"
+
+# Architecture facts: gb10's qwen3.8-27b declaration, unchanged.
+layers_total = 64
+layers_full_attention = 16
+layers_linear_attention = 48
+
+hidden_dim = 5120
+head_dim = 256
+q_heads = 24
+kv_heads = 4
+intermediate_size = 17408
+
+vocab_size = 248320
+max_position_embeddings = 262144
+rope_theta = 10000000
+attn_output_gate = true
+partial_rotary_factor = 0.25
+
+mrope_interleaved = true
+mrope_section = [11, 11, 10]
+
+mtp_layers = 0
+vision = true
+
+# UNMEASURED on Ada (and on 3.8 weights anywhere): carried from gb10. A
+# long-context eval on this card decides it.
+effective_context = 24576
+
+# ── Sampling and behavior ────────────────────────────────────────────────
+# Checkpoint properties, not device properties: gb10's qwen3.8-27b tables,
+# value for value (tests/ada_27b.rs pins the equality). The reasoning behind
+# every value (card values, the penalty-free tools preset, the measured
+# thinking-temperature A/B) is in kernels/gb10/qwen3.8-27b/MODEL.toml.
+
+[sampling.thinking_text]
+temperature = 1.0
+top_p = 0.95
+top_k = 20
+min_p = 0.0
+presence_penalty = 0.0
+frequency_penalty = 0.0
+repetition_penalty = 1.0
+dry_multiplier = 0.0
+
+[sampling.thinking_coding]
+temperature = 1.0
+top_p = 0.95
+top_k = 20
+min_p = 0.0
+presence_penalty = 0.0
+frequency_penalty = 0.0
+repetition_penalty = 1.0
+dry_multiplier = 0.0
+
+[sampling.non_thinking]
+temperature = 0.7
+top_p = 0.8
+top_k = 20
+min_p = 0.0
+presence_penalty = 1.5
+frequency_penalty = 0.0
+repetition_penalty = 1.0
+dry_multiplier = 0.0
+
+[sampling.tools]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+frequency_penalty = 0.0
+repetition_penalty = 1.0
+dry_multiplier = 0.0
+
+[behavior]
+enable_loop_watchdog = true
+thinking_default = true
+thinking_in_tools = true
+max_thinking_budget = 2048
+default_kv_dtype = "fp8"
+# default_num_drafts deliberately NOT set, as on gb10: 3.8 earns its own K
+# with its own sweep (agent replay) before one is pinned.
+
+[[model_types]]
+model_type = "qwen3_5"
+hidden_size = 5120
+
+# ── DFlash: intentionally ABSENT ───────────────────────────────────────────
+# Same reason as gb10: the only 27B drafter was trained on Qwen3.6-27B hidden
+# states, which this checkpoint does not produce.
+
+# ── Kernel lookups this model may legitimately fail to resolve ──
+# Carried from kernels/ada/holo-3.1-4b/MODEL.toml, table for table: the
+# compiled kernel set is that target's (kernel_source above) and the dense
+# qwen3_5 path issues the same lookups. NOT harvested for this model; the
+# GPU pass (`--check-kernels` on this directory) replaces
+# these tables with the harvested ones.
+[expected_absent.w4a16]
+w4a16_gemm_t_p3 = "Deep-K p3 twin shipped only in qwen3.6-27b's shadow; layers::tgemm_kernel falls back to w4a16_gemm_t (resolves: common). Unmeasured on Ada."
+w4a16_gemm_t_k64_p3 = "Same family; k64_kernel falls back to required w4a16_gemm_t_k64 (resolves)."
+w4a16_gemm_t_k64_n64_p3 = "Narrow-N twin; 0-handle gated at dispatch (K64_N64_MAX_WIDE_CTAS)."
+w4a16_gemm_t_m128_bf16 = "BF16-projection prefill twin; dispatch gated on handle != 0, falls back to resolved w4a16 m128 path."
+w4a16_gemm_t_m128_bf16_v2 = "Pipelined v2 of the above; same gating. Unmeasured."
+int8_gemm_faith2 = "INT8-prefill twin (faith2). Only materialized when finalize_int8_load finds int8 weights AND the resolved handles; dispatch gated by handle != 0."
+int8_gemm_i32acc = "Same int8 family; materialized only with int8 weights."
+requant_w_nvfp4_int8 = "Int8 weight requant from NVFP4 weights; this target serves GGUF and BF16/FP8 weights, no NVFP4 source weights exist."
+requant_a_bf16_int8 = "Same int8 family: activation requant; gated by the same weight-presence condition."
+
+[expected_absent.w4a4]
+w4a4_gemm = "NVFP4 W4A4 GEMM; sm_89 has no FP4 datapath and this target has no NVFP4 weights. Fallback resolves through w4a16."
+w4a4_gemm_mfast = "mfast twin shipped only in nemotron-labs-3-puzzle's shadow; same NVFP4-weight gating applies here."
+
+[expected_absent.q4k_mmq]
+avarok_q4k_mmq128_nc = "Q4_K FFN MMQ family of gb10's qwen3.6-27b tree; not in this kernel set. finalize_q4k_load requires every handle non-zero, so the gate fails on handle == 0 and the load stays on the resolved path. The keep-packed GGUF route is lane L19's Ada kernels, not this family."
+avarok_q4k_mmq128_wc = "Same Q4_K family; gated off for this target (see q4k_mmq::avarok_q4k_mmq128_nc)."
+avarok_q8_1_quantize_ds4_bf16 = "Same Q4_K family: activation quantizer; gated off."
+
+[expected_absent.q4k_quantize]
+q4k_quantize = "Q4_K weight quantizer for the MMQ family; gated off with the family (see q4k_mmq::avarok_q4k_mmq128_nc)."
+
+[expected_absent.nvfp4_mmq]
+avarok_nvfp4_mmq128_nc = "NVFP4 MMQ FFN family; needs the Blackwell warp FP4 path. This kernel set ships no nvfp4_mmq module; the probe is gated by handle != 0."
+avarok_nvfp4_mmq128_wc = "Same NVFP4 MMQ family; gated off on sm_89."
+avarok_nvfp4_mmq16_nc = "Same NVFP4 MMQ family; gated off on sm_89."
+avarok_nvfp4_mmq16_wc = "Same NVFP4 MMQ family; gated off on sm_89."
+avarok_nvfp4_mmq32_nc = "Same NVFP4 MMQ family; gated off on sm_89."
+avarok_nvfp4_mmq32_wc = "Same NVFP4 MMQ family; gated off on sm_89."
+avarok_nvfp4_mmq64_nc = "Same NVFP4 MMQ family; gated off on sm_89."
+avarok_nvfp4_mmq64_wc = "Same NVFP4 MMQ family; gated off on sm_89."
+avarok_nvfp4_quantize_bf16 = "NVFP4 activation quantizer; gated off with the family."
+avarok_nvfp4_repack = "NVFP4 weight repacker; gated off with the family."
+avarok_nvfp4_silu_mul_scaled = "NVFP4 SiLU epilogue; gated off with the family."
+avarok_nvfp4_silu_mul_quant = "NVFP4 SiLU epilogue (quantized); gated off with the family."
+avarok_nvfp4_scale_bf16 = "NVFP4 scale handler; gated off with the family."
+
+[expected_absent.gated_delta_rule_wy17]
+gated_delta_rule_wy17 = "wy17 fused decode (K=17) exists only in qwen3.6-35b-a3b's module set; decode_batched checks non-NULL before dispatch (per init.rs)."
+[expected_absent.gated_delta_rule_snap]
+gated_delta_rule_decode_f32_norm_snap = "Exact-verify snapshot twin (#435/#438), shipped only in gb10's qwen3.6-27b/nvfp4; the exact arm probes handle != 0 and falls back to the parent kernel + copy_d2d snapshots (same bits, more launches)."
+gated_delta_rule_decode_f32_strided_norm_snap = "Batched exact-verify snapshot twin (#435/#438), shipped only in gb10's qwen3.6-27b/nvfp4; the batched exact form declines on handle 0 and the per-sequence exact loop serves (still exact)."
+
+[expected_absent.gdn_verify_fused_conv_kn_f32]
+gdn_verify_fused_conv_kn_f32 = "FP32 fused verify conv for the exact-verify chain (#435/#438), shipped only in gb10's qwen3.6-27b/nvfp4; probed handle != 0, absent keeps the per-token conv launches (same bits, more launches)."
+
+# HONESTY NOTE (carried from holo-3.1-4b, and it matters more here): the
+# FP16-h-state decode arms dispatch these handles UN-PROBED once
+# --ssm-h-dtype f16 is active. Preflight refuses f16 for bad env combinations
+# but NOT for a target that lacks the twins, so passing the flag on this
+# target is a 0-handle launch, not a fallback. Do not pass --ssm-h-dtype f16
+# here until an Ada file ships the twins. UNMEASURED.
+[expected_absent.gated_delta_rule]
+gated_delta_rule_decode_f16_norm = "FP16 h-state twin; see honesty note above. F32 fused-norm arm resolves."
+gated_delta_rule_decode_f16_strided_norm_half = "FP16 h-state twin; see honesty note above. F32 strided-norm arm resolves."
+gated_delta_rule_decode_f32_strided_norm_half = "Half-register twin; selected only under AVAROK_GDN_HALF_REG presence (off as shipped)."
+gated_delta_rule_decode_f32_strided_norm_smem = "SMEM-staged twin; gated behind AVAROK_GDN_SMEM_STAGE (off as shipped) AND the half-register gate."
+
+# Added for this hardware (derived from the source, not harvested), as in
+# holo-3.1-4b: the sm_90-only TMA state spine.
+[expected_absent.gated_delta_rule_fla]
+gated_delta_rule_chunk_delta_h_tma = "TMA state spine (cp.async.bulk.tensor + mbarrier.arrive.expect_tx) needs sm_90; kernels/ada/common/gated_delta_rule_fla.cu compiles it only under __CUDA_ARCH__ >= 900. Launched only when AVAROK_GDN_TMA=1 AND the handle is non-zero; absent, the scalar spine chunk_delta_h_vfused serves. UNMEASURED on Ada silicon."

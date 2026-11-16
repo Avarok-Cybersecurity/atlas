@@ -282,8 +282,14 @@ impl Qwen3AttentionLayer {
             return Ok(());
         }
 
-        ops::residual_add_rms_norm(
-            ctx.gpu,
+        // Port row `rmsnorm_fp8_quant_fused` (off by default): the same norm,
+        // plus the dense FFN's W8A8 input quant in the same launch, only when
+        // no shortcut MoE runs between the norm and the FFN; the scope is held
+        // across the FFN call only (`dense_ffn_w8a8_prefill/norm_fused.rs`).
+        let prequant = crate::layers::dense_ffn::w8a8_prefill::norm_fused::residual_add_rms_norm(
+            &self.ffn,
+            self.moe_ffn.is_none(),
+            ctx,
             self.residual_add_rms_norm_k,
             hidden,
             attn_out,
@@ -356,6 +362,7 @@ impl Qwen3AttentionLayer {
         self.ffn
             .forward_prefill(ctx.buffers.norm_output(), num_tokens, ctx, stream)
             .map_err(|e| anyhow::anyhow!("ffn.forward_prefill failed: {e}"))?;
+        drop(prequant);
         if let Some(t) = t_ffn {
             crate::layers::qwen3_attention::add_ffn_host_us(t.elapsed().as_micros() as u64);
         }

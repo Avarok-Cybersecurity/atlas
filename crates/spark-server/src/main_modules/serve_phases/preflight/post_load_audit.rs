@@ -26,14 +26,28 @@ pub(crate) fn post_load_memory_audit(
     total_reserve: usize,
     gdn_two_phase_bytes: usize,
     max_batch_tokens_pre: usize,
+    deferred_free: usize,
 ) -> Result<()> {
     let estimated_free = free_mem.saturating_sub(weight_bytes);
     let actual_free = gpu.free_memory().unwrap_or(estimated_free);
+    // `deferred_free`: bytes a load-time route hands back while the model is
+    // built, BEFORE the inference buffers this audit guards are allocated
+    // (today the dense BF16 -> FP8 FFN route:
+    // `fp8_from_bf16::deferred_free_bytes`). Zero on every other load.
     let available_free = if actual_free > 0 {
         actual_free
     } else {
         estimated_free
-    };
+    }
+    .saturating_add(deferred_free);
+    if deferred_free > 0 {
+        tracing::info!(
+            "Post-load audit: crediting {:.2} GB the BF16 -> FP8 load routes free during the build \
+             ({:.2} GB measured free now)",
+            deferred_free as f64 / (1024.0 * 1024.0 * 1024.0),
+            actual_free as f64 / (1024.0 * 1024.0 * 1024.0),
+        );
+    }
     if available_free < total_reserve {
         let avail_gb = available_free as f64 / (1024.0 * 1024.0 * 1024.0);
         let need_gb = total_reserve as f64 / (1024.0 * 1024.0 * 1024.0);

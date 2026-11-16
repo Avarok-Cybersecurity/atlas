@@ -407,6 +407,7 @@ impl TransformerModel {
 
             if use_graphs {
                 let graph = self.gpu.end_capture(stream)?;
+                super::graph_family::note_capture(graph);
                 if graph.0 != 0 {
                     tracing::info!("Captured CUDA graph for K=4 verify (slot={})", seq.slot_idx);
                     // BISECT HATCH (AVAROK_GLM_VERIFY_GRAPH_NOCACHE=1) — see verify_c.rs.

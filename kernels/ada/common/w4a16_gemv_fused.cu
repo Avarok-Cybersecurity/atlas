@@ -1,0 +1,1 @@
+../../gb10/common/w4a16_gemv_fused.cu

@@ -114,6 +114,48 @@ pub fn silu_mul_quant_fp8(
         .launch(stream)
 }
 
+/// K-groups one `swiglu_quant_fp8_ada` CTA covers (128 threads, 16 per
+/// group). SSOT with `SQ_GROUPS_PER_CTA` in the `.cu`; the kernel derives its
+/// span from `gridDim.y`, so this only has to fill the block.
+pub const SWIGLU_QUANT_GROUPS_PER_CTA: u32 = 8;
+
+/// Grid of one `swiglu_quant_fp8_ada` launch: `(M, ceil(K/128 / 8), 1)`.
+pub fn swiglu_quant_grid(m: u32, k: u32) -> [u32; 3] {
+    [m, (k / 128).div_ceil(SWIGLU_QUANT_GROUPS_PER_CTA).max(1), 1]
+}
+
+/// sm_89 fused SwiGLU + per-token-group FP8 quantization
+/// (`kernels/ada/common/swiglu_quant_fp8_ada.cu`): the bytes and scales of
+/// `per_token_group_quant_fp8(moe_silu_mul(gate, up))`, bit for bit, with no
+/// group-count cap (unlike [`silu_mul_quant_fp8`]). `gate` and `up` are
+/// contiguous `[m, k]` BF16; `k % 128 == 0` is the caller's precondition.
+///
+/// Kernel: `swiglu_quant_fp8_ada(gate, up, out_fp8, a_scale, M, K)`
+/// Grid: [`swiglu_quant_grid`]  Block: (128, 1, 1)
+#[allow(clippy::too_many_arguments)]
+pub fn swiglu_quant_fp8_ada(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    gate: DevicePtr,
+    up: DevicePtr,
+    out_fp8: DevicePtr,
+    a_scale: DevicePtr,
+    m: u32,
+    k: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid(swiglu_quant_grid(m, k))
+        .block([128, 1, 1])
+        .arg_ptr(gate)
+        .arg_ptr(up)
+        .arg_ptr(out_fp8)
+        .arg_ptr(a_scale)
+        .arg_u32(m)
+        .arg_u32(k)
+        .launch(stream)
+}
+
 /// L2 normalization (in-place): `data[i] = data[i] / sqrt(sum(data^2) + eps)`.
 ///
 /// Applied per head: data is [num_heads, head_dim], each head normalized independently.

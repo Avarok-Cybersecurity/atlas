@@ -17,8 +17,9 @@ use super::ssm_batched::ssm_tc_proj_min_n;
 /// Which GEMV/GEMM instantiation this step's row count selects, resolved ONCE
 /// and used by both projections. `qkvz` and `out_proj` have the same row count
 /// and the same weight format, so resolving twice would be two chances to
-/// disagree.
-pub(super) struct BatchedProjTier {
+/// disagree. The tier and the two projections are visible to the whole
+/// `qwen3_ssm` module so the W4 arm's tests (`w4_proj_tests.rs`) drive them.
+pub(in crate::layers::qwen3_ssm) struct BatchedProjTier {
     /// `w8a16_gemm_pipelined` (cp.async) is present — bit-identical to the base
     /// `w8a16_gemm` and ~4.6x faster.
     pub(super) w8a16_pipe: bool,
@@ -33,7 +34,7 @@ pub(super) struct BatchedProjTier {
 
 impl Qwen3SsmLayer {
     /// Resolve the GEMV/GEMM tier for `n` decode rows.
-    pub(super) fn batched_proj_tier(&self, n: usize) -> BatchedProjTier {
+    pub(in crate::layers::qwen3_ssm) fn batched_proj_tier(&self, n: usize) -> BatchedProjTier {
         // FP8 (w8a16) when the decode overlay is installed, else BF16 dense.
         // Prefer the pipelined (cp.async) w8a16 kernel — bit-identical, ~4.6×
         // faster than the base w8a16_gemm, which nsys showed as 44.6% of the
@@ -74,7 +75,7 @@ impl Qwen3SsmLayer {
     /// Batched QKVZ projection: ONE `[N,h]` -> `[N,qkvz]` GEMM (weights read
     /// once for all `n` rows).
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn ms_batched_qkvz(
+    pub(in crate::layers::qwen3_ssm) fn ms_batched_qkvz(
         &self,
         ctx: &ForwardContext,
         tier: &BatchedProjTier,
@@ -92,7 +93,9 @@ impl Qwen3SsmLayer {
             use_batch4,
             fp4_gemv_batch_k,
         } = *tier;
-        if let Some(ref fp8) = self.qkvz_fp8w {
+        if self.w4_proj.is_some() {
+            self.w4_qkvz_rows(ctx, normed_base, deinterleaved, n, stream)?;
+        } else if let Some(ref fp8) = self.qkvz_fp8w {
             // W8A8 cuBLASLt at 5..16 rows (#927): round 7 put THIS projection
             // at 25.9% of the n=16 step, 357 GB/s. Declining falls through to
             // the unchanged GEMV tiers below. SSOT: `decode_w8a8_proj.rs`.
@@ -210,7 +213,7 @@ impl Qwen3SsmLayer {
     /// Batched out_proj: ONE `[N,value_dim]` -> `[N,h]` GEMM (weights read
     /// once for all `n` rows).
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn ms_batched_out_proj(
+    pub(in crate::layers::qwen3_ssm) fn ms_batched_out_proj(
         &self,
         ctx: &ForwardContext,
         tier: &BatchedProjTier,
@@ -228,7 +231,9 @@ impl Qwen3SsmLayer {
             use_batch4,
             fp4_gemv_batch_k,
         } = *tier;
-        if let Some(ref fp8) = self.out_proj_fp8w {
+        if self.w4_proj.is_some() {
+            self.w4_out_rows(ctx, normed_out_base, ssm_out_base, n, stream)?;
+        } else if let Some(ref fp8) = self.out_proj_fp8w {
             // W8A8 cuBLASLt at 5..16 rows (#927): `out_proj` is ~5.11 ms of
             // the n=16 step inside the GrdX=1280 `w8a16_gemv_batch16` group.
             if self.try_ssm_decode_w8a8(

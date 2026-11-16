@@ -33,13 +33,41 @@ mod dispatch_proj_decode;
 // SSOT for every lever that differs between one target and another.
 #[path = "ops/target_defaults.rs"]
 pub mod target_defaults;
+// The port sprint's rows (`port/consumer-opt`): their resolution and boot line,
+// and the module list of their per-row resolvers (`ops/port_rows/<row>.rs`).
+// Declared without `#[path]` so `port_rows`' children resolve under
+// `ops/port_rows/`.
+pub mod port_rows;
+pub mod target_defaults_port;
 // Row-wise FP8 routing, split out when it took dispatch_proj.rs over the cap.
 #[path = "ops/dispatch_proj_rowwise.rs"]
 mod dispatch_proj_rowwise;
 #[path = "ops/embeddings.rs"]
 mod embeddings;
+// The `ffn_bf16_cublas_prefill` target row: the BF16 dense-FFN prefill on
+// cuBLASLt by default where the target declares it (ada).
+#[path = "ops/ffn_bf16_cublas.rs"]
+pub mod ffn_bf16_cublas;
+// The `gdn_batched_gemm` target row: the BF16 GDN verify projections on one
+// cuBLASLt GEMM over all rows (off on every target; `AVAROK_GDN_BATCHED_GEMM`).
 #[path = "ops/fp8_act_quant.rs"]
 mod fp8_act_quant;
+#[path = "ops/gdn_batched_gemm.rs"]
+pub mod gdn_batched_gemm;
+// The `gdn_verify_gemv` port row: the same verify projections on the batched
+// BF16 GEMV, bit-identical to the decode GEMV (off on every target;
+// `AVAROK_GDN_VERIFY_GEMV`).
+#[path = "ops/gdn_verify_gemv.rs"]
+pub mod gdn_verify_gemv;
+// The `lm_head_verify_gemv` port row: a BF16 head's verify rows above 8 on the
+// same batched GEMV instead of the scalar `dense_gemm` (off on every target;
+// `AVAROK_LM_HEAD_VERIFY_GEMV`).
+#[path = "ops/lm_head_verify_gemv.rs"]
+pub mod lm_head_verify_gemv;
+// The `attn_gated_bf16_batchm` target row: gated dense-BF16 Q/K/V on the
+// batched GEMV in multi-seq decode (ada: on, bit-identical).
+#[path = "ops/attn_gated_bf16_batchm.rs"]
+pub mod attn_gated_bf16_batchm;
 // WHEN the Hopper FP8 act-quant twin runs: the CTA floor, its lever and the
 // route line (#928, round-16 receipt § 2.1). A sibling so neither file crosses
 // the cap.

@@ -140,6 +140,7 @@ pub fn step_verify_k3(
     verify_ctx: &crate::scheduler::logit_processors::LogitsContext,
     dflash_verify_raw_argmax: bool,
 ) {
+    super::mtp_device_timing::step_start(model);
     if let Err(e) = model.sync_secondary() {
         tracing::error!("sync_secondary: {e:#}");
         super::lifecycle::fail_sequence(a, format!("sync_secondary: {e:#}"));
@@ -191,6 +192,9 @@ pub fn step_verify_k3(
             }
         }
     };
+    sched
+        .timing
+        .record(crate::scheduler::mtp_timing::Phase::VerifyForward, t_verify);
     let verify_us = t_verify.elapsed().as_micros();
     a.last_token_time = Instant::now();
     let (v0_argmax, v1_argmax, v2_argmax) = (result_vec[0], result_vec[1], result_vec[2]);
@@ -332,7 +336,12 @@ pub fn step_verify_k3(
         // Item #2 (STree-style in-place K=3 verify commit). Full accept
         // (num_accepted=k=3): the verify kernel already wrote the canonical
         // h_state, so the commit is a no-op.
-        if let Err(e) = model.commit_accepted_prefix(&mut a.seq, 3, 3) {
+        let t_commit = Instant::now();
+        let committed = model.commit_accepted_prefix(&mut a.seq, 3, 3);
+        sched
+            .timing
+            .record(crate::scheduler::mtp_timing::Phase::Commit, t_commit);
+        if let Err(e) = committed {
             // SSM state is no longer trustworthy — terminate, do not continue.
             tracing::error!("commit_accepted_prefix (K=3 accept-3): {e:#}");
             super::lifecycle::fail_sequence(
@@ -364,6 +373,9 @@ pub fn step_verify_k3(
                 tracing::error!("run_mtp_propose_multi: {e:#}");
             }
         }
+        sched
+            .timing
+            .record(crate::scheduler::mtp_timing::Phase::Propose, t_propose);
         let propose_us = t_propose.elapsed().as_micros();
         tracing::debug!(
             "K3 ACCEPT-2: verify={verify_us}μs propose={propose_us}μs seq_len={}",
@@ -378,7 +390,12 @@ pub fn step_verify_k3(
         }
         // Item #2 (STree-style in-place K=3 verify commit). Partial accept
         // (num_accepted=2 < k=3): rewind live h_state to intermediate[1].
-        if let Err(e) = model.commit_accepted_prefix(&mut a.seq, 2, 3) {
+        let t_commit = Instant::now();
+        let committed = model.commit_accepted_prefix(&mut a.seq, 2, 3);
+        sched
+            .timing
+            .record(crate::scheduler::mtp_timing::Phase::Commit, t_commit);
+        if let Err(e) = committed {
             tracing::error!("commit_accepted_prefix (K=3 accept-2): {e:#}");
             super::lifecycle::fail_sequence(
                 a,
@@ -414,6 +431,9 @@ pub fn step_verify_k3(
                 tracing::error!("run_mtp_propose_multi: {e:#}");
             }
         }
+        sched
+            .timing
+            .record(crate::scheduler::mtp_timing::Phase::Propose, t_propose);
         let propose_us = t_propose.elapsed().as_micros();
         tracing::debug!(
             "K3 ACCEPT-1: verify={verify_us}μs propose={propose_us}μs seq_len={}",
@@ -429,7 +449,12 @@ pub fn step_verify_k3(
         }
         // Item #2 (STree-style in-place K=3 verify commit). Partial accept
         // (num_accepted=1 < k=3): rewind live h_state to intermediate[0].
-        if let Err(e) = model.commit_accepted_prefix(&mut a.seq, 1, 3) {
+        let t_commit = Instant::now();
+        let committed = model.commit_accepted_prefix(&mut a.seq, 1, 3);
+        sched
+            .timing
+            .record(crate::scheduler::mtp_timing::Phase::Commit, t_commit);
+        if let Err(e) = committed {
             tracing::error!("commit_accepted_prefix (K=3 accept-1): {e:#}");
             super::lifecycle::fail_sequence(
                 a,
@@ -462,6 +487,9 @@ pub fn step_verify_k3(
                 tracing::error!("run_mtp_propose_multi: {e:#}");
             }
         }
+        sched
+            .timing
+            .record(crate::scheduler::mtp_timing::Phase::Propose, t_propose);
         let propose_us = t_propose.elapsed().as_micros();
         tracing::debug!(
             "K3 REJECT: verify={verify_us}μs propose={propose_us}μs seq_len={}",

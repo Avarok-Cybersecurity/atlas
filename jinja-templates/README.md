@@ -46,11 +46,40 @@ The filename must match the model's `model_type` from `config.json`:
 
 ## Priority
 
+0. `--chat-template sharp|sharp-no-terse|PATH` (or `AVAROK_CHAT_TEMPLATE`, the
+   flag wins), **opt-in and off by default**. It replaces whatever the steps below
+   chose, drops the `openai/` variant so nothing shadows it, and applies even
+   with `--disable-template-overrides`. `model` (the default) leaves steps 1-3
+   untouched. See "Chat template choice" below.
 1. Override template from this directory — **opt-in by file presence**, unless
    serving with `--disable-template-overrides`
 2. Template from `tokenizer_config.json` / `chat_template.jinja` (the model's
    own — the default for models without an override file)
 3. Default ChatML fallback (lowest priority)
+
+## Chat template choice (`--chat-template`)
+
+| Value | Template |
+|---|---|
+| `model` (default) | unchanged: steps 1-3 above |
+| `sharp` | the embedded Sharp template for Qwen3.5/3.6/3.8 (terseness system prompt on, history reasoning kept, stricter tool-call format); attribution in `SHARP-CHAT-TEMPLATE-ATTRIBUTION.md` |
+| `sharp-no-terse` | the same template with the terseness system prompt pinned off, to separate its effect from the retention and tool-format fixes |
+| any other value | a Jinja file read from that path; an unreadable or empty file fails startup, and so does an unknown word such as `shrap` |
+
+The value comes from `--chat-template`, else `AVAROK_CHAT_TEMPLATE`; an empty
+value counts as unset. The boot log prints `chat template: sharp (<version>)`
+and `/props` reports the selected template text. A choice also marks the
+template as owning the Qwen XML tool prompt (when it declares `tools` and
+renders the `<function=...>` format), so the parser's own tool prompt is not
+injected a second time. Models with a checkpoint-native chat encoding
+(DeepSeek V4, Kimi K3) refuse a template instead of ignoring the flag.
+
+Per request, `chat_template_kwargs.terse` (true or false) reaches the template
+as the variable `terse`; `--default-chat-template-kwargs '{"terse":false}'`
+sets the server-wide default. Only the Sharp template reads it. Sharp is for
+answer-style work with thinking on; keep the model's own template for every
+kernel, KL, prefill and decode benchmark, because Sharp adds about 150 prompt
+tokens to each request.
 
 ## Usage
 

@@ -39,6 +39,11 @@ pub enum WeightDtype {
     FP8E8M0,
     UInt8,
     Int64,
+    /// Raw little-endian I32 (compressed-tensors `pack-quantized` W4A16:
+    /// `weight_packed`, eight int4 codes per word, and `weight_g_idx`). The
+    /// dense Qwen3.5 loader defers these and reads them on the host for the
+    /// Marlin repack (`spark-model` `port::marlin::compressed`).
+    Int32,
     /// Keep-packed PrismML ternary Q2_0 (ggml id 42): raw on-disk blocks stay
     /// 2-bit in VRAM (fp16 scale + 2-bit codes per group of `group` elements),
     /// dequantized in-kernel by the native `q2_0_gemv` decode path. Only
@@ -58,6 +63,15 @@ pub enum WeightDtype {
     /// the DeepSeek-V4.1 output head, run by the K-quant GEMV instead of a
     /// bf16 expansion (0.82 instead of 2 bytes a weight read every token).
     Q6K,
+    /// Raw GGUF `IQ4_XS` blocks kept on the device (136 bytes per 256
+    /// weights: an f16 scale, eight 6-bit sub-scales and 4-bit codes into
+    /// ggml's `kvalues_iq4nl` book) for the Ada keep-packed GEMV and MMQ
+    /// (`spark-model` `port::gguf_q4`). Produced only by the GGUF loader with
+    /// the `gguf_native_iq4` row on (`weights/gguf/keep_packed_iq4.rs`).
+    Iq4Xs,
+    /// Raw GGUF `Q4_K` blocks kept on the device (144 bytes per 256 weights),
+    /// for the same route; produced only with the `gguf_native_iq4` row on.
+    Q4K,
 }
 
 impl WeightDtype {
@@ -72,10 +86,13 @@ impl WeightDtype {
             Self::FP8E8M0 => 1,
             Self::UInt8 => 1,
             Self::Int64 => 8,
+            Self::Int32 => 4,
             Self::PackedQ2_0 { .. } => 0,
             Self::Q2K => 0,
             Self::Q3K => 0,
             Self::Q6K => 0,
+            Self::Iq4Xs => 0,
+            Self::Q4K => 0,
         }
     }
 
@@ -90,6 +107,7 @@ impl WeightDtype {
             safetensors::Dtype::F8_E4M3 => Ok(Self::FP8E4M3),
             safetensors::Dtype::F8_E8M0 => Ok(Self::FP8E8M0),
             safetensors::Dtype::I64 => Ok(Self::Int64),
+            safetensors::Dtype::I32 => Ok(Self::Int32),
             other => bail!("Unsupported safetensors dtype: {other:?}"),
         }
     }
@@ -110,6 +128,7 @@ impl WeightDtype {
             "F8_E4M3" => Self::FP8E4M3,
             "F8_E8M0" => Self::FP8E8M0,
             "I64" => Self::Int64,
+            "I32" => Self::Int32,
             other => bail!("Unsupported safetensors dtype '{other}'"),
         })
     }
@@ -159,6 +178,8 @@ impl WeightTensor {
             WeightDtype::Q2K => self.num_elements() / 256 * 84,
             WeightDtype::Q3K => self.num_elements() / 256 * 110,
             WeightDtype::Q6K => self.num_elements() / 256 * 210,
+            WeightDtype::Iq4Xs => self.num_elements() / 256 * 136,
+            WeightDtype::Q4K => self.num_elements() / 256 * 144,
             d => self.num_elements() * d.byte_size(),
         }
     }
@@ -488,6 +509,7 @@ impl SafetensorsLoader {
 /// `10` first and silently mis-maps every table after the ninth.
 pub mod adapter;
 mod derived;
+pub mod exl3;
 pub use derived::DerivedStore;
 mod gguf;
 mod k3;
@@ -496,6 +518,7 @@ pub use k3::K3SafetensorsLoader;
 pub mod mlx_int8;
 pub use gguf::dequant_cpu;
 pub use gguf::expert_stream;
+pub use gguf::keep_packed_iq4;
 pub use gguf::{GgufLoader, GgufShardSet, config_from_gguf_dir, find_gguf, find_gguf_shards};
 pub(crate) use loader::estimate_load_bytes;
 // Platform-independent: consumed by the unix-only fast-weights (O_DIRECT) path

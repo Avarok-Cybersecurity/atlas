@@ -298,6 +298,10 @@ pub struct DenseFfnLayer {
     // arm is not selectable and the in-tree GEMM runs (SSOT for the rule:
     // `dense_ffn_w8a8_prefill.rs::w8a8_gemm`).
     fp8_act_scale_kmajor_k: KernelHandle,
+    /// sm_89 fused SwiGLU + down-input FP8 quant (`swiglu_quant_fp8_ada`);
+    /// KernelHandle(0) off Ada -> the `act_mul` + quantizer pair. Rule:
+    /// `dense_ffn_swiglu_quant.rs`.
+    swiglu_quant_fp8_k: KernelHandle,
     /// The FUSED `[2*inter, hidden]` block-scaled FP8 gate+up weight (#927),
     /// installed by `set_fp8_gate_up_fused`. `gate_proj` and `up_proj` above
     /// are VIEWS inside it whenever it is `Some`, so every un-fused rung reads
@@ -362,6 +366,8 @@ pub struct DenseFfnLayer {
     // KernelHandle(0) when absent → falls back to the transient-dequant path.
     q2_0_mmq_nc_k: KernelHandle,
     q2_0_mmq_wc_k: KernelHandle,
+    /// Packed `W4Linear` gate/up/down (`set_w4`); arm and rules: `dense_ffn/w4.rs`.
+    w4: Option<w4::W4Ffn>,
 }
 
 /// M-sized MMQ tiles: **ON by default**, disabled by `AVAROK_NO_MMQ_SMALL_TILE=1`.
@@ -406,6 +412,9 @@ impl DenseFfnLayer {
         let dense_gemv_bf16_k = super::try_kernel(gpu, "gemv", "dense_gemv_bf16");
         let dense_gemm_bf16_k = super::try_kernel(gpu, "gemm", "dense_gemm_bf16");
         let dense_gemm_tc_k = super::try_kernel(gpu, "gemm_tc", "dense_gemm_tc");
+        // FP8 GEMV/GEMM handles: the bit-identical sm_89 drop-ins where the
+        // target compiles them (`dense_ffn_ada_kernels.rs`), else gb10's.
+        let fp8k = ada_kernels::Fp8FfnKernels::resolve(gpu);
 
         let layer = Self {
             weights,
@@ -483,7 +492,7 @@ impl DenseFfnLayer {
             dense_gemm_bf16_k,
             dense_gemm_tc_k,
             fp8_weights: None,
-            w8a16_gemv_k: super::try_kernel(gpu, "w8a16_gemv", "w8a16_gemv"),
+            w8a16_gemv_k: fp8k.gemv,
             w8a16_gemm_k: super::try_kernel(gpu, "w8a16_gemm", "w8a16_gemm"),
             w8a16_gemv_batch4_k: super::try_kernel(gpu, "w8a16_gemv_batch4", "w8a16_gemv_batch4"),
             w8a16_gemv_batch16_k: super::try_kernel(gpu, "w8a16_gemv_batch4", "w8a16_gemv_batch16"),
@@ -501,24 +510,17 @@ impl DenseFfnLayer {
                 "w8a16_gemm_pipelined",
                 "w8a16_gemm_pipelined",
             ),
-            w8a16_gemv_dual_k: super::try_kernel(gpu, "w8a16_gemv_fused", "w8a16_gemv_dual"),
-            w8a16_gemv_silu_input_k: super::try_kernel(
-                gpu,
-                "w8a16_gemv_fused",
-                "w8a16_gemv_silu_input",
-            ),
+            w8a16_gemv_dual_k: fp8k.gemv_dual,
+            w8a16_gemv_silu_input_k: fp8k.gemv_silu_input,
             w8a16_gemm_t_m128_k: super::try_kernel(gpu, "w8a16_gemm_t_m128", "w8a16_gemm_t_m128"),
             per_token_group_quant_fp8_k: ops::Fp8ActQuant::resolve(gpu),
-            fp8_gemm_t_blockscaled_k: super::try_kernel(
-                gpu,
-                "fp8_gemm_t_blockscaled",
-                "fp8_gemm_t_blockscaled",
-            ),
+            fp8_gemm_t_blockscaled_k: fp8k.gemm_w8a8,
             fp8_act_scale_kmajor_k: super::try_kernel(
                 gpu,
                 "fp8_scale_transpose",
                 "fp8_act_scale_to_kmajor",
             ),
+            swiglu_quant_fp8_k: fp8k.swiglu_quant,
             fp8_gate_up_fused: None,
             gateup_fused,
             // ★ PROBED ONLY WHEN THE ARM IS ARMED: an unresolved lookup
@@ -550,6 +552,7 @@ impl DenseFfnLayer {
             // packed-Q2 weights.
             q2_0_mmq_nc_k: KernelHandle(0),
             q2_0_mmq_wc_k: KernelHandle(0),
+            w4: None,
         };
         Ok(layer)
     }
@@ -569,6 +572,10 @@ impl DenseFfnLayer {
         inter: u32,
         stream: u64,
     ) -> Result<()> {
+        // Packed W4 (NULL NVFP4 sources): reserve its scratch instead (`dense_ffn/w4.rs`).
+        if self.w4.is_some() {
+            return self.finalize_w4_load(gpu, stream).map(|_| ());
+        }
         // Packed-Q2 (AVAROK_GGUF_NATIVE_Q2) FFN keeps its NVFP4 source weights
         // NULL — the Q4_K prefill copy is built by dequant-ing those (NULL) NVFP4
         // blocks, so running it here is a null-ptr kernel launch (CUDA 700).
@@ -581,7 +588,9 @@ impl DenseFfnLayer {
         // is dead work — and since #915 the loader installs NULL NVFP4 source
         // weights on that route, over which `ensure_q4k_weight`'s dequant is a
         // CUDA-700 illegal access. Same reason as the packed-Q2 guard above.
-        if self.fp8_weights.is_some() {
+        // Native BF16 overlay: same early return in `forward_prefill_inner`
+        // (the BF16 arm), and the loader installs NULL NVFP4 sources there.
+        if self.fp8_weights.is_some() || self.bf16_weights.is_some() {
             return Ok(());
         }
         let q4k_active = self.q4k_mmq_nc_k.0 != 0
@@ -675,6 +684,10 @@ impl DenseFfnLayer {
         inter: u32,
         stream: u64,
     ) -> Result<()> {
+        // Packed W4: NULL NVFP4 sources, and the W4 arm serves prefill (`dense_ffn/w4.rs`).
+        if self.w4.is_some() {
+            return Ok(());
+        }
         // Packed-Q2 (AVAROK_GGUF_NATIVE_Q2) FFN keeps its NVFP4 source weights
         // NULL. This W4A4-MMQ finalize is active by DEFAULT (SiLU + kernels
         // present) and repacks the NVFP4 gate/up — over NULL pointers that's a
@@ -686,7 +699,8 @@ impl DenseFfnLayer {
         // one is active by DEFAULT wherever the W4A4-MMQ kernels exist — so on
         // a target that ships them it would repack NULL NVFP4 gate/up AND free
         // `_t` copies for a prefill arm the FP8 early-return never reaches.
-        if self.fp8_weights.is_some() {
+        // Native BF16 overlay: as above, the BF16 arm returns first.
+        if self.fp8_weights.is_some() || self.bf16_weights.is_some() {
             return Ok(());
         }
         let active = self.nvfp4_mmq_nc_k.0 != 0
@@ -857,6 +871,10 @@ impl DenseFfnLayer {
             "LoRA v0 supports only the NVFP4 dense-FFN path (packed-Q2 weights \
              installed on this layer)"
         );
+        anyhow::ensure!(
+            self.w4.is_none(),
+            "LoRA v0 supports only the NVFP4 dense-FFN path (packed W4 weights installed on this layer)"
+        );
         // The decode down delta contracts over silu(gate)*up, which only the
         // split-SiLU path materialises; `forward` pins that path whenever an
         // adapter is installed. Refuse here if the layer cannot take it, so
@@ -985,6 +1003,11 @@ impl DenseFfnLayer {
     /// `dense_gemv_bf16_k` / `dense_gemm_bf16_k` checks). Small-batch
     /// paths reuse `forward_prefill` so they cannot enter NVFP4 kernels
     /// with the null placeholder weights used by BF16-native layers.
+    ///
+    /// Because every entry point prefers this overlay, the Qwen3.5 dense
+    /// loader builds the layer with NULL NVFP4 weights (no allocation) and
+    /// calls this before the load-time MMQ finalizers, which return early
+    /// once it is set. See `weight_loader/qwen35_dense/fp8_residency.rs`.
     pub fn set_bf16_weights(&mut self, gate: DenseWeight, up: DenseWeight, down: DenseWeight) {
         self.bf16_weights = Some(DenseFfnWeightsBf16 {
             gate_proj: gate,
@@ -1282,6 +1305,11 @@ impl DenseFfnLayer {
                 stream,
             )?;
             return Ok(output);
+        }
+
+        // Packed W4 (`W4Linear`): ahead of the BF16 overlay, behind Q2 and FP8 (`dense_ffn/w4.rs`).
+        if self.w4_active() {
+            return self.forward_w4_decode(input, ctx, stream);
         }
 
         // BF16 dispatch: per-projection GEMV via `dense_gemv_bf16`. We
@@ -1631,6 +1659,13 @@ impl DenseFfnLayer {
         if let Some(ref q2w) = self.q2_weights {
             return self.forward_km_q2(q2w, input, ctx, 2, stream);
         }
+        // FP8 batch-M verify GEMV (row-gated, 3.7.3), then packed W4 (`dense_ffn/w4.rs`).
+        if self.fp8_verify_arm(input, 2, ctx, stream)? {
+            return Ok(());
+        }
+        if self.w4_active() {
+            return self.forward_w4_rows(input, 2, ctx, stream);
+        }
         if native_small_batch_uses_prefill(self.bf16_weights.is_some(), self.fp8_weights.is_some())
         {
             return self.forward_prefill(input, 2, ctx, stream);
@@ -1687,6 +1722,13 @@ impl DenseFfnLayer {
         // Packed-Q2: route to the keep-packed batchm FFN (m=3); NVFP4 weights null.
         if let Some(ref q2w) = self.q2_weights {
             return self.forward_km_q2(q2w, input, ctx, 3, stream);
+        }
+        // FP8 batch-M verify GEMV (row-gated, 3.7.3), then packed W4 (`dense_ffn/w4.rs`).
+        if self.fp8_verify_arm(input, 3, ctx, stream)? {
+            return Ok(());
+        }
+        if self.w4_active() {
+            return self.forward_w4_rows(input, 3, ctx, stream);
         }
         if native_small_batch_uses_prefill(self.bf16_weights.is_some(), self.fp8_weights.is_some())
         {
@@ -1758,7 +1800,11 @@ impl DenseFfnLayer {
                 // the answer must stay `true` or the n=4..8 verify arm in
                 // `multi_seq/ffn.rs:145` would fall through to a DIFFERENT
                 // branch and quietly change the routing this fix must not touch.
-                || self.fp8_weights.is_some())
+                // Same for a native BF16 overlay with no NVFP4 fallback.
+                || self.fp8_weights.is_some()
+                || self.bf16_weights.is_some()
+                // Packed W4: `forward_km` serves it through `dense_ffn/w4.rs`.
+                || self.w4.is_some())
     }
 
     /// K=m (m<=8) speculative verify: batched GEMV for m tokens.
@@ -1778,6 +1824,13 @@ impl DenseFfnLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
+        // FP8 batch-M verify GEMV (row-gated, 3.7.3), then packed W4 (`dense_ffn/w4.rs`).
+        if self.fp8_verify_arm(input, m, ctx, stream)? {
+            return Ok(());
+        }
+        if self.w4_active() {
+            return self.forward_w4_rows(input, m as usize, ctx, stream);
+        }
         // As in k2/k3, concurrent decode must preserve an installed native
         // overlay even when valid, lower-precision NVFP4 fallbacks coexist.
         if native_small_batch_uses_prefill(self.bf16_weights.is_some(), self.fp8_weights.is_some())
@@ -2323,10 +2376,29 @@ impl DenseFfnLayer {
             // ladder. Declines to the pair below at every width, target and
             // checkpoint it does not claim. Rule and the round-13 receipt:
             // `dense_ffn_gateup_fused.rs` (SSOT).
+            //
+            // `fused_down_a8`: on sm_89 the SwiGLU and the down projection's
+            // activation quant are ONE launch writing the same FP8 bytes and
+            // scales the pair below would (`dense_ffn_swiglu_quant.rs`).
+            let mut fused_down_a8 = None;
             if let Some((a_fp8, a_scale)) = gu_a8
                 && let Some(fused) = self.gateup_fused_plan(ctx, m, inter, gate_up_w8a8)
             {
                 self.w8a8_gate_up_fused(ctx, a_fp8, a_scale, fused, gate_out, m, inter, h, stream)?;
+            } else if self.swiglu_quant_fused(down_w8a8, inter) {
+                w8_gemm!(
+                    fp8w.gate_proj,
+                    gate_t,
+                    input,
+                    gate_out,
+                    inter,
+                    h,
+                    gu_a8,
+                    gu_cap
+                );
+                w8_gemm!(fp8w.up_proj, up_t, input, up_out, inter, h, gu_a8, gu_cap);
+                fused_down_a8 =
+                    Some(self.w8a8_swiglu_quant(ctx, gate_out, up_out, m, inter, stream)?);
             } else {
                 w8_gemm!(
                     fp8w.gate_proj,
@@ -2353,7 +2425,12 @@ impl DenseFfnLayer {
             // `gate_out` (the SiLU product) is fully written by the launch above
             // and re-read here; the quant lands in the SAME scratch the gate/up
             // quant used, which is safe because every launch is on `stream`.
-            let down_a8 = if down_w8a8 {
+            // With the fused arm above, `gate_out` still holds the gate GEMM
+            // output and nothing reads it: `down_w8a8` is a clause of that arm,
+            // and it is what routes down to rung 6, which reads only `down_a8`.
+            let down_a8 = if fused_down_a8.is_some() {
+                fused_down_a8
+            } else if down_w8a8 {
                 Some(self.w8a8_quant_act(ctx, gate_out, m, inter, stream)?)
             } else {
                 None
@@ -2372,6 +2449,11 @@ impl DenseFfnLayer {
             return Ok(());
         }
 
+        // Packed W4 (`W4Linear`): same precedence as `forward` (`dense_ffn/w4.rs`).
+        if self.w4_active() {
+            return self.forward_w4_rows(input, num_tokens, ctx, stream);
+        }
+
         // BF16 prefill dispatch. Prefer the tensor-core m16n8k16 MMA kernel
         // (`dense_gemm_tc`, 3-5x+ over scalar) — the scalar `dense_gemm_bf16`
         // was the flat ~155 tok/s prefill bottleneck on Qwen3.6-27B dense
@@ -2386,10 +2468,15 @@ impl DenseFfnLayer {
             // N=12288/3072, K=3072) — nsys measured its 3 launches at ~100 ms
             // EACH = 33% of the whole C=1 prefill. cuBLASLt runs the identical
             // BF16×BF16→FP32 GEMM at 90+ TFLOP/s (~65× faster), the same path
-            // q/k/v/o and the head-gate already use. Gated on AVAROK_CUBLAS_GEMM.
+            // q/k/v/o and the head-gate already use. Gated on AVAROK_CUBLAS_GEMM,
+            // else the `ffn_bf16_cublas_prefill` target row (ada: on).
+            let cublas = ops::ffn_bf16_cublas::takes_cublas(
+                ctx.dispatch.cublas.ffn,
+                ops::ffn_bf16_cublas::row(),
+            );
             macro_rules! ffn_gemm {
                 ($a:expr, $b:expr, $c:expr, $n:expr, $k:expr) => {
-                    if ctx.dispatch.cublas.ffn {
+                    if cublas {
                         ops::cublas_bf16_proj_dense($a, $b.weight, $c, m, $n, $k, stream)?;
                     } else if tc {
                         ops::dense_gemm_tc(
@@ -3052,6 +3139,10 @@ impl DenseFfnLayer {
 /// nsys attribution that motivates the arm needs room this file does not have.
 #[path = "dense_ffn_fp8_down.rs"]
 pub mod fp8_down;
+/// The sm_89 fused SwiGLU + down-input FP8 quant of the W8A8 prefill; a child
+/// module for the reason `w8a8_prefill` is one.
+#[path = "dense_ffn_swiglu_quant.rs"]
+pub mod swiglu_quant;
 /// W8A8 block-scaled prefill branch (#917/#928). A CHILD module, not a
 /// sibling: it adds `impl DenseFfnLayer` methods that read this layer's
 /// private kernel handles, and this file is already at the CI size cap.
@@ -3077,6 +3168,33 @@ pub mod m16_tc;
 /// room this file does not have.
 #[path = "dense_ffn_gateup_fused.rs"]
 pub mod gateup_fused;
+
+/// Which FP8 GEMV/GEMM handles the layer takes: the bit-identical sm_89
+/// drop-ins where the target compiles them. A child module for the size cap.
+#[path = "dense_ffn_ada_kernels.rs"]
+pub mod ada_kernels;
+
+/// The packed `W4Linear` arm of the port work: `set_w4` and
+/// the dispatch every entry point hooks into. A child module for the size cap.
+#[path = "dense_ffn/w4.rs"]
+pub mod w4;
+
+/// Multi-sequence decode on the FP8 batch-M GEMVs (row `ffn_fp8_decode_gemv`).
+/// A child module for the size cap.
+#[path = "dense_ffn/fp8_decode_gemv.rs"]
+pub mod fp8_decode_gemv;
+
+/// Decode and verify rows 5..16 on the FP8 16-row tensor-core GEMM (row
+/// `ffn_fp8_m16_tc`). A child module for the size cap.
+#[path = "dense_ffn/fp8_m16_tc.rs"]
+pub mod fp8_m16_tc;
+
+/// The FFN family's cuBLASLt choice for a BF16 fallback GEMM. Read here so the
+/// `ffn` family is armed only from its own file (`dispatch_config_routing_tests`);
+/// `dense_ffn/w4.rs` asks through this.
+fn ffn_takes_cublas(ctx: &ForwardContext) -> bool {
+    ops::ffn_bf16_cublas::takes_cublas(ctx.dispatch.cublas.ffn, ops::ffn_bf16_cublas::row())
+}
 
 /// Native BF16/FP8 overlays take precedence over any NVFP4 fallback weights.
 /// Small batches must use the same format-aware dispatcher as prefill.
@@ -3105,6 +3223,11 @@ mod fp8_residency_tests;
 #[cfg(test)]
 #[path = "dense_ffn_fp8_down_tests.rs"]
 mod fp8_down_tests;
+
+/// The native-BF16 overlay needs no NVFP4 fallback weights either.
+#[cfg(test)]
+#[path = "dense_ffn_bf16_residency_tests.rs"]
+mod bf16_residency_tests;
 
 #[cfg(test)]
 mod tests {

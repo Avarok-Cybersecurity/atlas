@@ -147,6 +147,15 @@ pub struct ModelConfig {
     pub intermediate_size: usize,
     #[serde(default)]
     pub vocab_size: usize,
+    /// Rows of the token-embedding table exactly as the checkpoint's own
+    /// `config.json` states them (`vocab_size` before the server caps it to
+    /// the tokenizer's count), for a loader that checks the checkpoint's
+    /// tensor shapes against its config. The checkpoint may pad the table
+    /// past the tokenizer (LFM3: 128000 rows, 125033 tokens), so `vocab_size`
+    /// here is the served width (logits, sampling, masking) and this is the
+    /// table's height. `0` = not recorded: the loader then uses `vocab_size`.
+    #[serde(default)]
+    pub embed_rows: usize,
 
     // ── Full attention ──
     #[serde(default)]

@@ -62,6 +62,25 @@ pub struct DflashConfig {
     /// (input_dim = hidden_size + markov_rank); when false, hidden only.
     #[serde(default = "default_true")]
     pub confidence_head_with_markov: bool,
+    /// HF `sliding_window` (tokens). `z-lab/Qwen3.5-4B-DFlash` ships 4096
+    /// (trained with sliding-window attention for long context). `None` on the
+    /// older Qwen3.6 drafters, which attend the full prefix.
+    #[serde(default)]
+    pub sliding_window: Option<usize>,
+    /// HF `use_sliding_window`: whether `layer_types` entries of
+    /// `"sliding_attention"` really are windowed. Absent = false.
+    #[serde(default)]
+    pub use_sliding_window: bool,
+    /// HF per-layer attention kind, one entry per drafter layer
+    /// (`"sliding_attention"` or `"full_attention"`). The 4B drafter ships five
+    /// sliding layers and a full-attention last layer. Empty = all layers
+    /// share one kind (read it through [`DflashConfig::layer_is_sliding`]).
+    #[serde(default)]
+    pub layer_types: Vec<String>,
+    /// Number of layers of the TARGET the drafter was trained against
+    /// (`num_target_layers`; 32 for Qwen3.5-4B). `None` = not stated.
+    #[serde(default)]
+    pub num_target_layers: Option<usize>,
 }
 
 fn default_true() -> bool {
@@ -89,6 +108,12 @@ pub struct DflashRopeScaling {
     pub beta_slow: Option<f32>,
     #[serde(default)]
     pub original_max_position_embeddings: Option<f32>,
+    /// `rope_theta` as newer transformers releases state it, INSIDE the
+    /// `rope_parameters` block (the 4B drafter ships no top-level
+    /// `rope_theta`). Folded into [`DflashConfig::rope_theta`] by [`parse_normalized`]
+    /// when the top level does not state one.
+    #[serde(default)]
+    pub rope_theta: Option<f32>,
 }
 
 fn default_block_size() -> usize {
@@ -154,4 +179,149 @@ impl DflashConfig {
             .and_then(|c| c.block_size)
             .unwrap_or(self.block_size)
     }
+
+    /// Number of target layers whose hidden states feed `fc` (8 for the 4B
+    /// drafter, 5 for the Qwen3.6 drafters). 0 when `dflash_config` is absent.
+    pub fn tap_count(&self) -> usize {
+        self.dflash_config
+            .as_ref()
+            .map_or(0, |c| c.target_layer_ids.len())
+    }
+
+    /// `fc` input width for a target of hidden size `target_hidden`:
+    /// `tap_count * target_hidden`.
+    pub fn fc_in_features(&self, target_hidden: usize) -> usize {
+        self.tap_count() * target_hidden
+    }
+
+    /// Whether drafter layer `layer` attends through a sliding window.
+    /// Only when the checkpoint says `use_sliding_window` AND lists the layer
+    /// as `"sliding_attention"`; every older drafter answers false.
+    pub fn layer_is_sliding(&self, layer: usize) -> bool {
+        self.use_sliding_window
+            && self.sliding_window.is_some_and(|w| w > 0)
+            && self
+                .layer_types
+                .get(layer)
+                .is_some_and(|t| t == "sliding_attention")
+    }
+
+    /// Count of sliding layers among the drafter's `num_hidden_layers`.
+    pub fn sliding_layer_count(&self) -> usize {
+        (0..self.num_hidden_layers)
+            .filter(|&i| self.layer_is_sliding(i))
+            .count()
+    }
+
+    /// Fold the HF `rope_parameters` spelling into the plain-RoPE fields the
+    /// head reads. Two cases, both pure bookkeeping:
+    ///
+    /// * the block states `rope_theta` and the top level does not
+    ///   (`top_level_theta_stated == false`): the block's value wins over the
+    ///   10M serde default, which is a coincidence for the 4B drafter and a bug
+    ///   for any drafter with another theta;
+    /// * `rope_type == "default"` (transformers' name for plain RoPE): the
+    ///   block is dropped, so the head takes its plain-RoPE arm without the
+    ///   "doesn't recognise rope_type" warning. The inverse-frequency table is
+    ///   the same one either way.
+    pub fn normalize_rope(&mut self, top_level_theta_stated: bool) {
+        let Some(scaling) = self.rope_scaling.as_ref() else {
+            return;
+        };
+        if !top_level_theta_stated && let Some(theta) = scaling.rope_theta {
+            self.rope_theta = theta;
+        }
+        if scaling.rope_type.as_deref() == Some("default") {
+            self.rope_scaling = None;
+        }
+    }
+
+    /// Check that this drafter was built for a target with the given
+    /// dimensions, before any weight is touched. A wrong pairing does not
+    /// fail loudly later: the drafter shares the target's embedding and LM
+    /// head and reads the target's hidden states through `fc`, so a mismatch
+    /// is a GEMM over the wrong width or fluent-looking garbage drafts.
+    ///
+    /// * the capture ids are non-empty, strictly increasing and inside the
+    ///   target's layer range;
+    /// * `num_target_layers`, when the checkpoint states it, equals the
+    ///   target's layer count (32 for Qwen3.5-4B and `holo-3.1-4b`);
+    /// * the drafter's `vocab_size` equals `target_table_rows`, the number of
+    ///   rows of the embedding / LM-head table the two models share, as the
+    ///   target's checkpoint ships it. That is NOT the served vocabulary: the
+    ///   server caps `ModelConfig::vocab_size` to the tokenizer's count
+    ///   (248070 on Qwen3.5-4B) while the table keeps its 248320 rows, and
+    ///   the drafter walks all of them and keeps its mask token in the
+    ///   padding. `factory/dflash_pairing.rs` reads the rows from the
+    ///   target's weight store;
+    /// * `mask_token_id` is inside the drafter's vocabulary.
+    pub fn validate_for_target(
+        &self,
+        target_hidden: usize,
+        target_layers: usize,
+        target_table_rows: usize,
+    ) -> anyhow::Result<()> {
+        let Some(sub) = self.dflash_config.as_ref() else {
+            anyhow::bail!("DFlash drafter config.json has no `dflash_config` block");
+        };
+        anyhow::ensure!(
+            target_hidden > 0,
+            "DFlash: the target reports hidden_size 0"
+        );
+        anyhow::ensure!(
+            !sub.target_layer_ids.is_empty(),
+            "DFlash drafter declares no target_layer_ids"
+        );
+        for pair in sub.target_layer_ids.windows(2) {
+            anyhow::ensure!(
+                pair[0] < pair[1],
+                "DFlash drafter target_layer_ids {:?} are not strictly increasing (fc expects \
+                 shallow-to-deep order)",
+                sub.target_layer_ids
+            );
+        }
+        if let Some(&deepest) = sub.target_layer_ids.last() {
+            anyhow::ensure!(
+                deepest < target_layers,
+                "DFlash drafter taps target layer {deepest} but the target has only \
+                 {target_layers} layers: this drafter was built for a different model"
+            );
+        }
+        if let Some(trained) = self.num_target_layers {
+            anyhow::ensure!(
+                trained == target_layers,
+                "DFlash drafter was trained against a {trained}-layer target but this target has \
+                 {target_layers} layers"
+            );
+        }
+        // `vocab_size` only: a drafter with a smaller `draft_vocab_size` and a
+        // `d2t` remap states the target's vocabulary in `vocab_size` and is
+        // handled (or refused) by the loader, not judged here.
+        anyhow::ensure!(
+            self.vocab_size == target_table_rows,
+            "DFlash drafter vocabulary ({}) differs from the {target_table_rows} rows of the \
+             target's embedding table; the drafter shares the target's embedding and LM head, \
+             so ids would not line up",
+            self.vocab_size,
+        );
+        anyhow::ensure!(
+            (sub.mask_token_id as usize) < self.vocab_size,
+            "DFlash drafter mask_token_id {} is outside its vocabulary of {}",
+            sub.mask_token_id,
+            self.vocab_size
+        );
+        Ok(())
+    }
+}
+
+/// Parse a drafter `config.json` and normalize the HF spellings the head does
+/// not read directly (see [`DflashConfig::normalize_rope`]). The only entry
+/// point `parse_dflash_config` uses.
+pub fn parse_normalized(json: &str) -> serde_json::Result<DflashConfig> {
+    let mut cfg: DflashConfig = serde_json::from_str(json)?;
+    let top_level_theta_stated = serde_json::from_str::<serde_json::Value>(json)
+        .ok()
+        .is_some_and(|v| v.get("rope_theta").is_some());
+    cfg.normalize_rope(top_level_theta_stated);
+    Ok(cfg)
 }

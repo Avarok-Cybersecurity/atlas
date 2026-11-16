@@ -448,6 +448,14 @@ fn inherited_redirects_resolve_only_to_the_declared_same_hardware_source() {
         for (model, _, _, kernel_dir) in targets {
             let source = match (t.hw, model.as_str()) {
                 ("hopper", "qwen3.8-27b") => "qwen3.6-27b",
+                // Port sprint L24: Ada has no qwen3.6-27b tree (its FP4 MMA
+                // sources do not assemble on sm_89), so the 27B compiles the
+                // curated holo-3.1-4b set.
+                ("ada", "qwen3.8-27b") => "holo-3.1-4b",
+                // Port sprint L37: the LFM3 target compiles the curated
+                // holo-3.1-0.8b Ada set (no new symlinks; its conv kernels are
+                // kernels/ada/common/lfm3_shortconv_ada.cu).
+                ("ada", "lfm3-1.7b") => "holo-3.1-0.8b",
                 (_, "deepseek-v4.1-flash") => "deepseek-v4-flash",
                 _ => &model,
             };

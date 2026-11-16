@@ -83,3 +83,30 @@ fn health_endpoints_still_answer_while_faulted() {
         );
     }
 }
+
+/// POSITIVE: the llama.cpp `/completion` route runs the model, so a faulted
+/// server refuses it exactly as it refuses `/v1/completions`.
+///
+/// PROVEN BY: removing `is_inference_path` from the early-return test in
+/// `fault_rejection` turns this red.
+#[test]
+fn llama_cpp_completion_is_refused_once_the_gpu_has_faulted() {
+    for path in ["/completion", "/completions"] {
+        let (code, body) = super::fault_rejection(path, Some(GPU_FAULT))
+            .unwrap_or_else(|| panic!("{path} must be refused on a faulted server"));
+        assert_eq!(code, axum::http::StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["error"]["code"], "gpu_fault");
+    }
+}
+
+/// NEGATIVE: the llama.cpp routes that never touch the GPU keep answering
+/// during a fault, like `/health`.
+#[test]
+fn llama_cpp_template_and_props_routes_answer_while_faulted() {
+    for path in ["/props", "/apply-template", "/tokenize", "/detokenize"] {
+        assert!(
+            super::fault_rejection(path, Some(GPU_FAULT)).is_none(),
+            "{path} does not run the model and must stay reachable"
+        );
+    }
+}

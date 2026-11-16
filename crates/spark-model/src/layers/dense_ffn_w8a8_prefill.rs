@@ -224,6 +224,22 @@ impl DenseFfnLayer {
     ) -> Result<(DevicePtr, DevicePtr)> {
         let a_fp8 = ctx.buffers.ffn_act_a();
         let a_scale = ctx.buffers.ffn_act_scale();
+        // Port row `rmsnorm_fp8_quant_fused`: the FFN-norm that produced `act`
+        // may already have written exactly these bytes and scales here
+        // (`norm_fused.rs`). The take always clears the hand-off, because this
+        // call rewrites the scratch it describes either way. Row off: nothing
+        // is ever pending, so this is one thread-local read.
+        let prequant = norm_fused::Prequant {
+            act,
+            m,
+            k,
+            a_fp8,
+            a_scale,
+            stream,
+        };
+        if norm_fused::take_matching(prequant) {
+            return Ok((a_fp8, a_scale));
+        }
         // Padded extents, because the cuBLASLt arm READS `ceil16(m)` rows.
         let rows = ops::cublas_fp8_m_pad(m) as usize;
         debug_assert!(rows * k as usize <= ctx.buffers.ffn_act_a_bytes());
@@ -342,6 +358,9 @@ impl DenseFfnLayer {
         }
     }
 }
+
+#[path = "dense_ffn_w8a8_prefill/norm_fused.rs"]
+pub(crate) mod norm_fused;
 
 #[cfg(test)]
 #[path = "dense_ffn_w8a8_prefill_tests.rs"]

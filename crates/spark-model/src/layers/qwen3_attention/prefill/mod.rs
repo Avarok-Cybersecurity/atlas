@@ -29,3 +29,6 @@ mod paged_mla;
 mod paged_oproj;
 mod paged_qkv;
 mod paged_v4;
+// Which kernels the load-time BF16 -> FP8 attention route's layer launches.
+#[cfg(test)]
+mod route_w8a8_tests;

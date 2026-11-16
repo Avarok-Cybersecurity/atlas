@@ -262,10 +262,32 @@ fn ffn_gateup_fused_selected(
 // PREDICTION in `predicted_residency` is read by spark-server's preflight,
 // and it prices its terms with this module's shape helpers so the prediction
 // and the loader's own tally cannot be two different arithmetics (#915).
+// The load-time BF16 -> block-scaled FP8 route for the dense FFN
+// (`[defaults] dense_fp8_from_bf16`).
+pub mod fp8_from_bf16;
 pub mod fp8_residency;
+// The same route for the GDN projections (`[defaults] gdn_fp8_from_bf16`).
+pub mod gdn_fp8_from_bf16;
+// And for attention q/k/v/o (`[defaults] attn_fp8_from_bf16`).
+pub mod attn_fp8_from_bf16;
 mod loaders_b;
 pub mod predicted_residency;
 mod rowwise_fp8;
+// The 4-bit (`W4Linear`) routes, all off by default (port lanes L23a and L23b): the affine routes'
+// decision tables and installs (L23a), the NVFP4 FFN route, the keep-packed FFN install, the self-check,
+// the residency credit and the install plan the hook lines below call (L23b).
+mod affine4_from_bf16;
+mod affine4_selfcheck;
+mod attn_affine4_from_bf16;
+// compressed-tensors `pack-quantized` W4A16 checkpoints, served by Marlin (active by format).
+mod ct_install;
+mod gdn_affine4_from_bf16;
+mod nvfp4_from_bf16;
+mod packed_install;
+mod w4_install;
+mod w4_residency;
+#[cfg(test)]
+mod w4_test_support;
 
 use crate::layers::qwen3_attention::Fp8TwinSet;
 use fp8_residency::{DerivedResidency, RouteEnv};
@@ -369,6 +391,39 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
         // `fp8_residency.rs`.
         let route_env = RouteEnv::from_env();
         let mut residency = DerivedResidency::default();
+        // Resolved ONCE: `Some` when this target declares the BF16 -> FP8
+        // route (or `AVAROK_DENSE_FP8_FROM_BF16=1`) and its clauses hold.
+        let ffn_from_bf16_route = fp8_from_bf16::Fp8FromBf16::resolve(
+            gpu,
+            crate::layers::ops::target_defaults::resolved().dense_fp8_from_bf16,
+            variant,
+            config.tp_world_size,
+            config.adapter_max_rank,
+        );
+        // The same route for the GDN projections (`[defaults]
+        // gdn_fp8_from_bf16`), resolved once and independent of the FFN one.
+        let gdn_from_bf16_route = gdn_fp8_from_bf16::GdnFp8FromBf16::resolve(
+            gpu,
+            crate::layers::ops::target_defaults::resolved().gdn_fp8_from_bf16,
+            variant,
+            config.tp_world_size,
+            config.adapter_max_rank,
+        );
+        // And for attention q/k/v/o (`[defaults] attn_fp8_from_bf16`).
+        let attn_from_bf16_route = attn_fp8_from_bf16::AttnFp8FromBf16::resolve(
+            gpu,
+            crate::layers::ops::target_defaults::resolved().attn_fp8_from_bf16,
+            variant,
+            config.tp_world_size,
+            config.adapter_max_rank,
+        );
+        // The 4-bit routes (`w4_install.rs`): every row off by default, then inert (no lookup, no line).
+        let fp8_wins = w4_install::Fp8Wins {
+            ffn: ffn_from_bf16_route.is_some(),
+            gdn: gdn_from_bf16_route.is_some(),
+            attn: attn_from_bf16_route.is_some(),
+        };
+        let mut w4 = w4_install::W4Load::resolve(gpu, store, config, variant, stream, fp8_wins);
 
         for (i, lt) in layer_types.iter().enumerate() {
             if i % 8 == 0 {
@@ -382,7 +437,13 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
             // load gate/up/down directly as block-scaled `Fp8Weight` and
             // dispatch w8a16 — no NVFP4 requant. TP>1 still uses the NVFP4
             // path (FP8 FFN sharding is a follow-up).
-            let ffn_fp8 = ffn_fp8_arm_selected(store, config, variant, &lp);
+            let ffn_fp8_native = ffn_fp8_arm_selected(store, config, variant, &lp);
+            // A BF16 layer quantized at load is a native-FP8 layer from here
+            // on: same overlay, same arms, same NULL NVFP4 fallback.
+            let ffn_from_bf16 = ffn_from_bf16_route.filter(|_| {
+                !ffn_fp8_native && fp8_from_bf16::layer_shapes_ok(store, &lp, h, ffn_inter(config))
+            });
+            let ffn_fp8 = ffn_fp8_native || ffn_from_bf16.is_some();
             // 2026-09-11 (#915), replacing "always load the NVFP4 weights so
             // every dispatch path has a valid weight to fall back to": there is
             // no such path any more. `forward_k2`/`k3`/`km` redirect to
@@ -406,6 +467,9 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
             // grid=[div_ceil(intermediate_size,64),..] on the first prefill.
             // Snapshot fresh D2D copies BEFORE the free (the clone is an
             // independent allocation the layer owns for its lifetime).
+            // When no NVFP4 fallback is built (the default, see `ffn_nvfp4`
+            // below) nothing frees the store buffer, so the overlay aliases
+            // it instead of cloning, as the Laguna and Gemma-4 dense loaders do.
             // Native keep-packed ternary Q2_0 (AVAROK_GGUF_NATIVE_Q2=1): when the
             // GGUF loader tagged gate/up/down as `PackedQ2_0`, DON'T requant to
             // NVFP4 — install the raw 2-bit blocks and dispatch `q2_0_gemv` at
@@ -415,10 +479,26 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                 && proj_q2_group(store, &format!("{lp}.mlp.gate_proj")).is_some()
                 && proj_q2_group(store, &format!("{lp}.mlp.up_proj")).is_some()
                 && proj_q2_group(store, &format!("{lp}.mlp.down_proj")).is_some();
+            // Keep-packed 4-bit GGUF FFN tensors (`packed_install.rs`): neither the BF16 nor the NVFP4 arm
+            // can read them, so the layer is built with a NULL fallback and served through `set_w4` below.
+            let ffn_packed = !ffn_q2 && !ffn_fp8 && w4.ffn_packed(&lp);
             // Keep-packed projections are 2-bit blocks, not BF16 — there is
             // nothing to snapshot (dense_auto has no PackedQ2_0 arm and would
             // abort the load), and the ffn_q2 arm below owns their compute.
-            let ffn_bf16_snapshot = if !ffn_q2 && matches!(variant, Nvfp4Variant::Bf16Raw) {
+            // Not under the BF16 -> FP8 route: the FP8 copies replace the BF16
+            // weights, so a BF16 snapshot would be 2 bytes/weight for nothing.
+            let ffn_bf16 =
+                !ffn_q2 && !ffn_fp8 && !ffn_packed && matches!(variant, Nvfp4Variant::Bf16Raw);
+            // #915 for the BF16 overlay: every `DenseFfnLayer` entry point
+            // returns from inside its `bf16_weights` arm (`forward_k2`/`k3`/`km`
+            // go through `native_small_batch_uses_prefill`, which is true for a
+            // BF16 overlay), so the runtime-quantized NVFP4 gate/up/down and
+            // their transposed twins (about 2.4 GiB on a 4B model by
+            // `dense_ffn_nvfp4_bytes`, before the MMQ repacks) are unreachable at
+            // any batch size and with or without speculation. The decision
+            // table lives in `fp8_residency.rs`; the hatch keeps the copies.
+            let ffn_nvfp4 = !ffn_q2 && !ffn_packed && route_env.ffn_nvfp4(ffn_fp8, ffn_bf16);
+            let ffn_bf16_snapshot = if ffn_bf16 {
                 let inter = if config.intermediate_size > 0 {
                     config.intermediate_size
                 } else {
@@ -426,6 +506,11 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                 };
                 let clone_bf16 = |name: &str, rows: usize, cols: usize| -> Result<DenseWeight> {
                     let src = dense_auto(store, &format!("{lp}.mlp.{name}.weight"), gpu)?;
+                    if !ffn_nvfp4 {
+                        // No `quantized_any` runs, so the store buffer stays
+                        // live for the life of the model: alias it.
+                        return Ok(src);
+                    }
                     let bytes = rows * cols * 2; // BF16 = 2 bytes/elem
                     let dst = gpu.alloc(bytes)?;
                     // The whole point of this snapshot is an allocation
@@ -458,8 +543,6 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
             // have redirected to `forward_prefill` since
             // `native_small_batch_uses_prefill` landed. Decision table and the
             // loader-runs-before-dispatch contract: `fp8_residency.rs`.
-            let plan = route_env.plan(ffn_fp8, false, false);
-            let ffn_nvfp4 = !ffn_q2 && plan.ffn_nvfp4;
             let ffn_weights = if ffn_nvfp4 {
                 load_dense_ffn(
                     store, &lp, gpu, variant, absmax_k, quantize_k, stream, config,
@@ -469,7 +552,8 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                 // packed weights; prefill / batched paths bail (Tier-2).
                 // Native FP8: every arm reads the E4M3 bytes installed by
                 // `set_fp8_weights` below. No NVFP4 allocation → memory win.
-                if ffn_fp8 {
+                // Native BF16: same, through `set_bf16_weights` below.
+                if ffn_fp8 || ffn_bf16 || ffn_packed {
                     residency.skip(fp8_residency::dense_ffn_nvfp4_bytes(h, ffn_inter(config)));
                 }
                 use crate::weight_map::QuantizedWeight;
@@ -509,9 +593,25 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                         .adopt("ffn fp8 block scale (widened)", w.row_scale, bytes);
                     Ok(w)
                 };
-                let mut gate = load_ffn_fp8("gate_proj")?;
-                let mut up = load_ffn_fp8("up_proj")?;
-                let down = load_ffn_fp8("down_proj")?;
+                let [mut gate, mut up, down] = match ffn_from_bf16 {
+                    Some(route) => {
+                        residency.twins.ffn_fp8_from_bf16 = true;
+                        route.quantize_ffn(
+                            store,
+                            &lp,
+                            h,
+                            ffn_inter(config),
+                            gpu,
+                            stream,
+                            &mut residency,
+                        )?
+                    }
+                    None => [
+                        load_ffn_fp8("gate_proj")?,
+                        load_ffn_fp8("up_proj")?,
+                        load_ffn_fp8("down_proj")?,
+                    ],
+                };
                 // FUSED gate+up (#927). ONE `[2*inter, hidden]` E4M3 buffer
                 // and ONE `[2*inter/128, hidden/128]` FP32 scale grid, with
                 // `gate` and `up` re-pointed at VIEWS inside them — so the
@@ -562,6 +662,25 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                     dffn.set_fp8_gate_up_fused(fused);
                 }
             }
+            // Native-BF16 dense-FFN overlay (Bf16Raw, no-metadata Holo dense): install the
+            // live BF16 gate/up/down so forward/forward_prefill's bf16 branch (preferred
+            // over any NVFP4 weight, at every batch size) reads valid memory. Without
+            // `ffn_nvfp4` the layer holds NULL NVFP4 weights and the buffers alias the
+            // store; with it (the KEEP_NVFP4 hatch) they are the D2D snapshot taken
+            // before `load_dense_ffn` freed the store's BF16 buffer. Installed BEFORE the
+            // finalizers below, which are no-ops once a BF16 overlay is present.
+            if let Some((g, u, d)) = ffn_bf16_snapshot {
+                dffn.set_bf16_weights(g, u, d);
+            }
+            // The 4-bit FFN (`w4_install.rs`): `set_w4` BEFORE the finalizers below, which then reserve
+            // the W4 scratch and skip the NVFP4 repacks. The from-BF16 routes need the overlay to alias
+            // live store tensors, so not under the KEEP_NVFP4 hatch (`ffn_nvfp4`), which freed them.
+            if ffn_bf16 && !ffn_nvfp4 {
+                w4.install_ffn(&mut dffn, &lp, i, &mut residency)?;
+            }
+            if ffn_packed {
+                w4.install_packed_ffn(&mut dffn, &lp, i)?;
+            }
             // AVAROK_FFN_MMQ: eagerly materialize Q4_K + free the dead `_t` copies at load,
             // BEFORE KV cache sizing, so net FFN footprint == NVFP4 baseline (no decode OOM-throttle).
             dffn.finalize_q4k_load(gpu, h as u32, config.intermediate_size as u32, stream)?;
@@ -591,15 +710,6 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                     stream,
                 )?;
             }
-            // Native-BF16 dense-FFN overlay (Bf16Raw, no-metadata Holo dense): install the
-            // live BF16 gate/up/down snapshot so forward/forward_prefill's bf16 branch
-            // (preferred over the NVFP4 fallback) reads valid memory. The NVFP4 weights built
-            // by load_dense_ffn stay as the spec-decode/batched fallback (never null -> no
-            // CUDA-700 at concurrency). Snapshot was taken before load_dense_ffn freed the
-            // store's BF16 buffer (see ffn_bf16_snapshot above).
-            if let Some((g, u, d)) = ffn_bf16_snapshot {
-                dffn.set_bf16_weights(g, u, d);
-            }
             let ffn = FfnComponent::Dense(dffn);
 
             match lt {
@@ -610,6 +720,10 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                     // Bf16Raw installs a BF16 dense O-proj after the layer is
                     // built; other variants leave this None (NVFP4/FP8 dispatch).
                     let mut o_dense_bf16: Option<DenseWeight> = None;
+                    // Bf16Raw under the load-time BF16 -> FP8 attention route
+                    // (`attn_fp8_from_bf16.rs`): the quantized q/k/v/o, installed
+                    // with `set_fp8_weights` after the layer is built.
+                    let mut attn_fp8_from_bf16: Option<[Fp8Weight; 4]> = None;
 
                     // Native keep-packed ternary Q2_0 (Tier-1c): when the GGUF
                     // loader tagged q/k/v/o as `PackedQ2_0` (transform-free
@@ -672,6 +786,48 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                             "ATTN[{lp}] native keep-packed Q2_0: q/k/v/o 2-bit \
                              (q2_0_gemv_vec decode; transient-dequant prefill)"
                         );
+                        layers.push(Box::new(attn_layer));
+                        attn_idx += 1;
+                        if (i + 1) % 10 == 0 {
+                            tracing::info!("Loaded layers 0..{}", i + 1);
+                        }
+                        continue;
+                    }
+                    // Keep-packed GGUF IQ4_XS / Q4_K / Q6_K q/k/v/o (`packed_install.rs`, lane L19's row,
+                    // off on every target): built like the Q2 arm above (NULL slots), then served by
+                    // `set_w4_proj` from the store's own buffers.
+                    if w4.attn_packed(&p) {
+                        let (k_scale, v_scale) = load_kv_scales(store, &p, gpu);
+                        let null = DenseWeight {
+                            weight: spark_runtime::gpu::DevicePtr::NULL,
+                        };
+                        let attn = AttentionWeights {
+                            q_proj: null,
+                            k_proj: null,
+                            v_proj: null,
+                            o_proj: crate::weight_map::QuantizedWeight::null(),
+                            q_norm: dense(store, &format!("{p}.q_norm.weight"))?,
+                            k_norm: dense(store, &format!("{p}.k_norm.weight"))?,
+                            q_norm_full: None,
+                            k_norm_full: None,
+                            k_scale,
+                            v_scale,
+                        };
+                        let mut attn_layer = Qwen3AttentionLayer::new(
+                            input_norm,
+                            attn,
+                            post_attn_norm,
+                            ffn,
+                            attn_idx,
+                            None,
+                            None,
+                            None,
+                            gpu,
+                            layer_kv_dtypes[attn_idx],
+                            config.fp8_kv_calibration_tokens,
+                            config,
+                        )?;
+                        w4.install_packed_attn(&mut attn_layer, &p, attn_idx)?;
                         layers.push(Box::new(attn_layer));
                         attn_idx += 1;
                         if (i + 1) % 10 == 0 {
@@ -926,6 +1082,33 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
 
                             let (k_scale, v_scale) = load_kv_scales(store, &p, gpu);
 
+                            // Load-time BF16 -> FP8: the four BF16 sources are
+                            // quantized and FREED here, so every BF16 slot below is
+                            // NULL and no BF16 O-proj is installed. The layer is
+                            // then the native-FP8 overlay's shape.
+                            let attn_shapes = attn_fp8_from_bf16::AttnShapes::of(config);
+                            if let Some(route) = attn_from_bf16_route
+                                .filter(|_| tp_size == 1 && attn_shapes.qualify())
+                            {
+                                attn_fp8_from_bf16 = Some(route.quantize_attn(
+                                    store,
+                                    [q_dense, k_dense, v_dense, o_dense],
+                                    attn_shapes,
+                                    gpu,
+                                    stream,
+                                    &mut residency,
+                                )?);
+                                residency.twins.attn_fp8_from_bf16 = true;
+                            }
+                            let (q_dense, k_dense, v_dense) = if attn_fp8_from_bf16.is_some() {
+                                let null = DenseWeight {
+                                    weight: spark_runtime::gpu::DevicePtr::NULL,
+                                };
+                                (null, null, null)
+                            } else {
+                                (q_dense, k_dense, v_dense)
+                            };
+
                             // Keep q/k/v BF16 dense ALIVE (do NOT free): the dense
                             // forward reads them directly. o_proj stays NULL — the
                             // set_o_dense_bf16(o_dense) call after layer build
@@ -942,13 +1125,15 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                                 k_scale,
                                 v_scale,
                             };
-                            o_dense_bf16 = Some(o_dense);
+                            if attn_fp8_from_bf16.is_none() {
+                                o_dense_bf16 = Some(o_dense);
+                            }
                             // The NULL o_proj above is only sound while the BF16
-                            // dense O-proj is installed after layer build — a null
-                            // NVFP4 weight reached by a w4a16 dispatch is the
-                            // CUDA-700-at-concurrency failure mode.
+                            // dense O-proj (or the FP8 overlay) is installed after
+                            // layer build — a null NVFP4 weight reached by a w4a16
+                            // dispatch is the CUDA-700-at-concurrency failure mode.
                             debug_assert!(
-                                o_dense_bf16.is_some(),
+                                o_dense_bf16.is_some() || attn_fp8_from_bf16.is_some(),
                                 "Bf16Raw attention must install a dense O-proj to cover the null o_proj"
                             );
                             // BF16 native: no NVFP4 q/k/v weights → dense fallback.
@@ -1017,6 +1202,16 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                     // None on the Bf16Raw path).
                     if let Some(o_dense) = o_dense_bf16 {
                         attn_layer.set_o_dense_bf16(o_dense);
+                    }
+                    // The 4-bit attention route (`w4_install.rs`, off by default): q/k/v/o replaced.
+                    w4.install_attn(&mut attn_layer, &lp, attn_idx, o_dense_bf16, &mut residency)?;
+                    // Bf16Raw under the BF16 -> FP8 attention route: install the
+                    // FP8 overlay (decode W8A16 GEMVs, prefill W8A8) and arm the
+                    // in-tree W8A8 chunk-0 Q/K/V arm. No transposed twins: every
+                    // prefill arm that reads one has a non-transposed fallback.
+                    if let Some([q, k, v, o]) = attn_fp8_from_bf16 {
+                        attn_layer.set_fp8_weights(Some(q), Some(k), Some(v), Some(o));
+                        attn_layer.set_w8a8_qkv_prefill(true);
                     }
                     // Install native FP8 q/k/v/o (single-GPU FP8 checkpoint).
                     // `set_fp8_weights` REPLACES `q/k/v/o_weight`, so on this
@@ -1096,6 +1291,9 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                     let z_rows = dims.full_value_dim();
                     let value_dim = nv * config.linear_value_head_dim;
                     let la = format!("{lp}.linear_attn");
+                    // Keep-packed IQ4_XS / Q4_K / Q6_K GDN input projections have no install (their
+                    // out_proj is not kept packed): a named load error, not a failure inside a BF16 read.
+                    w4.refuse_packed_gdn(&la)?;
 
                     // Native keep-packed ternary Q2_0 GDN (Tier-1c): the GGUF
                     // loader kept `in_proj_qkv` (V-region row-permuted) and
@@ -1542,6 +1740,51 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                     // out_proj_dense when Some; predequant_for_prefill /
                     // set_fp8_prefill_only_weights are skipped (NVFP4/FP8 only).
                     if matches!(variant, Nvfp4Variant::Bf16Raw) {
+                        // Load-time BF16 -> block-scaled FP8 (`gdn_fp8_from_bf16.rs`):
+                        // the layer is then built exactly as the native-FP8 GDN arm
+                        // above builds it (BF16 and NVFP4 slots NULL, the FP8 pair the
+                        // only live weights), so every consumer is that arm's.
+                        let gdn_shapes = gdn_fp8_from_bf16::GdnShapes::of(config);
+                        if let Some(route) =
+                            gdn_from_bf16_route.filter(|_| tp_size == 1 && gdn_shapes.qualify())
+                        {
+                            let (qkvz_f, out_f) = route.quantize_gdn(
+                                store,
+                                qkvz_dense,
+                                out_proj_dense,
+                                gdn_shapes,
+                                gpu,
+                                stream,
+                                &mut residency,
+                            )?;
+                            residency.twins.gdn_fp8_from_bf16 = true;
+                            let ssm = SsmWeights {
+                                in_proj_qkvz: DenseWeight {
+                                    weight: spark_runtime::gpu::DevicePtr::NULL,
+                                },
+                                in_proj_ba: ba_dense,
+                                conv1d,
+                                a_log,
+                                dt_bias,
+                                norm,
+                                out_proj: crate::weight_map::QuantizedWeight::null(),
+                            };
+                            let mut layer = Qwen3SsmLayer::new_sequential(
+                                input_norm,
+                                ssm,
+                                post_attn_norm,
+                                ffn,
+                                None,
+                                None,
+                                None,
+                                config,
+                                gpu,
+                            )?;
+                            layer.set_fp8_decode_weights(Some(qkvz_f), Some(out_f));
+                            layer.set_w8a8_out_proj_prefill(true);
+                            layers.push(Box::new(layer));
+                            continue;
+                        }
                         let ssm = SsmWeights {
                             in_proj_qkvz: qkvz_dense,
                             in_proj_ba: ba_dense,
@@ -1567,6 +1810,15 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                         // trait_decode_batched.rs:350, ssm_batched.rs:279,
                         // trait_prefill_helper.rs:89).
                         layer.out_proj_dense = Some(out_proj_dense);
+                        // The 4-bit GDN route (`w4_install.rs`, off by default).
+                        w4.install_gdn(
+                            &mut layer,
+                            &lp,
+                            i,
+                            qkvz_dense,
+                            out_proj_dense,
+                            &mut residency,
+                        )?;
                         layers.push(Box::new(layer));
                         continue;
                     }
@@ -1771,6 +2023,8 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
         // proved unreachable. Emitted unconditionally — a residency regression
         // that only shows under a debug flag is one nobody sees.
         tracing::info!("{}", residency.summary(store.resident_bytes()));
+        // The 4-bit summary lines and the `/metrics` record (zero bytes with every 4-bit row off).
+        w4.finish();
         for (label, bytes, count) in store.derived().by_label() {
             tracing::debug!(
                 "  derived-weight owner: {:>9.1} MB x{:<5} {label}",
@@ -1878,9 +2132,9 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
         &self,
         store: &WeightStore,
         config: &ModelConfig,
-        _gpu: &dyn GpuBackend,
+        gpu: &dyn GpuBackend,
     ) -> Result<DenseWeight> {
-        loaders_b::load_embedding(store, config)
+        loaders_b::load_embedding(store, config, gpu)
     }
 
     fn load_final_norm(
@@ -1930,6 +2184,13 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
             );
         }
         Ok(Some(mtp))
+    }
+
+    /// A compressed-tensors `pack-quantized` W4A16 checkpoint keeps its `weight_packed` /
+    /// `weight_scale` tensors on disk: the Marlin install reads them on the host
+    /// (`qwen35_dense/ct_install.rs`). `None` (upload everything) for every other checkpoint.
+    fn defer_predicate(&self, config: &ModelConfig) -> Option<spark_runtime::weights::DeferHook> {
+        ct_install::defer_hook(config)
     }
 
     fn load_vision_encoder(

@@ -5,11 +5,12 @@ use super::*;
 mod deepseek_v4;
 mod kimi_k3;
 use serde_json::json;
-
 mod laguna;
 mod mistral_effort;
 mod qwen_dense;
 mod qwen_dense_parity;
+mod sharp_template;
+mod sharp_template_b;
 
 fn render_minimax_openai_template(
     messages: &[serde_json::Value],

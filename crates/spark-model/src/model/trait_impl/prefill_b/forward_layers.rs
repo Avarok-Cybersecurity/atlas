@@ -167,6 +167,18 @@ impl TransformerModel {
         let t_loop = host_timing.then(std::time::Instant::now);
         let mut t_in_prefill = std::time::Duration::ZERO;
         let mut t_dflash = std::time::Duration::ZERO;
+        // AVAROK_DUMP_HIDDEN (off by default; last chunk only): see `model::hidden_dump`.
+        let hidden_dump = if is_last_chunk {
+            crate::model::hidden_dump::HiddenDumpPlan::from_env()
+        } else {
+            None
+        };
+        let dump_site = crate::model::hidden_dump::DumpSite {
+            prefill_path: "prefill_chunk",
+            token_count: chunk_start + chunk_len,
+            proc_count,
+            seq_len_start: effective_seq_len_start,
+        };
         for (i, layer) in self.layers.iter().enumerate() {
             let t_pf = host_timing.then(std::time::Instant::now);
             let lt0 = if profile_now {
@@ -235,6 +247,7 @@ impl TransformerModel {
             if let Some(t) = t_df {
                 t_dflash += t.elapsed();
             }
+            self.dump_layer_hidden(hidden_dump.as_ref(), i, hidden, dump_site, stream);
             if let Some(lt0) = lt0 {
                 self.gpu.synchronize(stream)?;
                 layer_times.push(lt0.elapsed().as_micros());

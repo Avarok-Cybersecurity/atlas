@@ -63,6 +63,7 @@ parking_lot = { workspace = true }
 tokenizers = { version = "0.23", optional = true, default-features = false, features = ["onig"] }
 memmap2 = { version = "0.9", optional = true }
 safetensors = { version = "0.8", optional = true }
+# @port:deps
 
 # End-to-end Qwen3.5-4B-MLX-8bit decode driver. Loads weights via
 # `MlxInt8Weight`, kernel handles via `Qwen35Kernels::resolve`, and
@@ -373,9 +374,136 @@ name = "native_fp8_gemv_hopper_microtest"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]
+name = "fp8_ada_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
 name = "native_fp8_attn_decode_batch_microtest"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]
 name = "fp8_gemm_twin_parity"
 required-features = ["cuda", "gpu-examples"]
+
+# The port sprint's (`port/consumer-opt`) GPU oracles and microtests are
+# inserted immediately before this marker by the coordinator's apply pass.
+# L07: DRAM-true microbenches. Cold-L2 weight rings, the measured bandwidth
+# ceiling, the per-T linear sweep, the NVFP4 W4A16 GEMV on Ada and the pinned
+# host memory probe. `test = true` runs the CPU-side tests in examples/common.
+[[example]]
+name = "hbm_bandwidth_probe"
+required-features = ["cuda", "gpu-examples"]
+test = true
+
+[[example]]
+name = "linear_t_sweep"
+required-features = ["cuda", "gpu-examples"]
+test = true
+
+[[example]]
+name = "w4a16_ada_microtest"
+required-features = ["cuda", "gpu-examples"]
+test = true
+
+[[example]]
+name = "pinned_probe"
+required-features = ["cuda", "gpu-examples"]
+test = true
+
+[[example]]
+name = "gpu_ext_selftest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "gdn_wyn_woa_oracle"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "spec_accept_oracle"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "fp8_ada_batchm_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "fp8_ada_l2hint_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "fp8_ada_m16_tc_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "rmsnorm_quant_fp8_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "gdn_chunk_tc_ada_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "affine_ada_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "affine_prefill_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "affine_n_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "marlin_ada_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "iq4xs_gemv_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "exl3_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "kv_swap_roundtrip"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "kv_host_tier_roundtrip"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "page_sparse_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "kv_view_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "kv_view_table_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "retro_build_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "retro_attn_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "sparse_prefill_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "kv_window_view_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "lfm3_shortconv_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+# @port:examples

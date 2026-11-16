@@ -72,6 +72,21 @@
 //! default must have one. NOTE (recut onto main): main made write-on-accept
 //! OPT-IN (`AVAROK_GDN_WOA=1`, see `gdn_flags::gdn_woa_enabled`), so on main
 //! this fallback is the DEFAULT C>=2 behaviour unless the operator opts in.
+//! An explicit `AVAROK_DFLASH_RUNG_MULTI` is honored with write-on-accept off
+//! too (see [`Rungs::from_lookup`]); only the DEFAULT stays at the cap.
+//!
+//! # The numbers above are the 27B's, not the 4B's
+//!
+//! Every threshold in this file was measured on Qwen3.8-27B NVFP4 + DFlash-2
+//! (block 8) on a Spark. Nothing here has been measured for
+//! `z-lab/Qwen3.5-4B-DFlash` (block 16, serving at cap K=16 after
+//! `default_dflash_gamma`) on an RTX 4060 Ti, so the defaults carry over
+//! UNCHANGED and unproven. What is known: the drafter's own model card
+//! (B200, SGLang) has block 16 best at concurrency 1 and block 8 best at
+//! concurrency 32, the same shape as this ladder, but a different engine and
+//! card. The 4B GPU matrix (a script outside this repository) sweeps the C>=2 rung
+//! (`AVAROK_DFLASH_RUNG_MULTI` = 4, 8, 16), the narrow rung and the pinned
+//! `--dflash-gamma` widths, and these constants change only on that receipt.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
@@ -92,17 +107,17 @@ const LEAVE: u32 = 46;
 /// decision is made on a fully refreshed register.
 const DWELL: u64 = WINDOW as u64;
 
-fn env_usize(name: &str, default: usize) -> usize {
-    std::env::var(name)
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(default)
+/// Environment lookup for the rung overrides. A function argument (not a
+/// direct `std::env` read) so the override rules are unit-testable without
+/// mutating the process environment.
+type Lookup<'a> = &'a dyn Fn(&str) -> Option<String>;
+
+fn real_env(name: &str) -> Option<String> {
+    std::env::var(name).ok()
 }
-fn env_u32(name: &str, default: u32) -> u32 {
-    std::env::var(name)
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(default)
+
+fn num<T: std::str::FromStr>(get: Lookup<'_>, name: &str, default: T) -> T {
+    get(name).and_then(|v| v.parse().ok()).unwrap_or(default)
 }
 
 /// The resolved rungs and thresholds for one serve: every width already
@@ -140,18 +155,29 @@ impl Rungs {
     /// Defaults with the environment overrides applied, and the C>=2 rung
     /// pinned at the cap when the write-on-accept kernel is off.
     pub fn from_env(cap: usize, woa_available: bool) -> Self {
+        Self::from_lookup(cap, woa_available, &real_env)
+    }
+
+    /// [`Self::from_env`] with the environment passed in.
+    ///
+    /// The C>=2 rung DEFAULT is the write-on-accept width (K=4) only when that
+    /// kernel is on; otherwise it is the cap, because a K=4 parent-kernel serve
+    /// has no receipt. An explicit `AVAROK_DFLASH_RUNG_MULTI` is honored in
+    /// both cases: it is the operator asking for that width, and without it a
+    /// serve without write-on-accept (the Ada default) could not sweep the C>=2
+    /// rung at all, which the 4B drafter's GPU matrix needs. With the variable
+    /// unset the result is byte-for-byte what it was.
+    pub fn from_lookup(cap: usize, woa_available: bool, get: Lookup<'_>) -> Self {
         let d = Self::defaults(cap);
+        let hi = cap.max(2);
+        let multi_default = if woa_available { d.multi } else { hi };
         Self {
-            multi: if woa_available {
-                env_usize("AVAROK_DFLASH_RUNG_MULTI", d.multi).clamp(2, cap.max(2))
-            } else {
-                cap.max(2)
-            },
-            narrow: env_usize("AVAROK_DFLASH_RUNG_NARROW", d.narrow).clamp(2, cap.max(2)),
-            wide: env_usize("AVAROK_DFLASH_RUNG_WIDE", d.wide).clamp(2, cap.max(2)),
-            enter: env_u32("AVAROK_DFLASH_RUNG_ENTER", d.enter),
-            leave: env_u32("AVAROK_DFLASH_RUNG_LEAVE", d.leave),
-            dwell: env_usize("AVAROK_DFLASH_RUNG_DWELL", d.dwell as usize) as u64,
+            multi: num(get, "AVAROK_DFLASH_RUNG_MULTI", multi_default).clamp(2, hi),
+            narrow: num(get, "AVAROK_DFLASH_RUNG_NARROW", d.narrow).clamp(2, hi),
+            wide: num(get, "AVAROK_DFLASH_RUNG_WIDE", d.wide).clamp(2, hi),
+            enter: num(get, "AVAROK_DFLASH_RUNG_ENTER", d.enter),
+            leave: num(get, "AVAROK_DFLASH_RUNG_LEAVE", d.leave),
+            dwell: num(get, "AVAROK_DFLASH_RUNG_DWELL", d.dwell),
         }
     }
 }

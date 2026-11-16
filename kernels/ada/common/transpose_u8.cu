@@ -1,0 +1,1 @@
+../../gb10/common/transpose_u8.cu

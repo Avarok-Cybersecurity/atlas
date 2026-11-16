@@ -1,0 +1,189 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 920" width="1200" height="920" font-family="Inter, ui-sans-serif, system-ui, Segoe UI, Helvetica, Arial, sans-serif" role="img" aria-labelledby="t d">
+  <title id="t">The FP8 data path on sm_89</title>
+  <desc id="d">Three lanes. At load time each BF16 FFN weight is cut into 128 by 128 tiles, each tile gets an FP32 scale equal to its largest magnitude over 448, and the weight is stored as E4M3 bytes plus the scale grid; the BF16 source is then freed. In decode, fp8_gemv_ada reads the bytes with streaming loads, converts two at a time with cvt.rn.f16x2.e4m3x2, multiplies by the block scale, accumulates in FP32 against the BF16 activation, reduces across the warp and rounds once to BF16. In prefill, the activations are quantized per token in groups of 128, staged through a three-stage cp.async pipeline, fed to mma.sync m16n8k32 with E4M3 operands and FP32 accumulation, and each 128-wide K group is folded in with its two scales before one BF16 rounding.</desc>
+
+  <defs>
+    <marker id="tipInk" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#C9CCD4"/>
+    </marker>
+  </defs>
+
+  <rect width="1200" height="920" fill="#0F1216"/>
+
+  <text x="40" y="44" font-size="23" font-weight="650" fill="#C9CCD4">The FP8 data path on sm_89</text>
+  <text x="40" y="66" font-size="13.5" fill="#82868F">Weights are quantized once at load. Decode keeps BF16 activations; prefill quantizes them per token. Every sum is FP32.</text>
+
+  <!-- lane labels -->
+  <g>
+    <rect x="40" y="92" width="1120" height="226" rx="4" fill="#171B21" stroke="#2E353F"/>
+    <rect x="40" y="92" width="4" height="226" fill="#EFB338"/>
+    <text x="60" y="118" font-size="14.5" font-weight="650" fill="#EFB338">1. Load time, once per projection</text>
+    <text x="60" y="136" font-size="11" fill="#82868F">weight_loader/qwen35_dense/fp8_from_bf16.rs, kernel quantize_bf16_to_fp8_blockscaled</text>
+
+    <rect x="40" y="334" width="1120" height="246" rx="4" fill="#171B21" stroke="#2E353F"/>
+    <rect x="40" y="334" width="4" height="246" fill="#49C3DB"/>
+    <text x="60" y="360" font-size="14.5" font-weight="650" fill="#49C3DB">2. Decode, one token: fp8_gemv_ada</text>
+    <text x="60" y="378" font-size="11" fill="#82868F">grid ceil(N/4), 256 threads, 64 lanes per output row; drop-in for w8a16_gemv and its dual and SwiGLU-input variants</text>
+
+    <rect x="40" y="596" width="1120" height="300" rx="4" fill="#171B21" stroke="#2E353F"/>
+    <rect x="40" y="596" width="4" height="300" fill="#BE9DF8"/>
+    <text x="60" y="622" font-size="14.5" font-weight="650" fill="#BE9DF8">3. Prefill, M tokens: fp8_gemm_ada_w8a8</text>
+    <text x="60" y="640" font-size="11" fill="#82868F">grid (ceil(N/128), ceil(M/64)), 128 threads as 2 x 2 warps with 32 x 64 warp tiles; drop-in for fp8_gemm_t_blockscaled</text>
+  </g>
+
+  <!-- ===== lane 1 ===== -->
+  <g font-size="11.5">
+    <rect x="60" y="156" width="230" height="140" rx="3" fill="#1E242B" stroke="#2E353F"/>
+    <text x="74" y="178" font-weight="650" fill="#C9CCD4">BF16 checkpoint weight</text>
+    <text x="74" y="196" fill="#82868F">gate and up [inter, hidden],</text>
+    <text x="74" y="212" fill="#82868F">down [hidden, inter]</text>
+    <!-- tile grid sketch -->
+    <g stroke="#EFB338" stroke-width="1" fill="none">
+      <rect x="74" y="224" width="120" height="60"/>
+      <line x1="104" y1="224" x2="104" y2="284"/>
+      <line x1="134" y1="224" x2="134" y2="284"/>
+      <line x1="164" y1="224" x2="164" y2="284"/>
+      <line x1="74" y1="254" x2="194" y2="254"/>
+    </g>
+    <text x="204" y="248" fill="#82868F" font-size="10.5">128 x 128</text>
+    <text x="204" y="262" fill="#82868F" font-size="10.5">tiles</text>
+
+    <rect x="320" y="156" width="330" height="140" rx="3" fill="#1E242B" stroke="#EFB338"/>
+    <text x="334" y="178" font-weight="650" fill="#C9CCD4">Per tile, on the GPU</text>
+    <text x="334" y="202" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#EFB338">scale = max|x| / 448</text>
+    <text x="334" y="220" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#EFB338">byte  = e4m3_satfinite(x / scale)</text>
+    <text x="334" y="244" fill="#82868F">448 is the largest finite E4M3 value.</text>
+    <text x="334" y="260" fill="#82868F">The scale is floored at 1e-12, so it is</text>
+    <text x="334" y="276" fill="#82868F">never zero; out-of-range values saturate.</text>
+
+    <rect x="680" y="156" width="250" height="140" rx="3" fill="#1E242B" stroke="#2E353F"/>
+    <text x="694" y="178" font-weight="650" fill="#C9CCD4">Fp8BlockScaled weight</text>
+    <text x="694" y="198" fill="#82868F">weight [N, K]: one E4M3 byte each</text>
+    <text x="694" y="214" fill="#82868F">scale [ceil(N/128), ceil(K/128)]: FP32</text>
+    <text x="694" y="238" fill="#C9CCD4">4B gate_proj: 9216 x 2560 bytes</text>
+    <text x="694" y="254" fill="#C9CCD4">and a 72 x 20 scale grid</text>
+    <text x="694" y="278" fill="#82868F">Installed with set_fp8_weights.</text>
+
+    <rect x="960" y="156" width="180" height="140" rx="3" fill="#1E242B" stroke="#2E353F"/>
+    <text x="974" y="178" font-weight="650" fill="#C9CCD4">BF16 source freed</text>
+    <text x="974" y="198" fill="#82868F">right after its own</text>
+    <text x="974" y="214" fill="#82868F">quantize, so the load</text>
+    <text x="974" y="230" fill="#82868F">peak is the checkpoint</text>
+    <text x="974" y="246" fill="#82868F">plus one projection.</text>
+    <text x="974" y="270" fill="#C9CCD4">No new format: the</text>
+    <text x="974" y="286" fill="#C9CCD4">native FP8 one.</text>
+  </g>
+  <g stroke="#C9CCD4" stroke-width="1.5" fill="none">
+    <path d="M 290 226 L 316 226" marker-end="url(#tipInk)"/>
+    <path d="M 650 226 L 676 226" marker-end="url(#tipInk)"/>
+    <path d="M 930 226 L 956 226" marker-end="url(#tipInk)"/>
+  </g>
+
+  <!-- ===== lane 2 ===== -->
+  <g font-size="11.5">
+    <rect x="60" y="396" width="200" height="164" rx="3" fill="#1E242B" stroke="#2E353F"/>
+    <text x="74" y="418" font-weight="650" fill="#C9CCD4">Inputs</text>
+    <text x="74" y="438" fill="#82868F">activation a[1, K], BF16,</text>
+    <text x="74" y="454" fill="#82868F">read with __ldg (reused)</text>
+    <text x="74" y="478" fill="#82868F">weight bytes, 16 per load,</text>
+    <text x="74" y="494" fill="#82868F">__ldcs evict-first: each</text>
+    <text x="74" y="510" fill="#82868F">byte is read once per token</text>
+    <text x="74" y="534" fill="#C9CCD4">2 loads in flight per lane</text>
+
+    <rect x="286" y="396" width="214" height="164" rx="3" fill="#1E242B" stroke="#49C3DB"/>
+    <text x="300" y="418" font-weight="650" fill="#C9CCD4">Dequant in registers</text>
+    <text x="300" y="440" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10.5" fill="#49C3DB">cvt.rn.f16x2.e4m3x2</text>
+    <text x="300" y="460" fill="#82868F">two bytes per instruction;</text>
+    <text x="300" y="476" fill="#82868F">FP16 holds every finite</text>
+    <text x="300" y="492" fill="#82868F">E4M3 value exactly, and</text>
+    <text x="300" y="508" fill="#82868F">FP16 to FP32 is exact</text>
+    <text x="300" y="532" fill="#C9CCD4">No shared-memory table,</text>
+    <text x="300" y="548" fill="#C9CCD4">no barrier before the FMA</text>
+
+    <rect x="526" y="396" width="214" height="164" rx="3" fill="#1E242B" stroke="#2E353F"/>
+    <text x="540" y="418" font-weight="650" fill="#C9CCD4">FP32 multiply-add</text>
+    <text x="540" y="440" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10.5" fill="#C9CCD4">w = __fmul_rn(v, scale)</text>
+    <text x="540" y="456" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10.5" fill="#C9CCD4">p = __fmul_rn(a, w)</text>
+    <text x="540" y="472" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10.5" fill="#C9CCD4">acc = __fadd_rn(acc, p)</text>
+    <text x="540" y="496" fill="#82868F">separate round-to-nearest</text>
+    <text x="540" y="512" fill="#82868F">steps in gb10's order, so</text>
+    <text x="540" y="528" fill="#82868F">no FMA contraction can</text>
+    <text x="540" y="544" fill="#82868F">change a bit</text>
+
+    <rect x="766" y="396" width="180" height="164" rx="3" fill="#1E242B" stroke="#2E353F"/>
+    <text x="780" y="418" font-weight="650" fill="#C9CCD4">Reduce</text>
+    <text x="780" y="440" fill="#82868F">5-step shfl.down</text>
+    <text x="780" y="456" fill="#82868F">butterfly, then the</text>
+    <text x="780" y="472" fill="#82868F">two-warp add</text>
+
+    <rect x="972" y="396" width="168" height="164" rx="3" fill="#1E242B" stroke="#2E353F"/>
+    <text x="986" y="418" font-weight="650" fill="#C9CCD4">Output</text>
+    <text x="986" y="440" fill="#82868F">y[n]: one</text>
+    <text x="986" y="456" fill="#82868F">__float2bfloat16</text>
+    <text x="986" y="480" fill="#12B981">bit-identical to</text>
+    <text x="986" y="496" fill="#12B981">the gb10 GEMV</text>
+    <text x="986" y="520" fill="#82868F">(except the two</text>
+    <text x="986" y="536" fill="#82868F">E4M3 NaN bytes,</text>
+    <text x="986" y="552" fill="#82868F">never emitted)</text>
+  </g>
+  <g stroke="#C9CCD4" stroke-width="1.5" fill="none">
+    <path d="M 260 478 L 282 478" marker-end="url(#tipInk)"/>
+    <path d="M 500 478 L 522 478" marker-end="url(#tipInk)"/>
+    <path d="M 740 478 L 762 478" marker-end="url(#tipInk)"/>
+    <path d="M 946 478 L 968 478" marker-end="url(#tipInk)"/>
+  </g>
+
+  <!-- ===== lane 3 ===== -->
+  <g font-size="11.5">
+    <rect x="60" y="658" width="200" height="140" rx="3" fill="#1E242B" stroke="#2E353F"/>
+    <text x="74" y="680" font-weight="650" fill="#C9CCD4">Quantize activations</text>
+    <text x="74" y="700" fill="#82868F">per_token_group_quant_fp8:</text>
+    <text x="74" y="716" fill="#82868F">A[M, K] BF16 in groups of</text>
+    <text x="74" y="732" fill="#82868F">1 x 128 along K</text>
+    <text x="74" y="756" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10.5" fill="#BE9DF8">a_scale = max|a| / 448</text>
+    <text x="74" y="780" fill="#82868F">E4M3 A + a_scale[M, K/128]</text>
+
+    <rect x="286" y="658" width="214" height="140" rx="3" fill="#1E242B" stroke="#2E353F"/>
+    <text x="300" y="680" font-weight="650" fill="#C9CCD4">Stage through smem</text>
+    <text x="300" y="700" fill="#82868F">cp.async.cg, 64 bytes of K</text>
+    <text x="300" y="716" fill="#82868F">per stage, 3 stages in</text>
+    <text x="300" y="732" fill="#82868F">flight, wait_group 1</text>
+    <text x="300" y="756" fill="#82868F">16-byte XOR swizzle: no</text>
+    <text x="300" y="772" fill="#82868F">bank conflicts, no padding;</text>
+    <text x="300" y="788" fill="#C9CCD4">36,864 B static, under 48 KiB</text>
+
+    <rect x="526" y="658" width="214" height="140" rx="3" fill="#1E242B" stroke="#BE9DF8"/>
+    <text x="540" y="680" font-weight="650" fill="#C9CCD4">Tensor cores</text>
+    <text x="540" y="700" fill="#82868F">ldmatrix.x4 for every A and</text>
+    <text x="540" y="716" fill="#82868F">B fragment, then</text>
+    <text x="540" y="738" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10.5" fill="#BE9DF8">mma.sync.m16n8k32</text>
+    <text x="540" y="754" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10.5" fill="#BE9DF8">.f32.e4m3.e4m3.f32</text>
+    <text x="540" y="778" fill="#82868F">16 MMAs per k32 step</text>
+
+    <rect x="766" y="658" width="180" height="140" rx="3" fill="#1E242B" stroke="#2E353F"/>
+    <text x="780" y="680" font-weight="650" fill="#C9CCD4">Two-level FP32 sum</text>
+    <text x="780" y="700" fill="#82868F">inner: the 4 MMAs of</text>
+    <text x="780" y="716" fill="#82868F">one 128-wide K group,</text>
+    <text x="780" y="732" fill="#82868F">unscaled</text>
+    <text x="780" y="756" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10" fill="#C9CCD4">outer += inner *</text>
+    <text x="780" y="772" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10" fill="#C9CCD4">  (a_scale * b_scale)</text>
+
+    <rect x="972" y="658" width="168" height="140" rx="3" fill="#1E242B" stroke="#2E353F"/>
+    <text x="986" y="680" font-weight="650" fill="#C9CCD4">Output</text>
+    <text x="986" y="700" fill="#82868F">C[M, N]: one BF16</text>
+    <text x="986" y="716" fill="#82868F">rounding</text>
+    <text x="986" y="740" fill="#12B981">bit-identical to</text>
+    <text x="986" y="756" fill="#12B981">fp8_gemm_t_</text>
+    <text x="986" y="772" fill="#12B981">blockscaled</text>
+  </g>
+  <g stroke="#C9CCD4" stroke-width="1.5" fill="none">
+    <path d="M 260 728 L 282 728" marker-end="url(#tipInk)"/>
+    <path d="M 500 728 L 522 728" marker-end="url(#tipInk)"/>
+    <path d="M 740 728 L 762 728" marker-end="url(#tipInk)"/>
+    <path d="M 946 728 L 968 728" marker-end="url(#tipInk)"/>
+  </g>
+  <text x="60" y="826" font-size="11.5" fill="#C9CCD4">The weight operand B is the load-time Fp8BlockScaled weight from lane 1, with b_scale its 128 x 128 grid.</text>
+  <text x="60" y="846" font-size="11.5" fill="#82868F">Activation quantization is the lossy step of W8A8. The arm's microtest holds it to cosine &gt;= 0.999 against W8A16; setting AVAROK_FFN_W8A16_ONLY keeps W8A16.</text>
+  <text x="60" y="866" font-size="11.5" fill="#82868F">Preconditions the host selector already enforces: K % 128 == 0 and N % 128 == 0. Both kernels refuse to compile below sm_89 (#error).</text>
+</svg>

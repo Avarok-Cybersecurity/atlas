@@ -324,12 +324,22 @@ pub(super) fn continue_in_progress_prefills(
                 p.prompt_tokens.len(),
                 max_prefill_tokens,
             );
-            match model.prefill_twophase(
+            // Bounded KV view (port L32): the whole prompt in one call.
+            let view_hook = super::kv_view::begin(
+                model,
+                &sched.limits,
+                &[super::kv_view::Stream::of(p, p.prompt_tokens.len())],
+            );
+            let twophase = model.prefill_twophase(
                 &p.prompt_tokens,
                 &mut p.seq,
                 max_prefill_tokens,
                 prefill_stream,
-            ) {
+            );
+            let end = super::kv_view::ChunkEnd::of(true, twophase.is_ok());
+            view_hook.finish(&p.prompt_tokens, &p.seq, end, prefill_stream);
+            drop(view_hook);
+            match twophase {
                 Ok(logits) => {
                     p.chunk_offset = p.prompt_tokens.len();
                     let _ = model.record_event(prefill_event, prefill_stream);

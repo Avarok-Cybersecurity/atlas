@@ -358,6 +358,9 @@ pub enum ToolCallFormat {
     DeepseekV4,
     BareJson,
     PoolsideV1,
+    /// Liquid AI LFM3 (port sprint L37): qwen3_coder's XML, prompt left to the
+    /// checkpoint template.
+    Lfm3,
 }
 
 impl std::str::FromStr for ToolCallFormat {
@@ -373,8 +376,9 @@ impl std::str::FromStr for ToolCallFormat {
             "deepseek_v4" | "deepseek_v41" | "dsml" => Ok(Self::DeepseekV4),
             "bare_json" => Ok(Self::BareJson),
             "poolside_v1" => Ok(Self::PoolsideV1),
+            "lfm3" => Ok(Self::Lfm3),
             other => Err(format!(
-                "Unknown tool call parser '{other}'. Supported: hermes, qwen3_coder, qwen3_xml, gemma4, mistral, minimax_xml, deepseek_v4, bare_json, poolside_v1",
+                "Unknown tool call parser '{other}'. Supported: hermes, qwen3_coder, qwen3_xml, gemma4, mistral, minimax_xml, deepseek_v4, bare_json, poolside_v1, lfm3",
             )),
         }
     }
@@ -393,6 +397,7 @@ impl ToolCallFormat {
             Self::DeepseekV4 => Box::new(DeepseekV4DsmlParser),
             Self::BareJson => Box::new(BareJsonParser),
             Self::PoolsideV1 => Box::new(PoolsideV1Parser),
+            Self::Lfm3 => Box::new(Lfm3Parser),
         }
     }
 
@@ -421,6 +426,7 @@ impl ToolCallFormat {
             Self::DeepseekV4 => "deepseek_v4",
             Self::BareJson => "bare_json",
             Self::PoolsideV1 => "poolside_v1",
+            Self::Lfm3 => "lfm3",
         }
     }
 }
@@ -435,6 +441,7 @@ mod gemma4;
 mod helpers_a;
 mod helpers_b;
 mod hermes;
+mod lfm3;
 mod minimax_xml;
 mod mistral;
 mod parse_dispatch;
@@ -461,6 +468,7 @@ use helpers_a::*;
 pub(crate) use helpers_b::append_tool_choice_instruction;
 use helpers_b::*;
 pub use hermes::*;
+pub use lfm3::*;
 pub use minimax_xml::*;
 pub use mistral::*;
 pub use parse_dispatch::*;

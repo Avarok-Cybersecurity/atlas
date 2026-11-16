@@ -14,32 +14,14 @@ use crate::cli;
 #[path = "weights_allowlist_tests.rs"]
 mod weights_allowlist_tests;
 
-pub(crate) fn quant_multiplier(config: &ModelConfig) -> Option<f64> {
-    if config.model_type == "glm5_next" {
-        // GLM-5.3 at TP=2/EP=2 is 99.64 GB on-disk per rank against ~111.5 GB free. The
-        // generic 1.3x default projects 129.54 GB and refuses a load that fits: the fast
-        // loader's staging is a BOUNDED read/copy pipeline, not a fraction of the model, so
-        // on a ~100 GB checkpoint the 1.3x is 30 GB of imaginary overhead.
-        //
-        // ⚠️ 1.10 is a HEADROOM ALLOWANCE, not a measurement — nothing has profiled this
-        // load yet. It also does NOT cover what comes after: `Glm5NextWeightLoader` builds
-        // TP-sliced copies of the non-expert tensors while the store still holds the
-        // originals (the routed experts are bound zero-copy from the store's own pointers,
-        // so they are not doubled). That is ~6 GB this pre-flight cannot see. If a load OOMs
-        // shortly AFTER this gate passes, that is the cause — not this number.
-        Some(1.10)
-    } else if config.model_type == "minimax_m2" || config.model_type == "step3p7" {
-        Some(1.02)
-    } else if config
-        .quantization_config
-        .as_ref()
-        .is_some_and(|qc| qc.quant_method == "fp8")
-    {
-        Some(1.05)
-    } else {
-        None
-    }
-}
+#[path = "weights_multiplier.rs"]
+mod weights_multiplier;
+#[path = "weights_optout.rs"]
+mod weights_optout;
+#[cfg(test)]
+#[path = "weights_vision_tests.rs"]
+mod weights_vision_tests;
+pub(crate) use weights_multiplier::quant_multiplier;
 
 pub(crate) fn load_weight_store(
     args: &cli::ServeArgs,
@@ -108,14 +90,18 @@ pub(crate) fn load_weight_store(
             };
             loader.peak_memory_multiplier = mult;
             loader.skip_activation_scales = skip_activation_scales(config);
-            loader.skip_mtp = skip_mtp(config);
+            loader.skip_mtp = skip_mtp_for(args, config);
             // A text-only port never binds the vision tower, so don't read it.
             // The reclaim in `build_model` still catches every other path, but
             // it runs AFTER the inference-buffer preflight has already sized
             // (and possibly refused) the serve against the free memory the
             // tower was occupying.
-            loader.skip_vision = !binds_vision(config);
-            if loader.skip_vision {
+            // `--no-vision` skips it for any port (`serve_load` has already
+            // cleared `config.vision`, so nothing binds it either).
+            loader.skip_vision = !binds_vision(config) || args.no_vision;
+            if args.no_vision {
+                tracing::info!("Vision tower: not loaded (--no-vision).");
+            } else if loader.skip_vision {
                 tracing::info!(
                     "Vision tower: not loaded — the weight loader for model_type '{}' is a \
                      text-only port and binds no vision encoder.",
@@ -146,7 +132,7 @@ pub(crate) fn load_weight_store(
         };
         loader.peak_memory_multiplier = mult;
         loader.skip_activation_scales = skip_activation_scales(config);
-        loader.skip_mtp = skip_mtp(config);
+        loader.skip_mtp = skip_mtp_for(args, config);
         loader.defer = defer_hook(config);
         loader
             .load(model_dir, gpu, oom_reserve_bytes)
@@ -458,6 +444,19 @@ fn skip_activation_scales(config: &ModelConfig) -> bool {
 /// that are then discarded is memory the KV cache needs.
 fn skip_mtp(config: &ModelConfig) -> bool {
     matches!(config.model_type.as_str(), "qwen4_exp")
+}
+
+/// [`skip_mtp`] (the port never builds a head) or
+/// [`weights_optout::mtp_unused`] (this serve never runs one).
+fn skip_mtp_for(args: &cli::ServeArgs, config: &ModelConfig) -> bool {
+    let unused = weights_optout::mtp_unused(args, config);
+    if unused {
+        tracing::info!(
+            "MTP block: not loaded, no speculative mode is on, so nothing reads `mtp.*` \
+             (pass --speculative to keep it)."
+        );
+    }
+    skip_mtp(config) || unused
 }
 
 /// Will the model's weight loader bind a vision encoder?

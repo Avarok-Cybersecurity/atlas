@@ -35,6 +35,7 @@ mod finalize_last;
 mod forward_layers;
 mod h_state_ptrs;
 mod midchunk_capture;
+mod prefix_cow;
 mod prefix_lookup;
 mod prefix_reserve;
 mod proc_range;
@@ -305,6 +306,7 @@ impl TransformerModel {
         // causing CUDA 700 at >9K tokens. This sync adds ~5μs overhead
         // per chunk but prevents the illegal memory access.
         self.gpu.synchronize(stream)?;
+        crate::port::affine::prefill::harvest_fallbacks(self.gpu.as_ref(), stream);
 
         // ── Mid-chunk tail SSM capture (opt-in): plan BEFORE the forward
         // pass so SSM layers split their h/conv kernels at `tb` in-pass.

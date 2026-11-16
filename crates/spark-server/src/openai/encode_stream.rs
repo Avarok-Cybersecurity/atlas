@@ -283,6 +283,7 @@ mod tests {
             time_to_first_token_ms: 12.5,
             decode_time_ms: 100.0,
             response_tokens_per_second: 40.0,
+            atlas: Default::default(),
         };
         let d = StreamDelta::Finish {
             reason: FinishReason::Stop,
@@ -308,6 +309,7 @@ mod tests {
             time_to_first_token_ms: 12.5,
             decode_time_ms: 100.0,
             response_tokens_per_second: 40.0,
+            atlas: Default::default(),
         };
         let d = StreamDelta::Finish {
             reason: FinishReason::Stop,

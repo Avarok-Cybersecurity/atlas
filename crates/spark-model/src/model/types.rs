@@ -578,6 +578,8 @@ pub struct TransformerModel {
     /// the batch `Fold`/`Refuse`, which `reject_decode_lora` turns into a loud
     /// bail (the decode-fold is SOLID Incr-4). Encoded 0=Skip 1=Fold 2=Refuse.
     pub(super) decode_moe_route: std::sync::atomic::AtomicI32,
+    /// The port sprint's per-model state (`port/state.rs`), one field per lane.
+    pub port: crate::port::state::ModelPortState,
 }
 
 /// Pinned host memory staging buffer with reusable metadata Vecs.
@@ -661,6 +663,7 @@ impl TransformerModel {
 
     pub(super) fn release_pools(&mut self) -> anyhow::Result<()> {
         use avarok_core::scope::ModelResource;
+        self.tier_teardown();
 
         let gpu: &dyn GpuBackend = self.gpu.as_ref();
         let mut first_error: Option<anyhow::Error> = None;
@@ -700,6 +703,13 @@ impl TransformerModel {
         // Every pointer freed above has already left the ledger, so this
         // cannot double-free — it only ever sees what was missed.
         let swept = gpu.sweep_unreleased();
+        // Port lane L24: the embedding table in mapped host memory, if the
+        // `embed_host_offload` row put it there (host memory, so the sweep
+        // above never sees it).
+        attempt(
+            "embedding host table",
+            crate::port::embed_host::release_view(gpu, self.embed_tokens.weight),
+        );
         if swept > 0 {
             tracing::warn!(
                 "teardown swept {swept} allocation(s) that no ModelResource \

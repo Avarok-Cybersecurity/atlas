@@ -44,8 +44,16 @@ const GB10: TargetDefaults = TargetDefaults {
     lm_head_m16_tc: false,
     attn_ncol_gemv: false,
     ffn_gateup_fused: false,
+    dense_fp8_from_bf16: false,
+    gdn_fp8_from_bf16: false,
+    attn_fp8_from_bf16: false,
+    ffn_bf16_cublas_prefill: false,
+    gdn_batched_gemm: false,
+    attn_gated_bf16_batchm: false,
+    memory_fit_consumer: false,
     w8a8_prefill_max_m_widening: 64,
     w8a8_prefill_max_m_narrowing: 384,
+    port: avarok_kernels::target_defaults_port::PORT_BASELINE,
 };
 
 /// `kernels/hopper/HARDWARE.toml` `[defaults]`.
@@ -70,9 +78,17 @@ const HOPPER: TargetDefaults = TargetDefaults {
     lm_head_m16_tc: true,
     attn_ncol_gemv: false,
     ffn_gateup_fused: true,
+    dense_fp8_from_bf16: false,
+    gdn_fp8_from_bf16: false,
+    attn_fp8_from_bf16: false,
+    ffn_bf16_cublas_prefill: false,
+    gdn_batched_gemm: false,
+    attn_gated_bf16_batchm: false,
+    memory_fit_consumer: false,
     // No cap: W8A8 is 2.0-3.1x over W8A16 at every M measured on H100.
     w8a8_prefill_max_m_widening: u32::MAX,
     w8a8_prefill_max_m_narrowing: u32::MAX,
+    port: avarok_kernels::target_defaults_port::PORT_BASELINE,
 };
 
 fn with(defaults: &TargetDefaults, env: &[(&str, &str)]) -> TargetLevers {
@@ -415,3 +431,11 @@ fn hopper_resolves_the_widened_head_band_from_its_declaration() {
 /// one stays under the house 500-line cap.
 #[path = "target_defaults_gateup_tests.rs"]
 mod gateup;
+
+/// The `dense_fp8_from_bf16` row, in its own file for the same reason.
+#[path = "target_defaults_fp8_from_bf16_tests.rs"]
+mod fp8_from_bf16;
+
+/// The `memory_fit_consumer` row, in its own file for the same reason.
+#[path = "target_defaults_memory_fit_tests.rs"]
+mod memory_fit;

@@ -87,8 +87,11 @@ pub fn step_verify_k2(
     verify_ctx: &crate::scheduler::logit_processors::LogitsContext,
     dflash_verify_raw_argmax: bool,
 ) {
+    use crate::scheduler::mtp_device_timing as devt;
     use crate::scheduler::mtp_timing::Phase;
     let t_step = Instant::now();
+    // AVAROK_MTP_TIMING=2 device-event marks (one branch when unset).
+    devt::step_start(model);
     let t_sync = Instant::now();
     if let Err(e) = model.sync_secondary() {
         tracing::error!("sync_secondary: {e:#}");
@@ -144,6 +147,7 @@ pub fn step_verify_k2(
         }
     };
     sched.timing.record(Phase::VerifyForward, t_verify);
+    devt::mark_model(devt::Phase::Verify, model);
     let verify_us = t_verify.elapsed().as_micros();
     a.last_token_time = Instant::now();
     let (v0_argmax, v1_argmax) = (result_vec[0], result_vec[1]);
@@ -167,6 +171,7 @@ pub fn step_verify_k2(
             processed.get(1).copied().unwrap_or(v1_argmax),
         )
     };
+    devt::mark_model(devt::Phase::Pipeline, model);
     let accepted = drafts[0] == v0;
 
     // Extract logprobs from verify logits buffer (K=2 positions) when requested.
@@ -243,6 +248,7 @@ pub fn step_verify_k2(
             return;
         }
         sched.timing.record(Phase::Commit, t_commit);
+        devt::mark_model(devt::Phase::Commit, model);
 
         // EAGLE-fix (AVAROK_DFLASH_EAGLE_FIX=1, K=2 accept only): append row 0 @ N
         // then row 1 @ N+1 BEFORE propose so forward_block conditions on row 1
@@ -266,6 +272,7 @@ pub fn step_verify_k2(
             tracing::error!("trim_proposer_state: {e:#}");
         }
         sched.timing.record(Phase::TrimProposer, t_trim);
+        devt::mark_model(devt::Phase::Other, model);
         let t_mask = Instant::now();
         let _mtp_grammar_mask = mtp_grammar_mask_for(a);
         sched.timing.record(Phase::ProposeMask, t_mask);
@@ -285,6 +292,7 @@ pub fn step_verify_k2(
             }
         }
         sched.timing.record(Phase::Propose, t_propose);
+        devt::mark_model(devt::Phase::Propose, model);
         let propose_us = t_propose.elapsed().as_micros();
         // Per-step ACCEPT trace at debug — fires every step during
         // spec-decode. Power-user diagnostics:
@@ -323,6 +331,7 @@ pub fn step_verify_k2(
             return;
         }
         sched.timing.record(Phase::Commit, t_commit);
+        devt::mark_model(devt::Phase::Commit, model);
 
         emit_token(a, v0, verify_lps.first().cloned(), sched);
         if a.finished {
@@ -336,6 +345,7 @@ pub fn step_verify_k2(
             return;
         }
         sched.timing.record(Phase::SaveHidden, t_save);
+        devt::mark_model(devt::Phase::Other, model);
         let t_mask = Instant::now();
         let _mtp_grammar_mask = mtp_grammar_mask_for(a);
         sched.timing.record(Phase::ProposeMask, t_mask);
@@ -355,6 +365,7 @@ pub fn step_verify_k2(
             }
         }
         sched.timing.record(Phase::Propose, t_propose);
+        devt::mark_model(devt::Phase::Propose, model);
         let propose_us = t_propose.elapsed().as_micros();
         let new_draft = a.pending_drafts.first().copied().unwrap_or(0);
         // REJECT log demoted from `info!` to `debug!` to match the

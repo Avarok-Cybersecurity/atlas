@@ -10,9 +10,33 @@ use spark_runtime::weights::{WeightDtype, WeightStore};
 
 use crate::weight_map::{DenseWeight, dense, dense_auto_fp8_or_bf16};
 
-pub(super) fn load_embedding(store: &WeightStore, config: &ModelConfig) -> Result<DenseWeight> {
+/// The LM-head tensor names `load_lm_head` tries, in order.
+const LM_HEAD_PREFIXES: [&str; 3] = ["lm_head", "language_model.lm_head", "model.lm_head"];
+
+/// The input embedding. With the `embed_host_offload` row on (lane L24, off on every target) and an untied
+/// LM head, the table moves to mapped pinned host memory (`port::embed_host::install_from_store`, which
+/// frees the device copy and returns the device-visible pointer the gather kernels read); `Ok(None)` from
+/// it (mapped memory refused, logged there) keeps the device table. A TIED head is the same tensor read by
+/// every LM-head GEMM, so it always stays on the device.
+pub(super) fn load_embedding(
+    store: &WeightStore,
+    config: &ModelConfig,
+    gpu: &dyn GpuBackend,
+) -> Result<DenseWeight> {
     let prefix = &config.weight_prefix;
-    dense(store, &format!("{prefix}.embed_tokens.weight"))
+    let name = format!("{prefix}.embed_tokens.weight");
+    let untied = LM_HEAD_PREFIXES
+        .iter()
+        .any(|p| store.contains(&format!("{p}.weight")));
+    if untied
+        && crate::layers::ops::port_rows::embed_host_offload::row()
+        && let &[rows, hidden] = store.get(&name)?.shape.as_slice()
+        && let Some(w) =
+            crate::port::embed_host::install_from_store(gpu, store, &name, rows, hidden)?
+    {
+        return Ok(w);
+    }
+    dense(store, &name)
 }
 
 pub(super) fn load_final_norm(store: &WeightStore, config: &ModelConfig) -> Result<DenseWeight> {
@@ -45,7 +69,7 @@ pub(super) fn load_lm_head(
     config: &ModelConfig,
     gpu: &dyn GpuBackend,
 ) -> Result<DenseWeight> {
-    for prefix in ["lm_head", "language_model.lm_head", "model.lm_head"] {
+    for prefix in LM_HEAD_PREFIXES {
         let key = format!("{prefix}.weight");
         if !store.contains(&key) {
             continue;

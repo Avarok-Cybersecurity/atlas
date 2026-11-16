@@ -31,8 +31,10 @@ mod drafter_prefill;
 mod ep_misc;
 mod gdn_woa;
 mod graph_borrow;
+mod graph_family;
 mod lm_head_batched;
 mod meta;
+mod port_ext;
 mod prefill_a;
 mod prefill_b;
 mod prefill_c;
@@ -54,6 +56,11 @@ mod verify_fused;
 impl Model for TransformerModel {
     fn teardown(&mut self) -> Result<()> {
         self.release_pools()
+    }
+
+    /// The port sprint's entry points (`trait_impl/port_ext.rs`).
+    fn port_ext(&self) -> Option<&dyn crate::traits::port_ext::ModelPortExt> {
+        Some(self)
     }
 
     /// Poll this model's own InnerQ driver. A miss is logged, never fatal — it

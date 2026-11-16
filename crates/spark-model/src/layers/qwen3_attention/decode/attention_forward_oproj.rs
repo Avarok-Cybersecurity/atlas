@@ -11,6 +11,7 @@ use anyhow::Result;
 use spark_runtime::gpu::DevicePtr;
 
 use super::super::Qwen3AttentionLayer;
+use super::super::w4_proj::W4Slot;
 use crate::layer::ForwardContext;
 use crate::layers::ops;
 
@@ -50,6 +51,20 @@ impl Qwen3AttentionLayer {
                     stream,
                 )?;
             }
+        } else if let Some(w4) = self.w4_proj.get(W4Slot::O) {
+            // Packed o_proj (port lane L22b, `w4_proj.rs`): one decode row.
+            let (n_out, k_in) = (h as usize, (nq * hd) as usize);
+            self.w4_decode_rows(
+                w4,
+                "attention o_proj",
+                ctx.gpu,
+                attn_out,
+                1,
+                o_out,
+                n_out,
+                k_in,
+                stream,
+            )?;
         } else if let Some(o_bf16) = self.o_dense_bf16.as_ref() {
             ops::dense_gemv(
                 ctx.gpu,
@@ -135,3 +150,8 @@ impl Qwen3AttentionLayer {
         Ok(o_out)
     }
 }
+
+// Mock-backend dispatch tests of the single-sequence packed k/v and o arms (port lane L22b).
+#[cfg(test)]
+#[path = "attention_forward_w4_tests.rs"]
+mod w4_tests;

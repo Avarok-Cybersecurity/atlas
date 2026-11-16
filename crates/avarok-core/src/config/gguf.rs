@@ -7,7 +7,8 @@
 //! sibling `config.json`. This module reads those keys through the
 //! [`GgufMeta`] accessor (implemented by the GGUF parser in spark-runtime, so
 //! avarok-core keeps no GGUF dependency) and produces a validated
-//! [`ModelConfig`] for the llama / qwen2 / qwen3 / gemma decoder families.
+//! [`ModelConfig`] for the llama / qwen2 / qwen3 / qwen3.5 (GDN hybrid) / gemma
+//! decoder families.
 //!
 //! Strategy: synthesize an HF-config-shaped JSON object from the GGUF keys and
 //! deserialize it into `ModelConfig` (serde `#[serde(default)]` fills the many
@@ -21,6 +22,9 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
 
 use super::{ModelConfig, finalize_config};
+
+mod qwen35;
+use qwen35::{apply_qwen35_hybrid, is_qwen35_family};
 
 /// Typed read access to GGUF metadata. Implemented by the spark-runtime GGUF
 /// parser over its parsed key/value table. All getters return `None` when the
@@ -93,9 +97,18 @@ fn arch_to_model_type(arch: &str) -> Result<(&'static str, bool)> {
         // (every FFN is MoE or the shared expert), so the required-key handling
         // below treats that key as optional for MoE arches.
         "deepseek41" => ("deepseek_v41", false),
+        // Qwen3.5 / 3.6 / 3.8 GDN hybrids (Gated DeltaNet linear attention in
+        // three of every four layers, gated full attention in the fourth).
+        // llama.cpp names the dense family `qwen35` and the MoE family
+        // `qwen35moe`; Atlas's safetensors path calls them `qwen3_5` (dense,
+        // `num_experts == 0`) and `qwen3_5_moe`. Q carries an output gate
+        // (`attn_q` is `2 * heads * head_dim` wide), as in dispatch.rs.
+        "qwen35" | "qwen3_5" => ("qwen3_5", true),
+        "qwen35moe" => ("qwen3_5_moe", true),
         other => bail!(
             "GGUF general.architecture '{other}' has no Atlas model_type mapping. \
-             Supported GGUF arches: llama, qwen2, qwen3, qwen3moe, gemma/gemma2/gemma3/gemma4, deepseek41."
+             Supported GGUF arches: llama, qwen2, qwen3, qwen3moe, qwen35, qwen35moe, \
+             gemma/gemma2/gemma3/gemma4, deepseek41."
         ),
     })
 }
@@ -119,12 +132,33 @@ pub fn config_from_gguf(inputs: &GgufConfigInputs) -> Result<ModelConfig> {
 
     // ── Core dimensions (required) ──
     let hidden_size = req_u64("embedding_length")? as usize;
-    let num_hidden_layers = req_u64("block_count")? as usize;
+    let block_count = req_u64("block_count")? as usize;
+    // llama.cpp writes a Qwen3.5-family multi-token-prediction head as extra
+    // blocks AFTER the trunk and counts them in `block_count` (the 27B ships
+    // `block_count = 65`, `nextn_predict_layers = 1`: 64 trunk layers plus the
+    // head in `blk.64`). Atlas's `num_hidden_layers` is the trunk only; the
+    // head is `mtp_num_hidden_layers`.
+    let qwen35 = is_qwen35_family(&arch);
+    let nextn_layers = if qwen35 {
+        meta.get_u64(&k("nextn_predict_layers")).unwrap_or(0) as usize
+    } else {
+        0
+    };
+    let num_hidden_layers = match block_count.checked_sub(nextn_layers) {
+        Some(n) if n > 0 => n,
+        _ => bail!(
+            "GGUF: '{arch}.nextn_predict_layers' ({nextn_layers}) leaves no trunk layers of \
+             '{arch}.block_count' ({block_count})"
+        ),
+    };
     // `feed_forward_length` is the DENSE FFN width. A pure-MoE arch may not ship
     // it at all (DeepSeek-V4.1 has only `expert_feed_forward_length`), so it is
     // required only when the file declares no experts. Resolving to 0 for a MoE
     // file is correct: nothing dispatches a dense FFN there.
-    let has_experts = meta.get_u64(&k("expert_count")).unwrap_or(0) > 0;
+    // A `qwen35moe` file with `expert_count` missing is still a MoE file; its
+    // missing key is reported below, not as a missing dense width.
+    let moe_arch = matches!(arch.as_str(), "qwen3moe" | "qwen35moe");
+    let has_experts = moe_arch || meta.get_u64(&k("expert_count")).unwrap_or(0) > 0;
     let intermediate_size = match meta.get_u64(&k("feed_forward_length")) {
         Some(v) => v as usize,
         None if has_experts => 0,
@@ -206,14 +240,14 @@ pub fn config_from_gguf(inputs: &GgufConfigInputs) -> Result<ModelConfig> {
     let tie_word_embeddings = !inputs.has_output_weight;
 
     // ── MoE (only for MoE arches) ──
-    let num_experts = if arch == "qwen3moe" {
+    let num_experts = if moe_arch {
         req_u64("expert_count")? as usize
     } else {
         meta.get_u64(&k("expert_count"))
             .map(|v| v as usize)
             .unwrap_or(0)
     };
-    if arch == "qwen3moe" && num_experts == 0 {
+    if moe_arch && num_experts == 0 {
         bail!("GGUF metadata key '{arch}.expert_count' must be greater than zero");
     }
 
@@ -259,6 +293,20 @@ pub fn config_from_gguf(inputs: &GgufConfigInputs) -> Result<ModelConfig> {
         body.insert("num_experts_per_tok".into(), json!(experts_per_tok));
         body.insert("moe_intermediate_size".into(), json!(moe_ffn));
     }
+    if arch == "qwen35moe" {
+        // Qwen3.5 MoE always runs one shared expert beside the routed ones, and
+        // its router always renormalizes the top-K weights (hardcoded in HF's
+        // `Qwen3_5MoeTopKRouter`, so no GGUF key; dispatch.rs sets it too).
+        let shared = req_u64("expert_shared_feed_forward_length")? as usize;
+        if shared == 0 {
+            bail!(
+                "GGUF metadata key '{arch}.expert_shared_feed_forward_length' must be greater \
+                 than zero"
+            );
+        }
+        body.insert("shared_expert_intermediate_size".into(), json!(shared));
+        body.insert("norm_topk_prob".into(), json!(true));
+    }
 
     // sliding_window (gemma hybrid attention); 0/absent ⇒ full attention.
     if let Some(sw) = meta.get_u64(&k("attention.sliding_window")) {
@@ -293,6 +341,10 @@ pub fn config_from_gguf(inputs: &GgufConfigInputs) -> Result<ModelConfig> {
             ),
             None => 0.0,
         };
+    }
+
+    if qwen35 {
+        apply_qwen35_hybrid(&mut config, meta, &arch, nextn_layers)?;
     }
 
     // ── DeepSeek-V4.1 post-parse fixups ──
@@ -415,9 +467,10 @@ pub fn config_from_gguf(inputs: &GgufConfigInputs) -> Result<ModelConfig> {
 // ── Fields GGUF does NOT provide, and how they are set (explicit, no silent
 //    prod defaults) ──
 //   * partial_rotary_factor / rotary_dim: left at struct default 1.0 (full
-//     RoPE). `{arch}.rope.dimension_count` could refine this for partial-rotary
-//     models; deliberately NOT auto-applied here until a target arch needs it.
-//   * layer_types / hybrid fields: left empty (homogeneous decoder).
+//     RoPE) except for the Qwen3.5 family, which derives the factor from
+//     `{arch}.rope.dimension_count` (see `apply_qwen35_hybrid`).
+//   * layer_types / hybrid fields: left empty (homogeneous decoder) except for
+//     the Qwen3.5 family (see `apply_qwen35_hybrid`).
 //   * All SSM/MLA/DeepSeek/MiniMax/vision fields: 0 / empty — not applicable to
 //     the llama/qwen/gemma decoder families this builder targets.
 //   * ep_rank/ep_world_size/tp_*: set at runtime by the caller, not here.

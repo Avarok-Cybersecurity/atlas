@@ -117,6 +117,22 @@ pub async fn metrics_handler() -> impl IntoResponse {
         atlas_kernel_lookups_unresolved {unresolved}\n"
     );
 
+    // In-process device memory from the allocation ledger. The device-wide
+    // figure (nvidia-smi) also holds the CUDA context, CUDA Graph pools and
+    // library workspaces, which never pass through the ledger; reading both
+    // separates what Atlas allocated from what the driver did.
+    let (ledger_live, ledger_peak) = spark_runtime::run_metrics::ledger_bytes();
+    let _ = write!(
+        text,
+        "\
+        # HELP atlas_gpu_ledger_live_bytes Device bytes live in the Atlas allocation ledger\n\
+        # TYPE atlas_gpu_ledger_live_bytes gauge\n\
+        atlas_gpu_ledger_live_bytes {ledger_live}\n\
+        # HELP atlas_gpu_ledger_peak_bytes High-water mark of the allocation ledger since the model loaded\n\
+        # TYPE atlas_gpu_ledger_peak_bytes gauge\n\
+        atlas_gpu_ledger_peak_bytes {ledger_peak}\n"
+    );
+
     let _ = write!(
         text,
         "\
@@ -130,6 +146,9 @@ pub async fn metrics_handler() -> impl IntoResponse {
         # TYPE atlas_low_entropy_ratio gauge\n\
         atlas_low_entropy_ratio {low_ratio:.4}\n"
     );
+
+    // The port sprint's (`port/consumer-opt`) series (`api/port_metrics.rs`).
+    super::port_metrics::render(&mut text);
 
     (
         [(
@@ -153,25 +172,44 @@ pub(crate) fn readiness(
     model: Option<&str>,
     fault: Option<&str>,
 ) -> (StatusCode, serde_json::Value) {
+    use super::llama_compat::error::{ErrorKind, error_object};
+    // The 503 bodies also carry llama.cpp's `error` object, so a client that
+    // reads `error.message` / `error.type` from llama-server sees the same
+    // thing here; `status` and `reason` are Atlas's own and stay.
+    let with_error = |status: &str, reason: Option<&str>, message: &str| {
+        let mut body = error_object(
+            StatusCode::SERVICE_UNAVAILABLE,
+            ErrorKind::Unavailable,
+            message,
+        );
+        body["status"] = serde_json::json!(status);
+        if let Some(r) = reason {
+            body["reason"] = serde_json::json!(r);
+        }
+        body
+    };
     if let Some(reason) = fault {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
-            serde_json::json!({"status": "faulted", "reason": reason}),
+            with_error("faulted", Some(reason), &format!("GPU fault: {reason}")),
         );
     }
     match model {
+        // llama-server answers `{"status": "ok"}`; clients compare against it.
         Some(name) => (
             StatusCode::OK,
-            serde_json::json!({"status": "ready", "model": name}),
+            serde_json::json!({"status": "ok", "model": name}),
         ),
         None => (
             StatusCode::SERVICE_UNAVAILABLE,
-            serde_json::json!({"status": "loading"}),
+            with_error("loading", None, "Loading model"),
         ),
     }
 }
 
-/// GET /health — readiness probe (503 while model is loading).
+/// GET /health — readiness probe (503 while model is loading). The healthy
+/// answer is `{"status":"ok","model":...}`: `ok` is llama-server's status,
+/// which llama.cpp clients compare against.
 pub async fn health(
     State(host): State<Arc<crate::main_modules::model_host::ModelHost>>,
 ) -> Response {
@@ -242,12 +280,36 @@ pub async fn serve_config() -> Response {
     }
 }
 
-/// POST /tokenize — tokenize text or chat messages, return token IDs and count.
-pub async fn tokenize(
-    CurrentModel(state): CurrentModel,
-    req: Result<Json<crate::openai::TokenizeRequest>, JsonRejection>,
-) -> Response {
-    let Json(req) = match req {
+/// POST /tokenize — two dialects on one route.
+///
+/// A body with `content` is llama.cpp's request (`content`, `add_special`,
+/// `with_pieces`) and gets llama.cpp's answer (`{"tokens": [...]}`). Anything
+/// else is Atlas's own (`prompt` or `messages`, answered with
+/// `{tokens, count}`). The body is read as bytes so a missing
+/// `Content-Type: application/json` is tolerated, as in llama-server.
+pub async fn tokenize(CurrentModel(state): CurrentModel, body: axum::body::Bytes) -> Response {
+    let value: serde_json::Value = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(e) => {
+            return openai_error_response(
+                StatusCode::BAD_REQUEST,
+                format!("Invalid request JSON: {e}"),
+            );
+        }
+    };
+    if let Some(map) = value.as_object()
+        && super::llama_compat::tokenize::is_llama_shape(map)
+    {
+        let run = || {
+            let req = super::llama_compat::tokenize::parse_tokenize(map)?;
+            super::llama_compat::tokenize::tokenize_response(&state.tokenizer, &req)
+        };
+        return match run() {
+            Ok(v) => Json(v).into_response(),
+            Err(e) => e.into_response(),
+        };
+    }
+    let req: crate::openai::TokenizeRequest = match serde_json::from_value(value) {
         Ok(r) => r,
         Err(e) => {
             return openai_error_response(
@@ -309,11 +371,12 @@ pub struct DetokenizeRequest {
 }
 
 /// POST /detokenize — decode token IDs back to text.
-pub async fn detokenize(
-    CurrentModel(state): CurrentModel,
-    req: Result<Json<DetokenizeRequest>, JsonRejection>,
-) -> Response {
-    let Json(req) = match req {
+///
+/// The request is the same in both dialects (`tokens`). The answer carries
+/// llama.cpp's `content` (special tokens written out) and Atlas's own `text`
+/// (special tokens dropped), so either kind of client finds its field.
+pub async fn detokenize(CurrentModel(state): CurrentModel, body: axum::body::Bytes) -> Response {
+    let req: DetokenizeRequest = match serde_json::from_slice(&body) {
         Ok(r) => r,
         Err(e) => {
             return openai_error_response(
@@ -322,11 +385,11 @@ pub async fn detokenize(
             );
         }
     };
-    match state.tokenizer.decode(&req.tokens) {
-        Ok(text) => Json(serde_json::json!({"text": text})).into_response(),
+    match super::llama_compat::tokenize::detokenize_response(&state.tokenizer, &req.tokens) {
+        Ok(v) => Json(v).into_response(),
         Err(e) => (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": e.to_string()})),
+            Json(serde_json::json!({"error": e.message})),
         )
             .into_response(),
     }

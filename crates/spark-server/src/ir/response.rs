@@ -101,6 +101,9 @@ pub struct Usage {
     /// it is a shipped wire key (`response_token/s`); new consumers
     /// should read `decode_time_ms` and `completion_tokens` instead.
     pub response_tokens_per_second: f64,
+    /// Atlas fingerprints and confidence summary (`api/evidence.rs`); empty
+    /// unless the request asked for them.
+    pub atlas: crate::api::evidence::UsageExtras,
 }
 
 impl Usage {
