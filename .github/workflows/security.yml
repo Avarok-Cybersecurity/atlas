@@ -72,7 +72,7 @@ jobs:
       # with rust-toolchain.toml. (cargo-deny is metadata-only — it audits the
       # pinned Cargo.lock and does not compile the workspace — so the toolchain
       # is about consistency with the repo pin, not the audit result.)
-      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
+      - uses: EmbarkStudios/cargo-deny-action@17aeb3c839e42274e2b8adf721c8c65edfdc74dd # v2
         with:
           rust-version: "1.93.1"
           command: check advisories licenses sources bans
